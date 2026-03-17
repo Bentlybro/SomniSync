@@ -24,7 +24,7 @@ dotnet run
 
 You should see:
 ```
-[Server] Started on ws://localhost:8080/
+[Server] Started on ws://localhost:9090/
 [Server] Spawning 100 test entities...
 [Server] Entities spawned. Waiting for clients...
 ```
@@ -47,7 +47,7 @@ cp -r ~/clawd/projects/somnium-network/client/Unity \
 2. Create empty GameObject → name it "NetworkManager"
 3. Add component: `NetworkManager`
 4. Set fields:
-   - Server URL: `ws://localhost:8080/`
+   - Server URL: `ws://localhost:9090/`
    - Auto Connect: ✓
    - Entity Prefab: (see step 3)
 
@@ -86,7 +86,7 @@ dotnet bin/Release/net8.0/SomniumNetwork.Server.dll
 
 ### 3. Update Unity
 
-- Change Server URL to your VPS IP: `ws://YOUR_VPS_IP:8080/`
+- Change Server URL to your VPS IP: `ws://YOUR_VPS_IP:9090/`
 - Re-upload world
 
 ### 4. Test

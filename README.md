@@ -12,7 +12,7 @@ Fast, scalable networking for Somnium Space worlds. Breaks the 100 object limit.
    dotnet run
    ```
    
-   Server starts on `ws://localhost:8080` and spawns 100 test entities.
+   Server starts on `ws://localhost:9090` and spawns 100 test entities.
 
 ### Unity Client
 
@@ -22,7 +22,7 @@ Fast, scalable networking for Somnium Space worlds. Breaks the 100 object limit.
 2. **Create Network Manager:**
    - Create empty GameObject in scene
    - Add `NetworkManager` component
-   - Set Server URL: `ws://localhost:8080/`
+   - Set Server URL: `ws://localhost:9090/`
    - Assign Entity Prefab (see step 3)
 
 3. **Create Entity Prefab:**

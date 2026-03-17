@@ -16,10 +16,10 @@ class Program
         
         // Start WebSocket server
         var listener = new HttpListener();
-        listener.Prefixes.Add("http://localhost:8080/");
+        listener.Prefixes.Add("http://localhost:9090/");
         listener.Start();
         
-        Console.WriteLine("[Server] Started on ws://localhost:8080/");
+        Console.WriteLine("[Server] Started on ws://localhost:9090/");
         Console.WriteLine("[Server] Spawning 100 test entities...");
         
         // Spawn 100 test entities in a grid

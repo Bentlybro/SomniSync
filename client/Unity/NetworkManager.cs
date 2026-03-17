@@ -20,7 +20,7 @@ namespace SomniumNetwork.Client
         
         [Header("Connection")]
         [Tooltip("WebSocket server URL")]
-        public string serverUrl = "ws://localhost:8080/";
+        public string serverUrl = "ws://localhost:9090/";
         
         [Tooltip("Auto-connect on Start()")]
         public bool autoConnect = true;
