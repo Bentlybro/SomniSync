@@ -277,6 +277,10 @@ namespace SomniumSpace.Worlds.bently.networking
                         HandleUpdate(message);
                         break;
                     
+                    case "master_changed":
+                        HandleMasterChanged(message);
+                        break;
+                    
                     default:
                         if (showDebugLogs)
                             Debug.LogWarning($"[NetworkManager] Unknown message type: {message.Type}");
@@ -397,6 +401,50 @@ namespace SomniumSpace.Worlds.bently.networking
                 
                 if (showDebugLogs)
                     Debug.Log($"[NetworkManager] Despawned entity: {message.EntityId}");
+            }
+        }
+        
+        private void HandleMasterChanged(NetworkMessage message)
+        {
+            bool weAreNewMaster = (message.OwnerId == _clientId);
+            
+            Debug.Log($"[NetworkManager] Master changed to {message.OwnerId} {(weAreNewMaster ? "(US!)" : "")}");
+            
+            if (weAreNewMaster)
+            {
+                _isMasterClient = true;
+                
+                // Take ownership of all entities and enable physics
+                foreach (var kvp in _spawnedEntities)
+                {
+                    var entity = kvp.Value.GetComponent<NetworkEntity>();
+                    if (entity != null)
+                    {
+                        entity.isOwned = true;
+                        
+                        // Re-enable physics
+                        var rb = kvp.Value.GetComponent<Rigidbody>();
+                        if (rb != null)
+                        {
+                            rb.isKinematic = false;
+                            Debug.Log($"[NetworkManager] Enabled physics on {kvp.Value.name} (host migration)");
+                        }
+                    }
+                }
+                
+                // Also update local entities
+                foreach (var kvp in _entities)
+                {
+                    kvp.Value.isOwned = true;
+                    
+                    var rb = kvp.Value.GetComponent<Rigidbody>();
+                    if (rb != null)
+                    {
+                        rb.isKinematic = false;
+                    }
+                }
+                
+                Debug.Log($"[NetworkManager] Host migration complete — we are now master");
             }
         }
         

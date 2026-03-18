@@ -7,17 +7,76 @@ namespace SomniumNetwork.Server;
 
 /// <summary>
 /// Handles broadcasting network messages to all connected clients.
+/// Tracks client sockets by ID for targeted messaging and host migration.
 /// </summary>
 public class NetworkBroadcaster
 {
-    private readonly ConcurrentBag<WebSocket> _clients = new();
+    private readonly ConcurrentDictionary<string, WebSocket> _clients = new();
+    private string? _masterClientId = null;
+    private readonly object _masterLock = new();
     
     /// <summary>
-    /// Register a new client connection.
+    /// Register a new client connection with its ID.
     /// </summary>
-    public void AddClient(WebSocket socket)
+    public void AddClient(string clientId, WebSocket socket)
     {
-        _clients.Add(socket);
+        _clients[clientId] = socket;
+    }
+    
+    /// <summary>
+    /// Remove a disconnected client and handle host migration if needed.
+    /// Returns the new master client ID if migration occurred, null otherwise.
+    /// </summary>
+    public string? RemoveClient(string clientId)
+    {
+        _clients.TryRemove(clientId, out _);
+        
+        lock (_masterLock)
+        {
+            // If the master disconnected, promote the next client
+            if (_masterClientId == clientId)
+            {
+                _masterClientId = null;
+                
+                // Find next connected client to promote
+                foreach (var kvp in _clients)
+                {
+                    if (kvp.Value.State == WebSocketState.Open)
+                    {
+                        _masterClientId = kvp.Key;
+                        Console.WriteLine($"[NetworkBroadcaster] Host migration: {clientId} -> {_masterClientId}");
+                        return _masterClientId;
+                    }
+                }
+                
+                Console.WriteLine($"[NetworkBroadcaster] Master disconnected, no clients to promote");
+                return null;
+            }
+        }
+        
+        return null;
+    }
+    
+    /// <summary>
+    /// Set the current master client.
+    /// </summary>
+    public void SetMaster(string clientId)
+    {
+        lock (_masterLock)
+        {
+            _masterClientId = clientId;
+        }
+    }
+    
+    /// <summary>
+    /// Get the current master client ID.
+    /// </summary>
+    public string? GetMasterId()
+    {
+        lock (_masterLock)
+        {
+            return _masterClientId;
+        }
     }
     
     /// <summary>
@@ -33,21 +92,15 @@ public class NetworkBroadcaster
         var json = JsonSerializer.Serialize(message);
         var bytes = Encoding.UTF8.GetBytes(json);
         
-        // Log large messages for debugging
-        if (bytes.Length > 50000)
-        {
-            Console.WriteLine($"[NetworkBroadcaster] Large message: {bytes.Length / 1024}KB, {message.Updates?.Count ?? 0} updates");
-        }
-        
         var tasks = new List<Task>();
         
-        foreach (var client in _clients)
+        foreach (var kvp in _clients)
         {
-            if (client.State == WebSocketState.Open)
+            if (kvp.Value.State == WebSocketState.Open)
             {
                 try
                 {
-                    tasks.Add(client.SendAsync(
+                    tasks.Add(kvp.Value.SendAsync(
                         new ArraySegment<byte>(bytes),
                         WebSocketMessageType.Text,
                         true,
@@ -56,7 +109,7 @@ public class NetworkBroadcaster
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"[NetworkBroadcaster] Send failed: {ex.Message}");
+                    Console.WriteLine($"[NetworkBroadcaster] Send failed to {kvp.Key}: {ex.Message}");
                 }
             }
         }
@@ -72,9 +125,20 @@ public class NetworkBroadcaster
     }
     
     /// <summary>
-    /// Send a message to a specific client.
+    /// Send a message to a specific client by ID.
     /// </summary>
-    public async Task SendToClientAsync(WebSocket socket, NetworkMessage message)
+    public async Task SendToClientAsync(string clientId, NetworkMessage message)
+    {
+        if (!_clients.TryGetValue(clientId, out var socket) || socket.State != WebSocketState.Open)
+            return;
+        
+        await SendToSocketAsync(socket, message);
+    }
+    
+    /// <summary>
+    /// Send a message to a specific socket.
+    /// </summary>
+    public async Task SendToSocketAsync(WebSocket socket, NetworkMessage message)
     {
         if (socket.State != WebSocketState.Open)
             return;
@@ -82,8 +146,7 @@ public class NetworkBroadcaster
         var json = JsonSerializer.Serialize(message);
         var bytes = Encoding.UTF8.GetBytes(json);
         
-        // DEBUG: Log JSON for client_id messages
-        if (message.Type == "client_id")
+        if (message.Type == "client_id" || message.Type == "master_changed")
         {
             Console.WriteLine($"[NetworkBroadcaster] Sending JSON: {json}");
         }

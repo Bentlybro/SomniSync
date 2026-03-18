@@ -143,4 +143,30 @@ public class EntityManager
             return _entityOwners.TryGetValue(entityId, out var ownerId) ? ownerId : null;
         }
     }
+    
+    /// <summary>
+    /// Transfer all entities owned by one client to another (host migration).
+    /// Returns list of entity IDs that were transferred.
+    /// </summary>
+    public List<string> TransferOwnership(string fromClientId, string toClientId)
+    {
+        lock (_entityLock)
+        {
+            var transferred = new List<string>();
+            
+            foreach (var kvp in _entityOwners.ToList())
+            {
+                if (kvp.Value == fromClientId)
+                {
+                    _entityOwners[kvp.Key] = toClientId;
+                    transferred.Add(kvp.Key);
+                }
+            }
+            
+            if (transferred.Count > 0)
+                Console.WriteLine($"[EntityManager] Transferred {transferred.Count} entities from {fromClientId} to {toClientId}");
+            
+            return transferred;
+        }
+    }
 }

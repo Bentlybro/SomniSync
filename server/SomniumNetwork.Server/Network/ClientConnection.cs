@@ -36,10 +36,16 @@ public class ClientConnection
             clientId = $"client_{_nextClientId++}";
         }
         
-        // Master is determined by client ID number (client_1 is always master)
-        bool isMasterClient = (clientId == "client_1");
+        // First client becomes master, or if no master exists
+        bool isMasterClient = (_broadcaster.GetMasterId() == null);
         
-        _broadcaster.AddClient(socket);
+        _broadcaster.AddClient(clientId, socket);
+        
+        if (isMasterClient)
+        {
+            _broadcaster.SetMaster(clientId);
+        }
+        
         Console.WriteLine($"[ClientConnection] Client connected: {clientId} ({_broadcaster.ClientCount} total) {(isMasterClient ? "[MASTER]" : "")}");
         
         // Send client their ID and master status
@@ -51,7 +57,8 @@ public class ClientConnection
         // Receive and process messages
         await ReceiveMessagesAsync(socket, clientId);
         
-        Console.WriteLine($"[ClientConnection] Client disconnected: {clientId} ({_broadcaster.ClientCount - 1} remaining)");
+        // Client disconnected — handle cleanup and host migration
+        await HandleDisconnectAsync(clientId);
     }
     
     private async Task SendClientIdAsync(WebSocket socket, string clientId, bool isMasterClient)
@@ -63,10 +70,9 @@ public class ClientConnection
             IsMasterClient = isMasterClient
         };
         
-        // DEBUG: Log what we're actually sending
         Console.WriteLine($"[ClientConnection] Sending to {clientId}: IsMasterClient={isMasterClient}");
         
-        await _broadcaster.SendToClientAsync(socket, idMsg);
+        await _broadcaster.SendToSocketAsync(socket, idMsg);
     }
     
     private async Task SyncExistingEntitiesAsync(WebSocket socket)
@@ -85,7 +91,34 @@ public class ClientConnection
                 OwnerId = _entityManager.GetOwner(entity.Id)
             };
             
-            await _broadcaster.SendToClientAsync(socket, msg);
+            await _broadcaster.SendToSocketAsync(socket, msg);
+        }
+    }
+    
+    private async Task HandleDisconnectAsync(string clientId)
+    {
+        Console.WriteLine($"[ClientConnection] Client disconnected: {clientId} ({_broadcaster.ClientCount - 1} remaining)");
+        
+        // Remove client and check if host migration is needed
+        string? newMasterId = _broadcaster.RemoveClient(clientId);
+        
+        if (newMasterId != null)
+        {
+            // Transfer entity ownership from old master to new master
+            var transferredEntities = _entityManager.TransferOwnership(clientId, newMasterId);
+            
+            // Notify the new master
+            var masterMsg = new NetworkMessage
+            {
+                Type = "master_changed",
+                OwnerId = newMasterId,
+                IsMasterClient = true
+            };
+            
+            // Send to all clients so everyone knows who the new master is
+            await _broadcaster.BroadcastMessageAsync(masterMsg);
+            
+            Console.WriteLine($"[ClientConnection] Host migration complete: {newMasterId} is now master with {transferredEntities.Count} entities");
         }
     }
     
@@ -124,11 +157,10 @@ public class ClientConnection
         }
         catch (WebSocketException)
         {
-            // Normal disconnect, don't log
+            // Normal disconnect
         }
         catch (Exception ex)
         {
-            // Log unexpected errors only
             if (!ex.Message.Contains("internal WebSocket error"))
             {
                 Console.WriteLine($"[ClientConnection] Error: {ex.Message}");
