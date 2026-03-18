@@ -113,8 +113,6 @@ public class MessageHandler
         if (string.IsNullOrEmpty(message.EntityId) || message.Position == null)
             return;
         
-        Console.WriteLine($"[MessageHandler] client_update from {clientId}: entity={message.EntityId}, pos=({message.Position.X:F2}, {message.Position.Y:F2}, {message.Position.Z:F2})");
-        
         // Update entity (validates ownership internally)
         bool updated = _entityManager.UpdateEntity(message.EntityId, clientId, message.Position, message.Rotation);
         

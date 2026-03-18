@@ -72,8 +72,6 @@ namespace SomniumSpace.Worlds.bently.networking
                     
                     if (positionDelta > 0.01f || rotationDelta > 1f) // 1cm or 1 degree threshold
                     {
-                        Debug.Log($"[NetworkTransform] Sending update: pos={transform.position}, delta={positionDelta:F4}m");
-                        
                         NetworkManager.Instance.SendPhysicsUpdate(
                             _networkEntity,
                             transform.position,
@@ -137,16 +135,12 @@ namespace SomniumSpace.Worlds.bently.networking
             {
                 _targetPosition = position.Value;
                 _hasReceivedUpdate = true;
-                
-                Debug.Log($"[NetworkTransform] ApplyServerUpdate: Position {position.Value} on {gameObject.name}");
             }
             
             if (rotation.HasValue && syncRotation)
             {
                 _targetRotation = Quaternion.Euler(rotation.Value);
                 _hasReceivedUpdate = true;
-                
-                Debug.Log($"[NetworkTransform] ApplyServerUpdate: Rotation {rotation.Value} on {gameObject.name}");
             }
         }
     }

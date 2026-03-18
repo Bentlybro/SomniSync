@@ -124,10 +124,6 @@ public class NetworkBroadcaster
             Updates = updates
         };
         
-        // DEBUG: Log the actual JSON being sent
-        var json = JsonSerializer.Serialize(message);
-        Console.WriteLine($"[NetworkBroadcaster] Broadcasting {updates.Count} updates, JSON sample: {json.Substring(0, Math.Min(200, json.Length))}...");
-        
         await BroadcastMessageAsync(message);
     }
 }
