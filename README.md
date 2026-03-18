@@ -34,8 +34,14 @@ Spectator Clients (apply positions)
 ```bash
 cd server
 cargo build --release
-./target/release/somnium-relay          # default: ws://0.0.0.0:9090
-./target/release/somnium-relay 0.0.0.0:8080  # custom port
+
+# Windows
+.\target\release\somnium-relay.exe                  # default: ws://0.0.0.0:9090
+.\target\release\somnium-relay.exe 0.0.0.0:8080     # custom port
+
+# Linux/macOS
+./target/release/somnium-relay                       # default: ws://0.0.0.0:9090
+./target/release/somnium-relay 0.0.0.0:8080          # custom port
 ```
 
 ## Client (Unity/Somnium)
