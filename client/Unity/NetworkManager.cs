@@ -509,7 +509,7 @@ namespace SomniumSpace.Worlds.bently.networking
                         if (rb != null)
                         {
                             rb.isKinematic = false;
-                            Debug.Log($"[NetworkManager] Enabled physics on {kvp.Value.name} (host migration)");
+                            // Physics re-enabled for host migration
                         }
                     }
                 }
@@ -694,13 +694,15 @@ namespace SomniumSpace.Worlds.bently.networking
                 {
                     _pendingSpawns.Add(entity);
                     if (showDebugLogs)
-                        Debug.Log($"[NetworkManager] Queued {entity.gameObject.name} for spawn (waiting for connection)");
+                        if (showDebugLogs)
+                            Debug.Log($"[NetworkManager] Queued {entity.gameObject.name} for spawn");
                 }
                 return;
             }
             
             if (showDebugLogs)
-                Debug.Log($"[NetworkManager] Sending spawn for {entity.gameObject.name} (ID: {entity.entityId})");
+                if (showDebugLogs)
+                    Debug.Log($"[NetworkManager] Sending spawn for {entity.gameObject.name}");
             
             var message = new NetworkMessage
             {
