@@ -423,24 +423,6 @@ namespace Bentlybro.CustomNetworking
             }
         }
         
-        private GameObject GetPrefabForType(string entityType)
-        {
-            // Check registry first
-            if (entityPrefabs != null)
-            {
-                foreach (var mapping in entityPrefabs)
-                {
-                    if (mapping.entityType == entityType && mapping.prefab != null)
-                    {
-                        return mapping.prefab;
-                    }
-                }
-            }
-            
-            // Fall back to default prefab
-            return defaultPrefab;
-        }
-        
         private void OnDestroy()
         {
             if (_isConnected)
@@ -487,12 +469,5 @@ namespace Bentlybro.CustomNetworking
         public string Id;
         public Vector3Data Position;
         public Vector3Data Rotation;
-    }
-    
-    [Serializable]
-    public class EntityPrefabMapping
-    {
-        public string entityType;
-        public GameObject prefab;
     }
 }
