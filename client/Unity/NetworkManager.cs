@@ -241,7 +241,8 @@ namespace SomniumSpace.Worlds.bently.networking
         {
             try
             {
-                var message = JsonUtility.FromJson<NetworkMessage>(json);
+                // Use JsonHelper instead of JsonUtility to handle nullable types correctly
+                var message = JsonHelper.DeserializeNetworkMessage(json);
                 
                 if (message == null)
                     return;
