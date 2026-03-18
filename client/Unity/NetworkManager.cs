@@ -60,7 +60,7 @@ namespace SomniumSpace.Worlds.bently.networking
         private bool _hasLoggedSendError = false; // Only log send errors once per disconnect
         
         public bool IsConnected => _isConnected;
-        public int EntityCount => _spawnedEntities.Count + _networkObjects.Count;
+        public int EntityCount => _spawnedEntities.Count;
         public string ClientId => _clientId;
         public bool IsMasterClient => _isMasterClient;
         
