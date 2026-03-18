@@ -25,8 +25,11 @@ namespace Bentlybro.CustomNetworking
         public bool autoConnect = true;
         
         [Header("Entity Management")]
-        [Tooltip("Prefab to spawn for networked entities (must have NetworkEntity component)")]
-        public GameObject entityPrefab;
+        [Tooltip("Default prefab if type not found in registry")]
+        public GameObject defaultPrefab;
+        
+        [Tooltip("Map entity types to prefabs (e.g., 'zombie' -> ZombiePrefab)")]
+        public EntityPrefabMapping[] entityPrefabs;
         
         [Header("Debug")]
         public bool showDebugLogs = true;
@@ -242,7 +245,16 @@ namespace Bentlybro.CustomNetworking
                 ? Quaternion.Euler(message.Rotation.X, message.Rotation.Y, message.Rotation.Z)
                 : Quaternion.identity;
             
-            GameObject obj = Instantiate(entityPrefab, position, rotation);
+            // Find prefab for this entity type
+            GameObject prefab = GetPrefabForType(message.EntityType ?? "entity");
+            if (prefab == null)
+            {
+                if (showDebugLogs)
+                    Debug.LogWarning($"[NetworkManager] No prefab for type '{message.EntityType}', skipping spawn");
+                return;
+            }
+            
+            GameObject obj = Instantiate(prefab, position, rotation);
             
             var entity = obj.GetComponent<NetworkEntity>();
             if (entity == null)
@@ -391,6 +403,24 @@ namespace Bentlybro.CustomNetworking
             }
         }
         
+        private GameObject GetPrefabForType(string entityType)
+        {
+            // Check registry first
+            if (entityPrefabs != null)
+            {
+                foreach (var mapping in entityPrefabs)
+                {
+                    if (mapping.entityType == entityType && mapping.prefab != null)
+                    {
+                        return mapping.prefab;
+                    }
+                }
+            }
+            
+            // Fall back to default prefab
+            return defaultPrefab;
+        }
+        
         private void OnDestroy()
         {
             if (_isConnected)
@@ -399,6 +429,16 @@ namespace Bentlybro.CustomNetworking
                 _webSocket?.Abort();
             }
         }
+    }
+    
+    /// <summary>
+    /// Maps entity types to prefabs for spawning
+    /// </summary>
+    [Serializable]
+    public class EntityPrefabMapping
+    {
+        public string entityType;
+        public GameObject prefab;
     }
     
     // Message classes (must match server protocol)

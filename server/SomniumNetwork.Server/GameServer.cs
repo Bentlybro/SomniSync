@@ -66,22 +66,20 @@ public class GameServer
         {
             var startTime = DateTime.UtcNow;
             
-            // Update entities
+            // Update entities - simple server-side movement to prove authority
             lock (_entityLock)
             {
                 _time += deltaTime;
                 
                 foreach (var entity in _entities.Values)
                 {
-                    // Move entities in circles (test movement)
-                    float angle = _time * 0.5f;
-                    float radius = 2f;
-                    float centerX = entity.Position.X;
-                    float centerZ = entity.Position.Z;
+                    // Simple up-down bobbing movement (server-controlled)
+                    entity.Position.Y = 1f + (float)Math.Sin(_time * 2f) * 0.5f;
                     
-                    entity.Position.X = centerX + (float)Math.Sin(angle) * radius;
-                    entity.Position.Z = centerZ + (float)Math.Cos(angle) * radius;
-                    entity.Rotation.Y = angle * 57.3f; // radians to degrees
+                    // Slow rotation
+                    entity.Rotation.Y += 20f * deltaTime; // 20 degrees per second
+                    if (entity.Rotation.Y > 360f)
+                        entity.Rotation.Y -= 360f;
                 }
             }
             
