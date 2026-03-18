@@ -34,15 +34,14 @@ public class NetworkBroadcaster
     }
     
     /// <summary>
-    /// Get all connected clients that aren't ready yet (excluding a specific client).
-    /// Used to auto-sync spectators after master registers entities.
+    /// Get all connected clients except the specified one.
     /// </summary>
-    public List<string> GetNotReadyClients(string excludeClientId)
+    public List<string> GetAllClientsExcept(string excludeClientId)
     {
         var result = new List<string>();
-        foreach (var kvp in _clientReady)
+        foreach (var kvp in _clients)
         {
-            if (kvp.Key != excludeClientId && !kvp.Value && _clients.TryGetValue(kvp.Key, out var socket) && socket.State == WebSocketState.Open)
+            if (kvp.Key != excludeClientId && kvp.Value.State == WebSocketState.Open)
             {
                 result.Add(kvp.Key);
             }

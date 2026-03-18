@@ -128,21 +128,22 @@ public class MessageHandler
     }
     
     /// <summary>
-    /// Send binary batch_sync to all connected clients that aren't ready yet.
-    /// Called after master finishes batch spawning entities.
+    /// Send binary batch_sync to all non-master clients after master spawns entities.
+    /// Re-sends full state every time — handles split batch spawns gracefully.
+    /// Client skips already-linked entities, so duplicates are harmless.
     /// </summary>
-    private async Task SyncWaitingClientsAsync(string excludeClientId)
+    private async Task SyncWaitingClientsAsync(string masterClientId)
     {
-        var waitingClients = _broadcaster.GetNotReadyClients(excludeClientId);
+        var spectators = _broadcaster.GetAllClientsExcept(masterClientId);
         
-        if (waitingClients.Count == 0)
+        if (spectators.Count == 0)
             return;
         
-        Console.WriteLine($"[MessageHandler] Auto-syncing {waitingClients.Count} waiting client(s)");
+        Console.WriteLine($"[MessageHandler] Syncing {spectators.Count} spectator(s) with {_entityManager.EntityCount} entities");
         
-        foreach (var waitingClientId in waitingClients)
+        foreach (var clientId in spectators)
         {
-            await HandleRequestSyncAsync(waitingClientId);
+            await HandleRequestSyncAsync(clientId);
         }
     }
     

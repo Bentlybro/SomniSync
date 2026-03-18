@@ -44,6 +44,7 @@ public class ClientConnection
         if (isMasterClient)
         {
             _broadcaster.SetMaster(clientId);
+            _broadcaster.SetClientReady(clientId); // Master is always ready (it's the source)
         }
         
         Console.WriteLine($"[ClientConnection] Client connected: {clientId} ({_broadcaster.ClientCount} total) {(isMasterClient ? "[MASTER]" : "")}");
