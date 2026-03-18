@@ -568,7 +568,6 @@ namespace Bentlybro.CustomNetworking
     
     // Message classes (must match server protocol)
     [Serializable]
-    [Serializable]
     public class NetworkMessage
     {
         public string Type;

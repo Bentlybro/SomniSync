@@ -1,5 +1,8 @@
 namespace SomniumNetwork.Server;
 
+/// <summary>
+/// Network protocol message sent between client and server.
+/// </summary>
 public class NetworkMessage
 {
     public string Type { get; set; } = ""; // "spawn", "despawn", "update", "variable", "client_id"

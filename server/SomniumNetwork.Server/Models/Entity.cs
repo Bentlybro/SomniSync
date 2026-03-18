@@ -1,5 +1,8 @@
 namespace SomniumNetwork.Server;
 
+/// <summary>
+/// Represents a networked entity with position, rotation, and state tracking.
+/// </summary>
 public class Entity
 {
     public string Id { get; set; } = "";
@@ -37,11 +40,4 @@ public class Entity
         LastSentPosition = new Vector3 { X = float.MaxValue, Y = float.MaxValue, Z = float.MaxValue };
         LastSentRotation = new Vector3 { X = float.MaxValue, Y = float.MaxValue, Z = float.MaxValue };
     }
-}
-
-public class Vector3
-{
-    public float X { get; set; }
-    public float Y { get; set; }
-    public float Z { get; set; }
 }
