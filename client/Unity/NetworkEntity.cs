@@ -49,6 +49,10 @@ namespace SomniumNetwork.Client
             }
             
             NetworkManager.Instance.RegisterEntity(this);
+            
+            // Tell server about this entity
+            NetworkManager.Instance.SpawnEntityOnServer(this);
+            
             IsSpawned = true;
             
             if (showDebugLogs)

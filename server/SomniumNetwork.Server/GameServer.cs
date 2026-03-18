@@ -178,8 +178,8 @@ public class GameServer
             }
         }
         
-        // Keep connection alive
-        var buffer = new byte[1024];
+        // Keep connection alive and receive messages
+        var buffer = new byte[8192];
         try
         {
             while (socket.State == WebSocketState.Open)
@@ -194,7 +194,11 @@ public class GameServer
                     break;
                 }
                 
-                // TODO: Handle client messages (player actions, etc.)
+                if (result.MessageType == WebSocketMessageType.Text)
+                {
+                    string json = Encoding.UTF8.GetString(buffer, 0, result.Count);
+                    await HandleClientMessageAsync(json);
+                }
             }
         }
         catch (Exception ex)
@@ -203,5 +207,49 @@ public class GameServer
         }
         
         Console.WriteLine($"[Server] Client disconnected");
+    }
+    
+    private async Task HandleClientMessageAsync(string json)
+    {
+        try
+        {
+            var message = JsonSerializer.Deserialize<NetworkMessage>(json);
+            
+            if (message == null)
+                return;
+            
+            switch (message.Type)
+            {
+                case "client_spawn":
+                    if (!string.IsNullOrEmpty(message.EntityId) && message.Position != null)
+                    {
+                        Console.WriteLine($"[Server] Client spawned entity: {message.EntityId}");
+                        SpawnEntity(
+                            message.EntityId,
+                            message.EntityType ?? "entity",
+                            message.Position.X,
+                            message.Position.Y,
+                            message.Position.Z
+                        );
+                    }
+                    break;
+                
+                case "client_despawn":
+                    if (!string.IsNullOrEmpty(message.EntityId))
+                    {
+                        Console.WriteLine($"[Server] Client despawned entity: {message.EntityId}");
+                        DespawnEntity(message.EntityId);
+                    }
+                    break;
+                
+                default:
+                    Console.WriteLine($"[Server] Unknown message type: {message.Type}");
+                    break;
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Server] Error handling client message: {ex.Message}");
+        }
     }
 }

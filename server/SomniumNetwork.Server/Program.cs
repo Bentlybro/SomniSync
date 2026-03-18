@@ -20,17 +20,10 @@ class Program
         listener.Start();
         
         Console.WriteLine("[Server] Started on ws://localhost:9090/");
-        Console.WriteLine("[Server] Spawning 100 test entities...");
+        Console.WriteLine("[Server] Ready for connections...");
         
-        // Spawn 100 test entities in a grid
-        for (int i = 0; i < 100; i++)
-        {
-            float x = (i % 10) * 5f;
-            float z = (i / 10) * 5f;
-            server.SpawnEntity($"entity_{i}", "cube", x, 0, z);
-        }
-        
-        Console.WriteLine("[Server] Entities spawned. Waiting for clients...");
+        // TODO: Load entity spawns from config file
+        // For now, server just tracks entities that clients create
         
         while (true)
         {

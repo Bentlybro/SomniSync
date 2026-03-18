@@ -230,8 +230,8 @@ namespace SomniumNetwork.Client
             if (string.IsNullOrEmpty(message.EntityId))
                 return;
             
-            // Don't spawn if already exists
-            if (_spawnedEntities.ContainsKey(message.EntityId))
+            // Don't spawn if already exists (including local entities we own)
+            if (_spawnedEntities.ContainsKey(message.EntityId) || _entities.ContainsKey(message.EntityId))
                 return;
             
             // Spawn entity
@@ -323,6 +323,68 @@ namespace SomniumNetwork.Client
             if (!string.IsNullOrEmpty(entity.entityId))
             {
                 _entities.Remove(entity.entityId);
+            }
+        }
+        
+        public void SpawnEntityOnServer(NetworkEntity entity)
+        {
+            if (!_isConnected)
+            {
+                if (showDebugLogs)
+                    Debug.LogWarning("[NetworkManager] Cannot spawn - not connected");
+                return;
+            }
+            
+            var message = new NetworkMessage
+            {
+                Type = "client_spawn",
+                EntityId = entity.entityId,
+                EntityType = entity.entityType,
+                Position = new Vector3Data
+                {
+                    X = entity.transform.position.x,
+                    Y = entity.transform.position.y,
+                    Z = entity.transform.position.z
+                },
+                Rotation = new Vector3Data
+                {
+                    X = entity.transform.eulerAngles.x,
+                    Y = entity.transform.eulerAngles.y,
+                    Z = entity.transform.eulerAngles.z
+                }
+            };
+            
+            StartCoroutine(SendMessageAsync(message));
+        }
+        
+        private IEnumerator SendMessageAsync(NetworkMessage message)
+        {
+            if (_webSocket == null || _webSocket.State != WebSocketState.Open)
+                yield break;
+            
+            try
+            {
+                string json = JsonSerializer.Serialize(message);
+                byte[] bytes = Encoding.UTF8.GetBytes(json);
+                
+                Task sendTask = _webSocket.SendAsync(
+                    new ArraySegment<byte>(bytes),
+                    WebSocketMessageType.Text,
+                    true,
+                    CancellationToken.None
+                );
+                
+                yield return new WaitUntil(() => sendTask.IsCompleted);
+                
+                if (sendTask.IsFaulted && showDebugLogs)
+                {
+                    Debug.LogError($"[NetworkManager] Send error: {sendTask.Exception?.Message}");
+                }
+            }
+            catch (Exception ex)
+            {
+                if (showDebugLogs)
+                    Debug.LogError($"[NetworkManager] Send exception: {ex.Message}");
             }
         }
         
