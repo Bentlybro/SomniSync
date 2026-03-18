@@ -39,6 +39,8 @@ namespace Bentlybro.CustomNetworking
         private bool _isConnected = false;
         private bool _isReceiving = false;
         
+        public bool IsConnected => _isConnected;
+        
         // Entity tracking
         private Dictionary<string, NetworkEntity> _entities = new Dictionary<string, NetworkEntity>();
         private Dictionary<string, GameObject> _spawnedEntities = new Dictionary<string, GameObject>();
@@ -337,6 +339,24 @@ namespace Bentlybro.CustomNetworking
             }
         }
         
+        private GameObject GetPrefabForType(string entityType)
+        {
+            // Check registry
+            if (entityPrefabs != null)
+            {
+                foreach (var mapping in entityPrefabs)
+                {
+                    if (mapping.entityType == entityType)
+                    {
+                        return mapping.prefab;
+                    }
+                }
+            }
+            
+            // Fallback to default
+            return defaultPrefab;
+        }
+        
         public void SpawnEntityOnServer(NetworkEntity entity)
         {
             if (!_isConnected)
@@ -467,5 +487,12 @@ namespace Bentlybro.CustomNetworking
         public string Id;
         public Vector3Data Position;
         public Vector3Data Rotation;
+    }
+    
+    [Serializable]
+    public class EntityPrefabMapping
+    {
+        public string entityType;
+        public GameObject prefab;
     }
 }
