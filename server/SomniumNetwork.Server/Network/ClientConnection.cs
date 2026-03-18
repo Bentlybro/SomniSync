@@ -134,6 +134,13 @@ public class ClientConnection
             
             Console.WriteLine($"[ClientConnection] Host migration complete: {newMasterId} is now master with {transferredEntities.Count} entities");
         }
+        
+        // If no clients left, wipe all entities (no persistence yet)
+        if (_broadcaster.ClientCount == 0)
+        {
+            _entityManager.ClearAll();
+            Console.WriteLine("[ClientConnection] No clients remaining — cleared all entities");
+        }
     }
     
     private async Task ReceiveMessagesAsync(WebSocket socket, string clientId)

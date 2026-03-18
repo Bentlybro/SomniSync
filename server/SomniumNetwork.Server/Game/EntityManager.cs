@@ -101,6 +101,16 @@ public class EntityManager
         }
     }
     
+    public void ClearAll()
+    {
+        lock (_entityLock)
+        {
+            _entities.Clear();
+            _ownership.Clear();
+            Console.WriteLine($"[EntityManager] All entities cleared");
+        }
+    }
+    
     /// <summary>
     /// Get entities that have moved since last update (delta compression).
     /// </summary>
