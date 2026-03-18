@@ -1,6 +1,6 @@
 using UnityEngine;
 
-namespace SomniumNetwork.Client
+namespace Bentlybro.CustomNetworking
 {
     /// <summary>
     /// Core component that marks a GameObject as network-synced.

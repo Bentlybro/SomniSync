@@ -7,7 +7,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using UnityEngine;
 
-namespace SomniumNetwork.Client
+namespace Bentlybro.CustomNetworking
 {
     /// <summary>
     /// Main network manager. Handles WebSocket connection and entity synchronization.
