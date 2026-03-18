@@ -1,3 +1,4 @@
+#if UNITY_EDITOR
 using UnityEngine;
 using UnityEditor;
 
@@ -172,3 +173,4 @@ namespace SomniumSpace.Worlds.bently.networking
         }
     }
 }
+#endif
