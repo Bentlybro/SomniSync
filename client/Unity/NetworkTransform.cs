@@ -1,6 +1,6 @@
 using UnityEngine;
 
-namespace SomniumSpace.Worlds.Bentlybro.customnetworking
+namespace SomniumSpace.Worlds.bently.networking
 {
     /// <summary>
     /// Syncs position and rotation from server.
