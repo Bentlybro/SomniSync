@@ -125,7 +125,8 @@ async fn handle_connection(stream: TcpStream, addr: SocketAddr, room: Arc<RwLock
     } else {
         send(&client, ctrl_msg_u16(CTRL_YOU_ARE_SPECTATOR, client_id)).await;
 
-        // Try to send cached snapshot first
+        // Send cached snapshot immediately (so client gets SOMETHING fast)
+        // then also request a fresh one from master (cached may be stale)
         let room = room.read().await;
         if let Some(ref snapshot) = room.latest_snapshot {
             info!(
@@ -134,11 +135,12 @@ async fn handle_connection(stream: TcpStream, addr: SocketAddr, room: Arc<RwLock
                 snapshot.len()
             );
             send(&client, Message::Binary(snapshot.clone().into())).await;
-        } else if let Some(master_id) = room.master_id {
-            // Ask master to send a snapshot
+        }
+        // Always request fresh snapshot from master
+        if let Some(master_id) = room.master_id {
             if let Some(master) = room.clients.get(&master_id) {
                 info!(
-                    "[Room] Requesting snapshot from master (client_{}) for client_{}",
+                    "[Room] Requesting fresh snapshot from master (client_{}) for client_{}",
                     master_id, client_id
                 );
                 send(master, ctrl_msg_u16(CTRL_SEND_SNAPSHOT, client_id)).await;

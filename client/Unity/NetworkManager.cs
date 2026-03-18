@@ -44,6 +44,10 @@ namespace SomniumSpace.Worlds.bently.networking
         private float _sendInterval;
         private float _nextSendTime;
 
+        // After snapshot, snap first N updates instead of interpolating
+        private int _snapFramesRemaining;
+        private const int SNAP_FRAMES_AFTER_SNAPSHOT = 3;
+
         // Stats (public for NetworkStats overlay)
         public static int MessagesSent;
         public static int MessagesReceived;
@@ -343,9 +347,17 @@ namespace SomniumSpace.Worlds.bently.networking
 
                 if (_objectMap.TryGetValue(localId, out var obj))
                 {
-                    obj.ApplyUpdate(new Vector3(px, py, pz), new Vector3(rx, ry, rz));
+                    var pos = new Vector3(px, py, pz);
+                    var rot = new Vector3(rx, ry, rz);
+                    if (_snapFramesRemaining > 0)
+                        obj.SnapTo(pos, rot);
+                    else
+                        obj.ApplyUpdate(pos, rot);
                 }
             }
+
+            if (_snapFramesRemaining > 0)
+                _snapFramesRemaining--;
         }
 
         // =====================================================================
@@ -406,6 +418,8 @@ namespace SomniumSpace.Worlds.bently.networking
                 }
             }
 
+            // Snap next few position updates too (catch up to current state fast)
+            _snapFramesRemaining = SNAP_FRAMES_AFTER_SNAPSHOT;
             Debug.Log($"[Net] Snapshot applied: {applied}/{count} objects");
         }
 
