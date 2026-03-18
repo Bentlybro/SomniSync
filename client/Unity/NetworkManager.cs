@@ -121,6 +121,14 @@ namespace SomniumSpace.Worlds.bently.networking
                 {
                     HandleSpawn(_deferredSpawns.Dequeue());
                 }
+                
+                // Request full state sync from server (don't rely on spawn trickle)
+                if (_isConnected && !_isMasterClient)
+                {
+                    var syncRequest = new NetworkMessage { Type = "request_sync" };
+                    StartCoroutine(SendMessageAsync(syncRequest));
+                    Debug.Log("[NetworkManager] Requested full sync from server");
+                }
             }
             
             // Update status display every frame

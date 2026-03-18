@@ -46,6 +46,10 @@ public class MessageHandler
                     HandleBatchUpdate(message, clientId);
                     break;
                 
+                case "request_sync":
+                    await HandleRequestSyncAsync(clientId);
+                    break;
+                
                 default:
                     Console.WriteLine($"[MessageHandler] Unknown message type: {message.Type}");
                     break;
@@ -141,5 +145,33 @@ public class MessageHandler
         {
             // Silently ignore — common during reconnects when client has stale entity IDs
         }
+    }
+    
+    private async Task HandleRequestSyncAsync(string clientId)
+    {
+        var entities = _entityManager.GetAllEntities();
+        
+        if (entities.Count == 0)
+            return;
+        
+        var spawns = entities.Select(entity => new EntitySpawnData
+        {
+            EntityId = entity.Id,
+            EntityType = entity.Type,
+            Position = entity.Position,
+            Rotation = entity.Rotation,
+            OwnerId = _entityManager.GetOwner(entity.Id)
+        }).ToList();
+        
+        var batchMsg = new NetworkMessage
+        {
+            Type = "batch_sync",
+            Spawns = spawns
+        };
+        
+        await _broadcaster.SendToClientAsync(clientId, batchMsg);
+        _broadcaster.SetClientReady(clientId);
+        
+        Console.WriteLine($"[MessageHandler] Sent requested sync with {entities.Count} entities to {clientId}");
     }
 }
