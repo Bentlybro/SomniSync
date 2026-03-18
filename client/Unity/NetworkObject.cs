@@ -136,6 +136,7 @@ namespace SomniumSpace.Worlds.bently.networking
             {
                 _isOwned = false;
                 SetPhysicsState(false); // Spectators don't simulate physics
+                SetRenderersVisible(false); // Hide until positioned by batch_sync
                 // Already registered as unlinked in Start() — just bail
                 yield break;
             }
@@ -253,7 +254,11 @@ namespace SomniumSpace.Worlds.bently.networking
             if (syncPosition) _toPosition = position;
             if (syncRotation) _toRotation = Quaternion.Euler(rotation);
             
-            _hasReceivedUpdate = true;
+            if (!_hasReceivedUpdate)
+            {
+                _hasReceivedUpdate = true;
+                SetRenderersVisible(true); // Show now that we have a valid position
+            }
         }
         
         public void ApplyServerUpdate(Vector3? position, Vector3? rotation)
@@ -307,6 +312,13 @@ namespace SomniumSpace.Worlds.bently.networking
             {
                 _rigidbody.isKinematic = !enablePhysics;
             }
+        }
+        
+        private void SetRenderersVisible(bool visible)
+        {
+            var renderers = GetComponentsInChildren<Renderer>(true);
+            for (int i = 0; i < renderers.Length; i++)
+                renderers[i].enabled = visible;
         }
         
         private void OnDestroy()
