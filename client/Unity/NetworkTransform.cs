@@ -70,11 +70,9 @@ namespace SomniumSpace.Worlds.bently.networking
                     float positionDelta = Vector3.Distance(transform.position, _lastSentPosition);
                     float rotationDelta = Quaternion.Angle(transform.rotation, _lastSentRotation);
                     
-                    Debug.Log($"[NetworkTransform] FixedUpdate: pos={transform.position}, delta={positionDelta:F4}m, owned={_networkEntity.isOwned}");
-                    
                     if (positionDelta > 0.01f || rotationDelta > 1f) // 1cm or 1 degree threshold
                     {
-                        Debug.Log($"[NetworkTransform] Sending update for {gameObject.name}");
+                        Debug.Log($"[NetworkTransform] Sending update: pos={transform.position}, delta={positionDelta:F4}m");
                         
                         NetworkManager.Instance.SendPhysicsUpdate(
                             _networkEntity,

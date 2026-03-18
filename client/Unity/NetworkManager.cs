@@ -312,7 +312,7 @@ namespace SomniumSpace.Worlds.bently.networking
             
             // PHOTON FUSION PATTERN: Check for existing scene object first
             // (Scene objects already exist on all clients, we just link them to the entity ID)
-            NetworkEntity[] sceneEntities = FindObjectsOfType<NetworkEntity>();
+            NetworkEntity[] sceneEntities = FindObjectsByType<NetworkEntity>(FindObjectsSortMode.None);
             foreach (var sceneEntity in sceneEntities)
             {
                 // Found an unregistered scene object with matching type
@@ -403,7 +403,7 @@ namespace SomniumSpace.Worlds.bently.networking
                 return;
             }
             
-            Debug.Log($"[NetworkManager] HandleUpdate: Received {message.Updates.Count} updates");
+            Debug.Log($"[NetworkManager] HandleUpdate: Received {message.Updates.Length} updates");
             
             foreach (var update in message.Updates)
             {
