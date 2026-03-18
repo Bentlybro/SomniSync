@@ -36,7 +36,7 @@ namespace Bentlybro.CustomNetworking
         public float renderSleepThreshold = 0.01f;
         
         private Rigidbody _rigidbody;
-        private NetworkObject _networkObject;
+        private NetworkEntity _networkEntity;
         private bool _hasAuthority = false;
         
         // Interpolation state for non-authority clients
@@ -48,11 +48,11 @@ namespace Bentlybro.CustomNetworking
         private void Awake()
         {
             _rigidbody = GetComponent<Rigidbody>();
-            _networkObject = GetComponent<NetworkObject>();
+            _networkEntity = GetComponent<NetworkEntity>();
             
-            if (_networkObject == null)
+            if (_networkEntity == null)
             {
-                Debug.LogError($"[NetworkRigidbody3D] NetworkObject component required on {gameObject.name}");
+                Debug.LogError($"[NetworkRigidbody3D] NetworkEntity component required on {gameObject.name}");
                 enabled = false;
                 return;
             }
