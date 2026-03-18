@@ -34,8 +34,8 @@ namespace Bentlybro.CustomNetworking
         [Header("Debug")]
         public bool showDebugLogs = true;
         
-        [Tooltip("Optional UI Text to show connection status")]
-        public UnityEngine.UI.Text connectionStatusText;
+        [Tooltip("Optional TextMeshPro to show connection status")]
+        public TMPro.TextMeshPro connectionStatusText;
         
         private ClientWebSocket _webSocket;
         private CancellationTokenSource _cancellationTokenSource;
