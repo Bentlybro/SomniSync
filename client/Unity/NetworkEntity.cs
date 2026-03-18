@@ -102,8 +102,7 @@ namespace SomniumSpace.Worlds.bently.networking
             
             IsSpawned = true;
             
-            if (showDebugLogs)
-                Debug.Log($"[NetworkEntity] Registered: {entityId}");
+            Debug.Log($"[NetworkEntity] Registered: {entityId}, isOwned={isOwned}, gameObject={gameObject.name}");
         }
         
         public void Unregister()

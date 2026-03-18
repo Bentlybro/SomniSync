@@ -111,6 +111,8 @@ public class NetworkBroadcaster
         if (movedEntities.Count == 0)
             return;
         
+        Console.WriteLine($"[NetworkBroadcaster] Broadcasting {movedEntities.Count} entity updates");
+        
         var updates = movedEntities.Select(e => new EntityUpdate
         {
             Id = e.Id,

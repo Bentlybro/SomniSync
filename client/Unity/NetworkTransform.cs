@@ -70,8 +70,12 @@ namespace SomniumSpace.Worlds.bently.networking
                     float positionDelta = Vector3.Distance(transform.position, _lastSentPosition);
                     float rotationDelta = Quaternion.Angle(transform.rotation, _lastSentRotation);
                     
+                    Debug.Log($"[NetworkTransform] FixedUpdate: pos={transform.position}, delta={positionDelta:F4}m, owned={_networkEntity.isOwned}");
+                    
                     if (positionDelta > 0.01f || rotationDelta > 1f) // 1cm or 1 degree threshold
                     {
+                        Debug.Log($"[NetworkTransform] Sending update for {gameObject.name}");
+                        
                         NetworkManager.Instance.SendPhysicsUpdate(
                             _networkEntity,
                             transform.position,
@@ -84,6 +88,14 @@ namespace SomniumSpace.Worlds.bently.networking
                     
                     _nextUpdateTime = Time.time + _updateInterval;
                 }
+            }
+            else
+            {
+                // Debug why we're not sending
+                if (_networkEntity == null)
+                    Debug.LogWarning($"[NetworkTransform] No NetworkEntity on {gameObject.name}");
+                else if (!_networkEntity.isOwned)
+                    Debug.Log($"[NetworkTransform] Not owned: {gameObject.name}");
             }
         }
         
