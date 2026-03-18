@@ -209,14 +209,14 @@ public class GameServer
         Console.WriteLine($"[Server] Client disconnected");
     }
     
-    private async Task HandleClientMessageAsync(string json)
+    private Task HandleClientMessageAsync(string json)
     {
         try
         {
             var message = JsonSerializer.Deserialize<NetworkMessage>(json);
             
             if (message == null)
-                return;
+                return Task.CompletedTask;
             
             switch (message.Type)
             {
@@ -251,5 +251,7 @@ public class GameServer
         {
             Console.WriteLine($"[Server] Error handling client message: {ex.Message}");
         }
+        
+        return Task.CompletedTask;
     }
 }

@@ -3,7 +3,6 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Net.WebSockets;
 using System.Text;
-using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using UnityEngine;
@@ -193,7 +192,7 @@ namespace SomniumNetwork.Client
         {
             try
             {
-                var message = JsonSerializer.Deserialize<NetworkMessage>(json);
+                var message = JsonUtility.FromJson<NetworkMessage>(json);
                 
                 if (message == null)
                     return;
@@ -364,7 +363,7 @@ namespace SomniumNetwork.Client
             
             try
             {
-                string json = JsonSerializer.Serialize(message);
+                string json = JsonUtility.ToJson(message);
                 byte[] bytes = Encoding.UTF8.GetBytes(json);
                 
                 Task sendTask = _webSocket.SendAsync(
@@ -402,27 +401,27 @@ namespace SomniumNetwork.Client
     [Serializable]
     public class NetworkMessage
     {
-        public string Type { get; set; }
-        public string EntityId { get; set; }
-        public string EntityType { get; set; }
-        public Vector3Data Position { get; set; }
-        public Vector3Data Rotation { get; set; }
-        public List<EntityUpdate> Updates { get; set; }
+        public string Type;
+        public string EntityId;
+        public string EntityType;
+        public Vector3Data Position;
+        public Vector3Data Rotation;
+        public EntityUpdate[] Updates;
     }
     
     [Serializable]
     public class Vector3Data
     {
-        public float X { get; set; }
-        public float Y { get; set; }
-        public float Z { get; set; }
+        public float X;
+        public float Y;
+        public float Z;
     }
     
     [Serializable]
     public class EntityUpdate
     {
-        public string Id { get; set; }
-        public Vector3Data Position { get; set; }
-        public Vector3Data Rotation { get; set; }
+        public string Id;
+        public Vector3Data Position;
+        public Vector3Data Rotation;
     }
 }
