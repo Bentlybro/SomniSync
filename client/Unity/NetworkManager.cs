@@ -249,7 +249,7 @@ namespace SomniumSpace.Worlds.bently.networking
                     _hasLoggedUpdateJson = true;
                 }
                 
-                // Use JsonHelper instead of JsonUtility to handle nullable types correctly
+                // Use JsonHelper (Newtonsoft) for deserialization
                 var message = JsonHelper.DeserializeNetworkMessage(json);
                 
                 if (message == null)
@@ -574,7 +574,7 @@ namespace SomniumSpace.Worlds.bently.networking
             if (_webSocket == null || _webSocket.State != WebSocketState.Open)
                 yield break;
             
-            string json = JsonUtility.ToJson(message);
+            string json = Newtonsoft.Json.JsonConvert.SerializeObject(message);
             byte[] bytes = Encoding.UTF8.GetBytes(json);
             
             Task sendTask = null;
@@ -624,7 +624,7 @@ namespace SomniumSpace.Worlds.bently.networking
         public GameObject prefab;
     }
     
-    // Message classes (must match server protocol) - at namespace level for JsonUtility compatibility
+    // Message classes (must match server protocol)
     [Serializable]
     public class NetworkMessage
     {
