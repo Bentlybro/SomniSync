@@ -310,8 +310,7 @@ namespace SomniumSpace.Worlds.bently.networking
             
             GameObject obj = null;
             
-            // PHOTON FUSION PATTERN: Check for existing scene object first
-            // (Scene objects already exist on all clients, we just link them to the entity ID)
+            // Check for existing scene object first (scene objects already exist on all clients)
             NetworkEntity[] sceneEntities = FindObjectsByType<NetworkEntity>(FindObjectsSortMode.None);
             foreach (var sceneEntity in sceneEntities)
             {
