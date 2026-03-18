@@ -1,5 +1,6 @@
 using System;
 using System.Collections;
+using System.Linq;
 using System.Collections.Generic;
 using System.Net.WebSockets;
 using System.Text;
@@ -77,6 +78,10 @@ namespace SomniumSpace.Worlds.bently.networking
         private float _nextBatchTime = 0f;
         private float _batchInterval = 1f / 60f; // Match server tick rate
         
+        // Spawn batching — collect all spawns and send as one message
+        private List<NetworkMessage> _pendingBatchSpawns = new List<NetworkMessage>();
+        private float _nextSpawnFlushTime = 0f;
+        
         private void Awake()
         {
             if (Instance != null && Instance != this)
@@ -111,6 +116,29 @@ namespace SomniumSpace.Worlds.bently.networking
                 FlushBatchedUpdates();
                 _nextBatchTime = Time.time + _batchInterval;
             }
+            
+            // Flush batched spawns (wait one frame to collect all scene objects)
+            if (_isConnected && _pendingBatchSpawns.Count > 0 && Time.time >= _nextSpawnFlushTime)
+            {
+                FlushBatchedSpawns();
+            }
+        }
+        
+        private void FlushBatchedSpawns()
+        {
+            if (_pendingBatchSpawns.Count == 0)
+                return;
+            
+            int count = _pendingBatchSpawns.Count;
+            
+            // Send all queued spawns
+            foreach (var spawn in _pendingBatchSpawns)
+            {
+                StartCoroutine(SendMessageAsync(spawn));
+            }
+            
+            Debug.Log($"[NetworkManager] Registered {count} entities with server");
+            _pendingBatchSpawns.Clear();
         }
         
         private void FlushBatchedUpdates()
@@ -654,13 +682,12 @@ namespace SomniumSpace.Worlds.bently.networking
                 if (!_pendingNetworkObjects.Contains(obj))
                 {
                     _pendingNetworkObjects.Add(obj);
-                    if (showDebugLogs)
-                        if (showDebugLogs) Debug.Log($"[NetworkManager] Queued {obj.gameObject.name} for spawn");
                 }
                 return;
             }
             
-            var message = new NetworkMessage
+            // Queue for batched sending
+            _pendingBatchSpawns.Add(new NetworkMessage
             {
                 Type = "client_spawn",
                 EntityId = obj.entityId,
@@ -677,9 +704,10 @@ namespace SomniumSpace.Worlds.bently.networking
                     Y = obj.transform.eulerAngles.y,
                     Z = obj.transform.eulerAngles.z
                 }
-            };
+            });
             
-            StartCoroutine(SendMessageAsync(message));
+            // Delay flush to collect all spawns from this frame
+            _nextSpawnFlushTime = Time.time + 0.1f;
         }
         
         public void SendPhysicsUpdate(NetworkObject obj, Vector3 position, Vector3 rotation)

@@ -17,15 +17,21 @@ public class Entity
     
     public bool HasMoved(float threshold = 0.01f)
     {
-        float positionDelta = MathF.Sqrt(
-            MathF.Pow(Position.X - LastSentPosition.X, 2) +
-            MathF.Pow(Position.Y - LastSentPosition.Y, 2) +
-            MathF.Pow(Position.Z - LastSentPosition.Z, 2)
-        );
+        // Squared distance (avoids sqrt — much faster for 1000+ entities)
+        float dx = Position.X - LastSentPosition.X;
+        float dy = Position.Y - LastSentPosition.Y;
+        float dz = Position.Z - LastSentPosition.Z;
+        float posSqr = dx * dx + dy * dy + dz * dz;
         
-        float rotationDelta = MathF.Abs(Rotation.Y - LastSentRotation.Y);
+        if (posSqr > threshold * threshold)
+            return true;
         
-        return positionDelta > threshold || rotationDelta > 1f; // 1 degree threshold
+        // Check all rotation axes
+        float rx = MathF.Abs(Rotation.X - LastSentRotation.X);
+        float ry = MathF.Abs(Rotation.Y - LastSentRotation.Y);
+        float rz = MathF.Abs(Rotation.Z - LastSentRotation.Z);
+        
+        return rx > 1f || ry > 1f || rz > 1f;
     }
     
     public void MarkAsSent()
