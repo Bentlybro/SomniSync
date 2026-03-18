@@ -175,30 +175,74 @@ namespace SomniumSpace.Worlds.bently.networking
             
             int count = _pendingBatchSpawns.Count;
             
-            // Pack ALL spawns into one binary message instead of 500 individual JSON sends
-            // Format: [0x03][ushort count][per spawn: entityId len + entityId + entityType len + entityType + 24 bytes pos/rot]
-            // Use a simpler approach: one JSON message with all spawns
-            var batchMsg = new NetworkMessage
-            {
-                Type = "client_batch_spawn",
-                Spawns = new EntitySpawnData[_pendingBatchSpawns.Count]
-            };
+            // Binary format 0x03: batch spawn
+            // [0x03][ushort count][type table: byte type_count, per type: byte name_len + name bytes]
+            // [per entity: 16B GUID + 1B type_index + 12B pos + 12B rot = 41 bytes]
             
-            for (int i = 0; i < _pendingBatchSpawns.Count; i++)
+            // Build type table
+            var typeToIndex = new System.Collections.Generic.Dictionary<string, byte>();
+            var typeNames = new System.Collections.Generic.List<string>();
+            foreach (var spawn in _pendingBatchSpawns)
             {
-                var spawn = _pendingBatchSpawns[i];
-                batchMsg.Spawns[i] = new EntitySpawnData
+                string t = spawn.EntityType ?? "entity";
+                if (!typeToIndex.ContainsKey(t))
                 {
-                    EntityId = spawn.EntityId,
-                    EntityType = spawn.EntityType,
-                    Position = spawn.Position,
-                    Rotation = spawn.Rotation,
-                    OwnerId = spawn.OwnerId
-                };
+                    typeToIndex[t] = (byte)typeNames.Count;
+                    typeNames.Add(t);
+                }
             }
             
-            StartCoroutine(SendMessageAsync(batchMsg));
-            Debug.Log($"[NetworkManager] Registered {count} entities with server (single batch message)");
+            // Calculate size
+            int typeTableSize = 1; // type_count byte
+            foreach (var name in typeNames)
+                typeTableSize += 1 + System.Text.Encoding.UTF8.GetByteCount(name);
+            
+            int headerSize = 1 + 2; // msg type + count
+            int perEntity = 16 + 1 + 12 + 12; // GUID + type_index + pos + rot = 41
+            int totalSize = headerSize + typeTableSize + (count * perEntity);
+            
+            byte[] buffer = new byte[totalSize];
+            int offset = 0;
+            
+            // Header
+            buffer[offset++] = 0x03; // batch spawn
+            buffer[offset++] = (byte)(count & 0xFF);
+            buffer[offset++] = (byte)((count >> 8) & 0xFF);
+            
+            // Type table
+            buffer[offset++] = (byte)typeNames.Count;
+            foreach (var name in typeNames)
+            {
+                byte[] nameBytes = System.Text.Encoding.UTF8.GetBytes(name);
+                buffer[offset++] = (byte)nameBytes.Length;
+                System.Buffer.BlockCopy(nameBytes, 0, buffer, offset, nameBytes.Length);
+                offset += nameBytes.Length;
+            }
+            
+            // Entities
+            foreach (var spawn in _pendingBatchSpawns)
+            {
+                // GUID (16 bytes)
+                byte[] guidBytes = new System.Guid(spawn.EntityId).ToByteArray();
+                System.Buffer.BlockCopy(guidBytes, 0, buffer, offset, 16);
+                offset += 16;
+                
+                // Type index (1 byte)
+                buffer[offset++] = typeToIndex[spawn.EntityType ?? "entity"];
+                
+                // Position (12 bytes)
+                WriteFloat(buffer, offset, spawn.Position.X); offset += 4;
+                WriteFloat(buffer, offset, spawn.Position.Y); offset += 4;
+                WriteFloat(buffer, offset, spawn.Position.Z); offset += 4;
+                
+                // Rotation (12 bytes)
+                WriteFloat(buffer, offset, spawn.Rotation.X); offset += 4;
+                WriteFloat(buffer, offset, spawn.Rotation.Y); offset += 4;
+                WriteFloat(buffer, offset, spawn.Rotation.Z); offset += 4;
+            }
+            
+            StartCoroutine(SendBinaryAsync(buffer, offset));
+            Debug.Log($"[NetworkManager] Registered {count} entities with server (binary batch spawn, {offset} bytes)");
             _pendingBatchSpawns.Clear();
         }
         

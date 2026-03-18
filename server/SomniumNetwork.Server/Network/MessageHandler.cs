@@ -184,7 +184,11 @@ public class MessageHandler
         
         byte msgType = data[0];
         
-        if (msgType == 0x01) // Binary position update
+        if (msgType == 0x03) // Binary batch spawn
+        {
+            HandleBinaryBatchSpawn(data, length, clientId);
+        }
+        else if (msgType == 0x01) // Binary position update
         {
             ushort count = BitConverter.ToUInt16(data, 1);
             int offset = 3;
@@ -214,6 +218,64 @@ public class MessageHandler
                 _entityManager.UpdateEntity(entityId, clientId, pos, rot);
             }
         }
+    }
+    
+    private async void HandleBinaryBatchSpawn(byte[] data, int length, string clientId)
+    {
+        if (length < 4) return;
+        
+        ushort count = BitConverter.ToUInt16(data, 1);
+        byte typeCount = data[3];
+        int offset = 4;
+        
+        // Read type table
+        string[] typeNames = new string[typeCount];
+        for (int t = 0; t < typeCount; t++)
+        {
+            if (offset >= length) return;
+            byte nameLen = data[offset++];
+            typeNames[t] = System.Text.Encoding.UTF8.GetString(data, offset, nameLen);
+            offset += nameLen;
+        }
+        
+        Console.WriteLine($"[MessageHandler] Client {clientId} binary batch spawning {count} entities ({typeCount} types)");
+        
+        for (int i = 0; i < count; i++)
+        {
+            if (offset + 41 > length) break;
+            
+            // GUID (16 bytes)
+            var guid = new Guid(new ReadOnlySpan<byte>(data, offset, 16));
+            string entityId = guid.ToString();
+            offset += 16;
+            
+            // Type index (1 byte)
+            byte typeIndex = data[offset++];
+            string entityType = typeIndex < typeNames.Length ? typeNames[typeIndex] : "entity";
+            
+            // Position (12 bytes)
+            float px = BitConverter.ToSingle(data, offset); offset += 4;
+            float py = BitConverter.ToSingle(data, offset); offset += 4;
+            float pz = BitConverter.ToSingle(data, offset); offset += 4;
+            
+            // Rotation (12 bytes)
+            float rx = BitConverter.ToSingle(data, offset); offset += 4;
+            float ry = BitConverter.ToSingle(data, offset); offset += 4;
+            float rz = BitConverter.ToSingle(data, offset); offset += 4;
+            
+            _entityManager.SpawnEntity(
+                entityId,
+                entityType,
+                new Vector3 { X = px, Y = py, Z = pz },
+                new Vector3 { X = rx, Y = ry, Z = rz },
+                clientId
+            );
+        }
+        
+        Console.WriteLine($"[MessageHandler] Binary batch spawn complete: {_entityManager.EntityCount} total entities");
+        
+        // Auto-sync spectators
+        await SyncWaitingClientsAsync(clientId);
     }
     
     private void HandleBatchUpdate(NetworkMessage message, string clientId)
