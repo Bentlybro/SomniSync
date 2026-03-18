@@ -68,6 +68,15 @@ namespace Bentlybro.CustomNetworking
             }
         }
         
+        private void Update()
+        {
+            // Update status display every frame
+            if (connectionStatusText != null && _isConnected)
+            {
+                UpdateConnectionStatus("CONNECTED", UnityEngine.Color.green);
+            }
+        }
+        
         public void Connect()
         {
             if (!_isConnected)
@@ -392,9 +401,12 @@ namespace Bentlybro.CustomNetworking
             if (!_isConnected)
             {
                 if (showDebugLogs)
-                    Debug.LogWarning("[NetworkManager] Cannot spawn - not connected");
+                    Debug.LogWarning($"[NetworkManager] Cannot spawn {entity.gameObject.name} - not connected");
                 return;
             }
+            
+            if (showDebugLogs)
+                Debug.Log($"[NetworkManager] Sending spawn for {entity.gameObject.name} (ID: {entity.entityId})");
             
             var message = new NetworkMessage
             {

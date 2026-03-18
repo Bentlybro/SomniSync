@@ -30,8 +30,20 @@ namespace Bentlybro.CustomNetworking
         {
             if (spawnOnStart)
             {
-                Register();
+                // Delay registration slightly to ensure NetworkManager is ready
+                StartCoroutine(DelayedRegister());
             }
+        }
+        
+        private System.Collections.IEnumerator DelayedRegister()
+        {
+            // Wait one frame to ensure NetworkManager.Start() has run
+            yield return null;
+            
+            if (showDebugLogs)
+                Debug.Log($"[NetworkEntity] Attempting to register {gameObject.name}");
+            
+            Register();
         }
         
         public void Register()
