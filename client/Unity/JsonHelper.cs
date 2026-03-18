@@ -32,6 +32,9 @@ namespace SomniumSpace.Worlds.bently.networking
                 // Second pass: Manually extract problematic fields that JsonUtility fails on
                 message.IsMasterClient = ExtractBool(json, "IsMasterClient");
                 
+                // Extract Updates array (JsonUtility can't handle arrays as class properties)
+                message.Updates = ExtractUpdates(json);
+                
                 return message;
             }
             catch (Exception ex)
@@ -39,6 +42,63 @@ namespace SomniumSpace.Worlds.bently.networking
                 Debug.LogError($"[JsonHelper] Deserialization error: {ex.Message}");
                 return null;
             }
+        }
+        
+        /// <summary>
+        /// Extract EntityUpdate[] array from JSON.
+        /// Unity's JsonUtility cannot deserialize arrays/lists as class properties.
+        /// </summary>
+        private static EntityUpdate[] ExtractUpdates(string json)
+        {
+            try
+            {
+                // Find the Updates array in JSON
+                string searchPattern = "\"Updates\":[";
+                int startIndex = json.IndexOf(searchPattern);
+                
+                if (startIndex == -1)
+                    return null; // Field not found or null
+                
+                // Check if it's null
+                if (json.Substring(startIndex + searchPattern.Length - 1, 4) == "null")
+                    return null;
+                
+                startIndex += searchPattern.Length;
+                
+                // Find matching closing bracket
+                int depth = 1;
+                int endIndex = startIndex;
+                while (endIndex < json.Length && depth > 0)
+                {
+                    if (json[endIndex] == '[')
+                        depth++;
+                    else if (json[endIndex] == ']')
+                        depth--;
+                    endIndex++;
+                }
+                
+                // Extract array JSON
+                string arrayJson = json.Substring(startIndex, endIndex - startIndex - 1);
+                
+                // Parse array manually (Unity can't do this directly)
+                // Wrap in an object so JsonUtility can handle it
+                string wrappedJson = "{\"items\":" + arrayJson + "}";
+                var wrapper = JsonUtility.FromJson<EntityUpdateArrayWrapper>(wrappedJson);
+                
+                return wrapper?.items;
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[JsonHelper] Failed to extract Updates array: {ex.Message}");
+                return null;
+            }
+        }
+        
+        // Helper wrapper class for array deserialization
+        [System.Serializable]
+        private class EntityUpdateArrayWrapper
+        {
+            public EntityUpdate[] items;
         }
         
         /// <summary>
