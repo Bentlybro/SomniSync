@@ -135,7 +135,8 @@ namespace Bentlybro.CustomNetworking
         {
             if (connectionStatusText != null)
             {
-                connectionStatusText.text = $"Server: {status}\nEntities: {_spawnedEntities.Count}";
+                int totalEntities = _entities.Count + _spawnedEntities.Count;
+                connectionStatusText.text = $"Server: {status}\nLocal: {_entities.Count} | Remote: {_spawnedEntities.Count} | Total: {totalEntities}";
                 connectionStatusText.color = color;
             }
         }
