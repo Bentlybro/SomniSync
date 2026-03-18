@@ -586,32 +586,43 @@ namespace SomniumSpace.Worlds.bently.networking
             
             Debug.Log($"[NetworkManager] Batch sync: receiving {message.Spawns.Length} entities");
             
-            int spawned = 0;
+            int linked = 0;
+            int skipped = 0;
+            
             foreach (var spawn in message.Spawns)
             {
-                // Skip owned entities
-                if (!string.IsNullOrEmpty(spawn.OwnerId) && spawn.OwnerId == _clientId)
-                    continue;
-                
-                // Skip existing
-                if (_spawnedEntities.ContainsKey(spawn.EntityId))
-                    continue;
-                
-                // Convert to a spawn message and reuse existing logic
-                var spawnMsg = new NetworkMessage
+                // Skip owned or already-linked entities
+                if ((!string.IsNullOrEmpty(spawn.OwnerId) && spawn.OwnerId == _clientId) ||
+                    _spawnedEntities.ContainsKey(spawn.EntityId))
                 {
-                    Type = "spawn",
-                    EntityId = spawn.EntityId,
-                    EntityType = spawn.EntityType,
-                    OwnerId = spawn.OwnerId,
-                    Position = spawn.Position,
-                    Rotation = spawn.Rotation
-                };
-                HandleSpawn(spawnMsg);
-                spawned++;
+                    skipped++;
+                    continue;
+                }
+                
+                // Fast path: directly link unlinked scene object without creating intermediate NetworkMessage
+                NetworkObject unlinked = TakeUnlinkedObject(spawn.EntityType);
+                if (unlinked != null)
+                {
+                    unlinked.entityId = spawn.EntityId;
+                    _networkObjects[spawn.EntityId] = unlinked;
+                    
+                    Vector3 pos = spawn.Position != null 
+                        ? new Vector3(spawn.Position.X, spawn.Position.Y, spawn.Position.Z) 
+                        : unlinked.transform.position;
+                    Vector3 rot = spawn.Rotation != null 
+                        ? new Vector3(spawn.Rotation.X, spawn.Rotation.Y, spawn.Rotation.Z) 
+                        : unlinked.transform.eulerAngles;
+                    
+                    unlinked.transform.position = pos;
+                    unlinked.transform.rotation = Quaternion.Euler(rot);
+                    unlinked.ApplyServerUpdate(pos, rot);
+                    
+                    _spawnedEntities[spawn.EntityId] = unlinked.gameObject;
+                    linked++;
+                }
             }
             
-            Debug.Log($"[NetworkManager] Batch sync complete: spawned {spawned} entities");
+            Debug.Log($"[NetworkManager] Batch sync complete: linked {linked}, skipped {skipped}. Total NetworkObjects: {_spawnedEntities.Count}");
         }
         
         private void HandleSpawn(NetworkMessage message)
