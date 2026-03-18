@@ -425,8 +425,7 @@ namespace SomniumSpace.Worlds.bently.networking
             // Don't spawn if we own this entity (it's already in our scene)
             if (!string.IsNullOrEmpty(message.OwnerId) && message.OwnerId == _clientId)
             {
-                if (showDebugLogs)
-                    // Silently ignore — this is normal (server broadcasts spawns to all clients including owner)
+                // Ignore — server broadcasts spawns to all clients including owner
                 return;
             }
             
