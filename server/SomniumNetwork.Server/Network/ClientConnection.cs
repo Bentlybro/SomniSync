@@ -92,6 +92,7 @@ public class ClientConnection
     private async Task ReceiveMessagesAsync(WebSocket socket, string clientId)
     {
         var buffer = new byte[65536]; // 64KB buffer
+        var messageBuilder = new StringBuilder();
         
         try
         {
@@ -107,10 +108,17 @@ public class ClientConnection
                     break;
                 }
                 
-                if (result.MessageType == WebSocketMessageType.Text)
+                if (result.MessageType == WebSocketMessageType.Text || result.MessageType == WebSocketMessageType.Binary)
                 {
-                    string json = Encoding.UTF8.GetString(buffer, 0, result.Count);
-                    await _messageHandler.HandleMessageAsync(json, clientId);
+                    messageBuilder.Append(Encoding.UTF8.GetString(buffer, 0, result.Count));
+                    
+                    // Only process when we have the complete message
+                    if (result.EndOfMessage)
+                    {
+                        string json = messageBuilder.ToString();
+                        messageBuilder.Clear();
+                        await _messageHandler.HandleMessageAsync(json, clientId);
+                    }
                 }
             }
         }
