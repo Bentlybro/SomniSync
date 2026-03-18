@@ -34,6 +34,9 @@ namespace Bentlybro.CustomNetworking
         [Header("Debug")]
         public bool showDebugLogs = true;
         
+        [Tooltip("Optional UI Text to show connection status")]
+        public UnityEngine.UI.Text connectionStatusText;
+        
         private ClientWebSocket _webSocket;
         private CancellationTokenSource _cancellationTokenSource;
         private bool _isConnected = false;
@@ -114,6 +117,8 @@ namespace Bentlybro.CustomNetworking
                 if (showDebugLogs)
                     Debug.Log("[NetworkManager] Connected!");
                 
+                UpdateConnectionStatus("CONNECTED", UnityEngine.Color.green);
+                
                 // Start receiving messages
                 StartCoroutine(ReceiveMessagesAsync());
             }
@@ -121,6 +126,17 @@ namespace Bentlybro.CustomNetworking
             {
                 if (showDebugLogs)
                     Debug.LogError($"[NetworkManager] Connection failed: {connectTask.Exception?.Message}");
+                
+                UpdateConnectionStatus("DISCONNECTED", UnityEngine.Color.red);
+            }
+        }
+        
+        private void UpdateConnectionStatus(string status, UnityEngine.Color color)
+        {
+            if (connectionStatusText != null)
+            {
+                connectionStatusText.text = $"Server: {status}\nEntities: {_spawnedEntities.Count}";
+                connectionStatusText.color = color;
             }
         }
         
@@ -278,6 +294,9 @@ namespace Bentlybro.CustomNetworking
             entity.entityType = message.EntityType ?? "entity";
             
             _spawnedEntities[message.EntityId] = obj;
+            
+            // Update UI
+            UpdateConnectionStatus("CONNECTED", UnityEngine.Color.green);
             
             // Apply initial transform
             var netTransform = obj.GetComponent<NetworkTransform>();
