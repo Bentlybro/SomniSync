@@ -69,6 +69,11 @@ namespace Bentlybro.CustomNetworking
                 // Non-authority: kinematic, we'll move it manually
                 _rigidbody.isKinematic = true;
             }
+            else
+            {
+                // Authority: full physics enabled, we predict locally
+                _rigidbody.isKinematic = false;
+            }
         }
         
         private void FixedUpdate()

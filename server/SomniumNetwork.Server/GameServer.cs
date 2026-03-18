@@ -59,7 +59,7 @@ public class GameServer
     
     public async Task RunGameLoopAsync(CancellationToken cancellationToken = default)
     {
-        var tickRate = 20; // 20 Hz
+        var tickRate = 60; // 60 Hz for smooth updates
         var deltaTime = 1f / tickRate;
         
         while (!cancellationToken.IsCancellationRequested)
@@ -95,24 +95,34 @@ public class GameServer
         
         lock (_entityLock)
         {
+            // Only send entities that actually moved (delta compression)
             foreach (var entity in _entities.Values)
             {
-                updates.Add(new EntityUpdate
+                if (entity.HasMoved())
                 {
-                    Id = entity.Id,
-                    Position = entity.Position,
-                    Rotation = entity.Rotation
-                });
+                    updates.Add(new EntityUpdate
+                    {
+                        Id = entity.Id,
+                        Position = entity.Position,
+                        Rotation = entity.Rotation
+                    });
+                    
+                    entity.MarkAsSent();
+                }
             }
         }
         
-        var msg = new NetworkMessage
+        // Only send message if we have updates
+        if (updates.Count > 0)
         {
-            Type = "update",
-            Updates = updates
-        };
-        
-        await BroadcastMessageAsync(msg);
+            var msg = new NetworkMessage
+            {
+                Type = "update",
+                Updates = updates
+            };
+            
+            await BroadcastMessageAsync(msg);
+        }
     }
     
     private async Task BroadcastMessageAsync(NetworkMessage message)
