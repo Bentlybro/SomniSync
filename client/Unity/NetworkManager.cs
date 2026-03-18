@@ -66,6 +66,10 @@ namespace SomniumSpace.Worlds.bently.networking
         private Dictionary<string, GameObject> _spawnedEntities = new Dictionary<string, GameObject>();
         private List<NetworkEntity> _pendingSpawns = new List<NetworkEntity>();
         
+        // NetworkObject tracking (new unified system)
+        private Dictionary<string, NetworkObject> _networkObjects = new Dictionary<string, NetworkObject>();
+        private List<NetworkObject> _pendingNetworkObjects = new List<NetworkObject>();
+        
         private void Awake()
         {
             if (Instance != null && Instance != this)
@@ -385,17 +389,35 @@ namespace SomniumSpace.Worlds.bently.networking
             
             GameObject obj = null;
             
-            // Check for existing scene object first (scene objects already exist on all clients)
-            NetworkEntity[] sceneEntities = FindObjectsByType<NetworkEntity>(FindObjectsSortMode.None);
-            foreach (var sceneEntity in sceneEntities)
+            // Check for existing scene object first — try NetworkObject (new), then NetworkEntity (legacy)
+            NetworkObject[] sceneNetworkObjects = FindObjectsByType<NetworkObject>(FindObjectsSortMode.None);
+            foreach (var sceneObj in sceneNetworkObjects)
             {
-                // Found an unregistered scene object with matching type
-                if (string.IsNullOrEmpty(sceneEntity.entityId) && 
-                    sceneEntity.entityType == message.EntityType)
+                if (string.IsNullOrEmpty(sceneObj.entityId) && 
+                    sceneObj.entityType == message.EntityType)
                 {
-                    obj = sceneEntity.gameObject;
-                    Debug.Log($"[NetworkManager] Linking existing scene object {obj.name} to entity {message.EntityId}");
+                    obj = sceneObj.gameObject;
+                    // Link it up
+                    sceneObj.entityId = message.EntityId;
+                    sceneObj.ReleaseOwnership();
+                    _networkObjects[message.EntityId] = sceneObj;
+                    Debug.Log($"[NetworkManager] Linking scene NetworkObject {obj.name} to entity {message.EntityId}");
                     break;
+                }
+            }
+            
+            if (obj == null)
+            {
+                NetworkEntity[] sceneEntities = FindObjectsByType<NetworkEntity>(FindObjectsSortMode.None);
+                foreach (var sceneEntity in sceneEntities)
+                {
+                    if (string.IsNullOrEmpty(sceneEntity.entityId) && 
+                        sceneEntity.entityType == message.EntityType)
+                    {
+                        obj = sceneEntity.gameObject;
+                        Debug.Log($"[NetworkManager] Linking scene NetworkEntity {obj.name} to entity {message.EntityId}");
+                        break;
+                    }
                 }
             }
             
@@ -495,7 +517,7 @@ namespace SomniumSpace.Worlds.bently.networking
                     }
                 }
                 
-                // Also update local entities
+                // Also update local entities (legacy)
                 foreach (var kvp in _entities)
                 {
                     kvp.Value.isOwned = true;
@@ -505,6 +527,12 @@ namespace SomniumSpace.Worlds.bently.networking
                     {
                         rb.isKinematic = false;
                     }
+                }
+                
+                // Update NetworkObjects (new system)
+                foreach (var kvp in _networkObjects)
+                {
+                    kvp.Value.TakeOwnership();
                 }
                 
                 Debug.Log($"[NetworkManager] Host migration complete — we are now master");
@@ -521,19 +549,27 @@ namespace SomniumSpace.Worlds.bently.networking
             
             foreach (var update in message.Updates)
             {
+                Vector3? position = update.Position != null
+                    ? new Vector3(update.Position.X, update.Position.Y, update.Position.Z)
+                    : (Vector3?)null;
+                
+                Vector3? rotation = update.Rotation != null
+                    ? new Vector3(update.Rotation.X, update.Rotation.Y, update.Rotation.Z)
+                    : (Vector3?)null;
+                
+                // Try NetworkObject first (new system)
+                if (_networkObjects.TryGetValue(update.Id, out NetworkObject netObj))
+                {
+                    netObj.ApplyServerUpdate(position, rotation);
+                    continue;
+                }
+                
+                // Fallback to legacy NetworkTransform
                 if (_spawnedEntities.TryGetValue(update.Id, out GameObject obj))
                 {
                     var netTransform = obj.GetComponent<NetworkTransform>();
                     if (netTransform != null)
                     {
-                        Vector3? position = update.Position != null
-                            ? new Vector3(update.Position.X, update.Position.Y, update.Position.Z)
-                            : (Vector3?)null;
-                        
-                        Vector3? rotation = update.Rotation != null
-                            ? new Vector3(update.Rotation.X, update.Rotation.Y, update.Rotation.Z)
-                            : (Vector3?)null;
-                        
                         netTransform.ApplyServerUpdate(position, rotation);
                     }
                 }
@@ -561,6 +597,77 @@ namespace SomniumSpace.Worlds.bently.networking
             {
                 _entities.Remove(entity.entityId);
             }
+        }
+        
+        // ===== NetworkObject API (new unified system) =====
+        
+        public void RegisterNetworkObject(NetworkObject obj)
+        {
+            if (string.IsNullOrEmpty(obj.entityId))
+                return;
+            
+            _networkObjects[obj.entityId] = obj;
+            _spawnedEntities[obj.entityId] = obj.gameObject;
+        }
+        
+        public void UnregisterNetworkObject(NetworkObject obj)
+        {
+            if (string.IsNullOrEmpty(obj.entityId))
+                return;
+            
+            _networkObjects.Remove(obj.entityId);
+            _spawnedEntities.Remove(obj.entityId);
+        }
+        
+        public void SpawnNetworkObjectOnServer(NetworkObject obj)
+        {
+            if (!_isConnected)
+            {
+                if (!_pendingNetworkObjects.Contains(obj))
+                {
+                    _pendingNetworkObjects.Add(obj);
+                    if (showDebugLogs)
+                        Debug.Log($"[NetworkManager] Queued {obj.gameObject.name} for spawn");
+                }
+                return;
+            }
+            
+            var message = new NetworkMessage
+            {
+                Type = "client_spawn",
+                EntityId = obj.entityId,
+                EntityType = obj.entityType,
+                Position = new Vector3Data
+                {
+                    X = obj.transform.position.x,
+                    Y = obj.transform.position.y,
+                    Z = obj.transform.position.z
+                },
+                Rotation = new Vector3Data
+                {
+                    X = obj.transform.eulerAngles.x,
+                    Y = obj.transform.eulerAngles.y,
+                    Z = obj.transform.eulerAngles.z
+                }
+            };
+            
+            StartCoroutine(SendMessageAsync(message));
+        }
+        
+        public void SendPhysicsUpdate(NetworkObject obj, Vector3 position, Vector3 rotation)
+        {
+            if (!_isConnected || obj == null || !obj.IsOwned)
+                return;
+            
+            var message = new NetworkMessage
+            {
+                Type = "client_update",
+                EntityId = obj.entityId,
+                Position = new Vector3Data { X = position.x, Y = position.y, Z = position.z },
+                Rotation = new Vector3Data { X = rotation.x, Y = rotation.y, Z = rotation.z }
+            };
+            
+            StartCoroutine(SendMessageAsync(message));
         }
         
         private GameObject GetPrefabForType(string entityType)
@@ -651,18 +758,33 @@ namespace SomniumSpace.Worlds.bently.networking
         
         private void SpawnPendingEntities()
         {
-            if (showDebugLogs && _pendingSpawns.Count > 0)
-                Debug.Log($"[NetworkManager] Spawning {_pendingSpawns.Count} queued entities");
-            
-            foreach (var entity in _pendingSpawns)
+            // Legacy entities
+            if (_pendingSpawns.Count > 0)
             {
-                if (entity != null)
+                if (showDebugLogs)
+                    Debug.Log($"[NetworkManager] Spawning {_pendingSpawns.Count} queued entities");
+                
+                foreach (var entity in _pendingSpawns)
                 {
-                    SpawnEntityOnServer(entity);
+                    if (entity != null)
+                        SpawnEntityOnServer(entity);
                 }
+                _pendingSpawns.Clear();
             }
             
-            _pendingSpawns.Clear();
+            // New NetworkObjects
+            if (_pendingNetworkObjects.Count > 0)
+            {
+                if (showDebugLogs)
+                    Debug.Log($"[NetworkManager] Spawning {_pendingNetworkObjects.Count} queued NetworkObjects");
+                
+                foreach (var obj in _pendingNetworkObjects)
+                {
+                    if (obj != null)
+                        SpawnNetworkObjectOnServer(obj);
+                }
+                _pendingNetworkObjects.Clear();
+            }
         }
         
         private IEnumerator SendMessageAsync(NetworkMessage message)
