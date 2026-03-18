@@ -12,6 +12,7 @@ namespace SomniumNetwork.Server;
 public class NetworkBroadcaster
 {
     private readonly ConcurrentDictionary<string, WebSocket> _clients = new();
+    private readonly ConcurrentDictionary<string, SemaphoreSlim> _sendLocks = new();
     private string? _masterClientId = null;
     private readonly object _masterLock = new();
     
@@ -21,6 +22,7 @@ public class NetworkBroadcaster
     public void AddClient(string clientId, WebSocket socket)
     {
         _clients[clientId] = socket;
+        _sendLocks[clientId] = new SemaphoreSlim(1, 1);
     }
     
     /// <summary>
@@ -30,6 +32,7 @@ public class NetworkBroadcaster
     public string? RemoveClient(string clientId)
     {
         _clients.TryRemove(clientId, out _);
+        _sendLocks.TryRemove(clientId, out _);
         
         lock (_masterLock)
         {
@@ -91,6 +94,7 @@ public class NetworkBroadcaster
     {
         var json = JsonSerializer.Serialize(message);
         var bytes = Encoding.UTF8.GetBytes(json);
+        var segment = new ArraySegment<byte>(bytes);
         
         var tasks = new List<Task>();
         
@@ -98,19 +102,7 @@ public class NetworkBroadcaster
         {
             if (kvp.Value.State == WebSocketState.Open)
             {
-                try
-                {
-                    tasks.Add(kvp.Value.SendAsync(
-                        new ArraySegment<byte>(bytes),
-                        WebSocketMessageType.Text,
-                        true,
-                        CancellationToken.None
-                    ));
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"[NetworkBroadcaster] Send failed to {kvp.Key}: {ex.Message}");
-                }
+                tasks.Add(SendWithLockAsync(kvp.Key, kvp.Value, segment));
             }
         }
         
@@ -121,6 +113,29 @@ public class NetworkBroadcaster
         catch (Exception ex)
         {
             Console.WriteLine($"[NetworkBroadcaster] Broadcast error: {ex.Message}");
+        }
+    }
+    
+    private async Task SendWithLockAsync(string clientId, WebSocket socket, ArraySegment<byte> data)
+    {
+        if (!_sendLocks.TryGetValue(clientId, out var semaphore))
+            return;
+        
+        await semaphore.WaitAsync();
+        try
+        {
+            if (socket.State == WebSocketState.Open)
+            {
+                await socket.SendAsync(data, WebSocketMessageType.Text, true, CancellationToken.None);
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[NetworkBroadcaster] Send failed to {clientId}: {ex.Message}");
+        }
+        finally
+        {
+            semaphore.Release();
         }
     }
     
@@ -151,6 +166,17 @@ public class NetworkBroadcaster
             Console.WriteLine($"[NetworkBroadcaster] Sending JSON: {json}");
         }
         
+        // Find the lock for this socket
+        foreach (var kvp in _clients)
+        {
+            if (kvp.Value == socket)
+            {
+                await SendWithLockAsync(kvp.Key, socket, new ArraySegment<byte>(bytes));
+                return;
+            }
+        }
+        
+        // Fallback: no lock found (e.g. during initial setup), send directly
         try
         {
             await socket.SendAsync(

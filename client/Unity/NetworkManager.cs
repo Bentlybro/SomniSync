@@ -31,6 +31,16 @@ namespace SomniumSpace.Worlds.bently.networking
         [Tooltip("Map entity types to prefabs (e.g., 'zombie' -> ZombiePrefab)")]
         public EntityPrefabMapping[] entityPrefabs;
         
+        [Header("Reconnection")]
+        [Tooltip("Auto-reconnect when disconnected")]
+        public bool autoReconnect = true;
+        
+        [Tooltip("Delay between reconnect attempts (seconds)")]
+        public float reconnectDelay = 3f;
+        
+        [Tooltip("Maximum reconnect attempts (0 = unlimited)")]
+        public int maxReconnectAttempts = 0;
+        
         [Header("Debug")]
         public bool showDebugLogs = true;
         
@@ -44,6 +54,8 @@ namespace SomniumSpace.Worlds.bently.networking
         private string _clientId = null; // Our client ID from server
         private bool _isMasterClient = false; // Are we the master client (first to connect)?
         private bool _hasLoggedUpdateJson = false; // Debug flag to log first update JSON
+        private int _reconnectAttempts = 0;
+        private bool _isReconnecting = false;
         
         public bool IsConnected => _isConnected;
         public string ClientId => _clientId;
@@ -236,6 +248,57 @@ namespace SomniumSpace.Worlds.bently.networking
             }
             
             _isReceiving = false;
+            _isConnected = false;
+            
+            UpdateConnectionStatus("DISCONNECTED", UnityEngine.Color.red);
+            
+            if (showDebugLogs)
+                Debug.Log("[NetworkManager] Connection lost");
+            
+            // Auto-reconnect
+            if (autoReconnect && !_isReconnecting)
+            {
+                StartCoroutine(AutoReconnect());
+            }
+        }
+        
+        private IEnumerator AutoReconnect()
+        {
+            _isReconnecting = true;
+            _reconnectAttempts = 0;
+            
+            while (autoReconnect && !_isConnected)
+            {
+                _reconnectAttempts++;
+                
+                if (maxReconnectAttempts > 0 && _reconnectAttempts > maxReconnectAttempts)
+                {
+                    Debug.LogWarning($"[NetworkManager] Max reconnect attempts ({maxReconnectAttempts}) reached");
+                    break;
+                }
+                
+                Debug.Log($"[NetworkManager] Reconnecting in {reconnectDelay}s (attempt {_reconnectAttempts})...");
+                
+                UpdateConnectionStatus($"RECONNECTING ({_reconnectAttempts})", UnityEngine.Color.yellow);
+                
+                yield return new WaitForSeconds(reconnectDelay);
+                
+                // Clean up old connection
+                _webSocket?.Dispose();
+                _cancellationTokenSource?.Dispose();
+                _hasLoggedUpdateJson = false;
+                
+                // Try to connect
+                yield return StartCoroutine(ConnectAsync());
+            }
+            
+            _isReconnecting = false;
+            
+            if (_isConnected)
+            {
+                _reconnectAttempts = 0;
+                Debug.Log("[NetworkManager] Reconnected successfully!");
+            }
         }
         
         private void ProcessMessage(string json)
