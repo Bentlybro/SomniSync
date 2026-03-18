@@ -361,29 +361,33 @@ namespace Bentlybro.CustomNetworking
             if (_webSocket == null || _webSocket.State != WebSocketState.Open)
                 yield break;
             
+            string json = JsonUtility.ToJson(message);
+            byte[] bytes = Encoding.UTF8.GetBytes(json);
+            
+            Task sendTask = null;
+            
             try
             {
-                string json = JsonUtility.ToJson(message);
-                byte[] bytes = Encoding.UTF8.GetBytes(json);
-                
-                Task sendTask = _webSocket.SendAsync(
+                sendTask = _webSocket.SendAsync(
                     new ArraySegment<byte>(bytes),
                     WebSocketMessageType.Text,
                     true,
                     CancellationToken.None
                 );
-                
-                yield return new WaitUntil(() => sendTask.IsCompleted);
-                
-                if (sendTask.IsFaulted && showDebugLogs)
-                {
-                    Debug.LogError($"[NetworkManager] Send error: {sendTask.Exception?.Message}");
-                }
             }
             catch (Exception ex)
             {
                 if (showDebugLogs)
                     Debug.LogError($"[NetworkManager] Send exception: {ex.Message}");
+                yield break;
+            }
+            
+            // Yield outside of try-catch
+            yield return new WaitUntil(() => sendTask.IsCompleted);
+            
+            if (sendTask.IsFaulted && showDebugLogs)
+            {
+                Debug.LogError($"[NetworkManager] Send error: {sendTask.Exception?.Message}");
             }
         }
         
