@@ -12,6 +12,18 @@ namespace SomniumSpace.Worlds.bently.networking
     /// For game developers: Configure sync settings, use ownership transfer,
     /// and extend with network variables as needed.
     /// </summary>
+    public enum SmoothingMode
+    {
+        [Tooltip("No interpolation — snaps to server position instantly")]
+        None,
+        [Tooltip("Minimal smoothing — fast response, may jitter")]
+        Low,
+        [Tooltip("Balanced smoothing — good for most objects")]
+        Medium,
+        [Tooltip("Heavy smoothing — very fluid but adds perceived latency")]
+        High
+    }
+    
     public class NetworkObject : MonoBehaviour
     {
         [Header("Identity")]
@@ -22,13 +34,12 @@ namespace SomniumSpace.Worlds.bently.networking
         public string entityType = "entity";
         
         [Header("Sync Settings")]
-        [Tooltip("How many times per second to send updates")]
-        [Range(1f, 60f)]
-        public float syncRate = 20f;
+        [Tooltip("How many times per second to send updates (should match server tick rate)")]
+        [Range(1f, 120f)]
+        public float syncRate = 60f;
         
-        [Tooltip("Interpolation speed for remote objects (higher = snappier)")]
-        [Range(1f, 50f)]
-        public float interpolationSpeed = 30f;
+        [Tooltip("How smoothly remote objects move to their target position")]
+        public SmoothingMode smoothing = SmoothingMode.Medium;
         
         [Tooltip("Minimum position change to trigger an update (meters)")]
         public float positionThreshold = 0.01f;
@@ -153,13 +164,30 @@ namespace SomniumSpace.Worlds.bently.networking
             if (!_isOwned && _hasReceivedUpdate)
             {
                 // Remote object — interpolate to target
-                float t = Time.deltaTime * interpolationSpeed;
-                
-                if (syncPosition)
-                    transform.position = Vector3.Lerp(transform.position, _targetPosition, t);
-                
-                if (syncRotation)
-                    transform.rotation = Quaternion.Lerp(transform.rotation, _targetRotation, t);
+                if (smoothing == SmoothingMode.None)
+                {
+                    // Instant snap
+                    if (syncPosition) transform.position = _targetPosition;
+                    if (syncRotation) transform.rotation = _targetRotation;
+                }
+                else
+                {
+                    float speed = smoothing switch
+                    {
+                        SmoothingMode.Low => 35f,
+                        SmoothingMode.Medium => 20f,
+                        SmoothingMode.High => 8f,
+                        _ => 20f
+                    };
+                    
+                    float t = Time.deltaTime * speed;
+                    
+                    if (syncPosition)
+                        transform.position = Vector3.Lerp(transform.position, _targetPosition, t);
+                    
+                    if (syncRotation)
+                        transform.rotation = Quaternion.Lerp(transform.rotation, _targetRotation, t);
+                }
             }
         }
         

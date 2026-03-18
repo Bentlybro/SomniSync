@@ -13,7 +13,7 @@ namespace SomniumSpace.Worlds.bently.networking
         
         // Sync
         SerializedProperty syncRate;
-        SerializedProperty interpolationSpeed;
+        SerializedProperty smoothing;
         SerializedProperty positionThreshold;
         SerializedProperty rotationThreshold;
         SerializedProperty syncPosition;
@@ -35,7 +35,7 @@ namespace SomniumSpace.Worlds.bently.networking
             entityId = serializedObject.FindProperty("entityId");
             entityType = serializedObject.FindProperty("entityType");
             syncRate = serializedObject.FindProperty("syncRate");
-            interpolationSpeed = serializedObject.FindProperty("interpolationSpeed");
+            smoothing = serializedObject.FindProperty("smoothing");
             positionThreshold = serializedObject.FindProperty("positionThreshold");
             rotationThreshold = serializedObject.FindProperty("rotationThreshold");
             syncPosition = serializedObject.FindProperty("syncPosition");
@@ -80,13 +80,20 @@ namespace SomniumSpace.Worlds.bently.networking
             
             EditorGUILayout.Space(8);
             
-            // === WHAT TO SYNC ===
-            EditorGUILayout.LabelField("What to Sync", EditorStyles.boldLabel);
+            // === SYNC ===
+            EditorGUILayout.LabelField("Sync", EditorStyles.boldLabel);
             
             EditorGUILayout.BeginHorizontal();
             EditorGUILayout.PropertyField(syncPosition, new GUIContent("Position"));
             EditorGUILayout.PropertyField(syncRotation, new GUIContent("Rotation"));
             EditorGUILayout.EndHorizontal();
+            
+            EditorGUILayout.PropertyField(smoothing, new GUIContent("Smoothing", 
+                "How smoothly this object moves on remote clients.\n\n" +
+                "None — Instant snap to server position\n" +
+                "Low — Fast response, may jitter slightly\n" +
+                "Medium — Balanced (recommended for most objects)\n" +
+                "High — Very smooth but adds perceived latency"));
             
             EditorGUILayout.Space(8);
             
@@ -99,11 +106,8 @@ namespace SomniumSpace.Worlds.bently.networking
                 
                 EditorGUILayout.PropertyField(syncRate, new GUIContent("Sync Rate (Hz)", 
                     "How many updates per second to send.\n" +
-                    "20 is good for most objects. Use 60 for fast-moving objects."));
-                
-                EditorGUILayout.PropertyField(interpolationSpeed, new GUIContent("Smoothing", 
-                    "How smoothly remote objects move to their target position.\n" +
-                    "Higher = snappier but jittery. Lower = smoother but laggy."));
+                    "Default 60 matches the server tick rate.\n" +
+                    "Lower = less bandwidth but choppier movement."));
                 
                 EditorGUILayout.Space(4);
                 EditorGUILayout.LabelField("Delta Thresholds", EditorStyles.miniLabel);
