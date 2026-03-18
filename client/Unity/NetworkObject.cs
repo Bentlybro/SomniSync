@@ -73,12 +73,19 @@ namespace SomniumSpace.Worlds.bently.networking
         // Internal state
         private Rigidbody _rigidbody;
         private bool _hasRigidbody = false;
-        private Vector3 _targetPosition;
-        private Quaternion _targetRotation;
         private bool _hasReceivedUpdate = false;
         private Vector3 _lastSentPosition;
         private Quaternion _lastSentRotation;
         private float _nextSendTime = 0f;
+        
+        // Snapshot interpolation — buffer positions for smooth playback
+        private Vector3 _fromPosition;
+        private Vector3 _toPosition;
+        private Quaternion _fromRotation;
+        private Quaternion _toRotation;
+        private float _snapshotTime = 0f;    // Time when we received the latest snapshot
+        private float _prevSnapshotTime = 0f; // Time when we received the previous snapshot
+        private float _interpolationT = 0f;   // Current interpolation progress (0-1)
         
         private void Awake()
         {
@@ -163,30 +170,36 @@ namespace SomniumSpace.Worlds.bently.networking
         {
             if (!_isOwned && _hasReceivedUpdate)
             {
-                // Remote object — interpolate to target
                 if (smoothing == SmoothingMode.None)
                 {
-                    // Instant snap
-                    if (syncPosition) transform.position = _targetPosition;
-                    if (syncRotation) transform.rotation = _targetRotation;
+                    if (syncPosition) transform.position = _toPosition;
+                    if (syncRotation) transform.rotation = _toRotation;
                 }
                 else
                 {
-                    float speed = smoothing switch
+                    // Snapshot interpolation — smoothly move between last two known positions
+                    float snapshotDuration = _snapshotTime - _prevSnapshotTime;
+                    
+                    if (snapshotDuration <= 0f)
+                        snapshotDuration = 1f / 60f; // Fallback to 60Hz assumption
+                    
+                    // Add a small buffer multiplier to prevent overshooting
+                    float bufferMultiplier = smoothing switch
                     {
-                        SmoothingMode.Low => 35f,
-                        SmoothingMode.Medium => 20f,
-                        SmoothingMode.High => 8f,
-                        _ => 20f
+                        SmoothingMode.Low => 1.0f,
+                        SmoothingMode.Medium => 1.1f,
+                        SmoothingMode.High => 1.3f,
+                        _ => 1.1f
                     };
                     
-                    float t = Time.deltaTime * speed;
+                    _interpolationT += Time.deltaTime / (snapshotDuration * bufferMultiplier);
+                    _interpolationT = Mathf.Clamp01(_interpolationT);
                     
                     if (syncPosition)
-                        transform.position = Vector3.Lerp(transform.position, _targetPosition, t);
+                        transform.position = Vector3.Lerp(_fromPosition, _toPosition, _interpolationT);
                     
                     if (syncRotation)
-                        transform.rotation = Quaternion.Lerp(transform.rotation, _targetRotation, t);
+                        transform.rotation = Quaternion.Slerp(_fromRotation, _toRotation, _interpolationT);
                 }
             }
         }
@@ -218,21 +231,23 @@ namespace SomniumSpace.Worlds.bently.networking
         /// </summary>
         public void ApplyServerUpdate(Vector3? position, Vector3? rotation)
         {
-            // Don't apply server updates to owned objects
             if (_isOwned)
                 return;
             
+            // Shift current target to "from" (what we're interpolating FROM)
+            _fromPosition = _hasReceivedUpdate ? _toPosition : transform.position;
+            _fromRotation = _hasReceivedUpdate ? _toRotation : transform.rotation;
+            _prevSnapshotTime = _snapshotTime;
+            _snapshotTime = Time.time;
+            _interpolationT = 0f;
+            
             if (position.HasValue && syncPosition)
-            {
-                _targetPosition = position.Value;
-                _hasReceivedUpdate = true;
-            }
+                _toPosition = position.Value;
             
             if (rotation.HasValue && syncRotation)
-            {
-                _targetRotation = Quaternion.Euler(rotation.Value);
-                _hasReceivedUpdate = true;
-            }
+                _toRotation = Quaternion.Euler(rotation.Value);
+            
+            _hasReceivedUpdate = true;
         }
         
         /// <summary>
