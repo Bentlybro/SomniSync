@@ -1,6 +1,6 @@
 using UnityEngine;
 
-namespace Bentlybro.CustomNetworking
+namespace SomniumSpace.Worlds.Bentlybro.customnetworking
 {
     /// <summary>
     /// NetworkRigidbody3D - Syncs Unity Rigidbody physics across network.

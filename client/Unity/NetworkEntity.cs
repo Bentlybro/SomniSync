@@ -1,6 +1,6 @@
 using UnityEngine;
 
-namespace Bentlybro.CustomNetworking
+namespace SomniumSpace.Worlds.Bentlybro.customnetworking
 {
     /// <summary>
     /// Core component that marks a GameObject as network-synced.
