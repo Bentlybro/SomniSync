@@ -51,6 +51,7 @@ public class MessageHandler
                     break;
                 
                 case "request_sync":
+                    Console.WriteLine($"[MessageHandler] Client {clientId} requesting sync");
                     await HandleRequestSyncAsync(clientId);
                     break;
                 

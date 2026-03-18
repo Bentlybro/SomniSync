@@ -81,7 +81,8 @@ public class ClientConnection
         
         if (entities.Count == 0)
         {
-            _broadcaster.SetClientReady(clientId);
+            // Don't mark ready yet — spectator will use request_sync once it has scene objects
+            Console.WriteLine($"[ClientConnection] No entities to sync for {clientId} — waiting for request_sync");
             return;
         }
         
@@ -104,8 +105,6 @@ public class ClientConnection
         await _broadcaster.SendToSocketAsync(socket, batchMsg);
         
         Console.WriteLine($"[ClientConnection] Sent batch_sync with {entities.Count} entities to {clientId}");
-        
-        // Now mark client ready for real-time updates
         _broadcaster.SetClientReady(clientId);
     }
     
