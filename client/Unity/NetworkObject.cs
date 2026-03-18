@@ -110,10 +110,6 @@ namespace SomniumSpace.Worlds.bently.networking
                 if (NetworkManager.Instance != null)
                     NetworkManager.Instance.RegisterUnlinkedObject(this);
                 
-                // Hide immediately on spectator — don't wait for coroutine
-                // Objects become visible when ApplyServerUpdate is called
-                SetRenderersVisible(false);
-                
                 StartCoroutine(DelayedRegister());
             }
         }
@@ -140,12 +136,9 @@ namespace SomniumSpace.Worlds.bently.networking
             {
                 _isOwned = false;
                 SetPhysicsState(false); // Spectators don't simulate physics
-                // Renderers already hidden in Start() — stay hidden until ApplyServerUpdate
                 yield break;
             }
             
-            // Master: re-show renderers (hidden in Start before we knew we were master)
-            SetRenderersVisible(true);
             Register();
         }
         
@@ -259,11 +252,7 @@ namespace SomniumSpace.Worlds.bently.networking
             if (syncPosition) _toPosition = position;
             if (syncRotation) _toRotation = Quaternion.Euler(rotation);
             
-            if (!_hasReceivedUpdate)
-            {
-                _hasReceivedUpdate = true;
-                SetRenderersVisible(true); // Show now that we have a valid position
-            }
+            _hasReceivedUpdate = true;
         }
         
         public void ApplyServerUpdate(Vector3? position, Vector3? rotation)

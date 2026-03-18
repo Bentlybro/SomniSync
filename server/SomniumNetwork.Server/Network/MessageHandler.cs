@@ -46,6 +46,10 @@ public class MessageHandler
                     HandleBatchUpdate(message, clientId);
                     break;
                 
+                case "client_batch_spawn":
+                    await HandleBatchSpawnAsync(message, clientId);
+                    break;
+                
                 case "request_sync":
                     await HandleRequestSyncAsync(clientId);
                     break;
@@ -91,6 +95,34 @@ public class MessageHandler
         };
         
         await _broadcaster.BroadcastMessageAsync(spawnMsg);
+    }
+    
+    private async Task HandleBatchSpawnAsync(NetworkMessage message, string clientId)
+    {
+        if (message.Spawns == null || message.Spawns.Count == 0)
+            return;
+        
+        Console.WriteLine($"[MessageHandler] Client {clientId} batch spawning {message.Spawns.Count} entities");
+        
+        // Spawn all entities on server first (no broadcasts yet)
+        foreach (var spawn in message.Spawns)
+        {
+            if (string.IsNullOrEmpty(spawn.EntityId) || spawn.Position == null)
+                continue;
+            
+            _entityManager.SpawnEntity(
+                spawn.EntityId,
+                spawn.EntityType ?? "entity",
+                spawn.Position,
+                spawn.Rotation ?? new Vector3(),
+                clientId
+            );
+        }
+        
+        Console.WriteLine($"[MessageHandler] Batch spawn complete: {_entityManager.EntityCount} total entities");
+        
+        // No need to broadcast individual spawns — spectators use request_sync
+        // which sends the full state as binary batch_sync (0x02)
     }
     
     private async Task HandleDespawnAsync(NetworkMessage message, string clientId)

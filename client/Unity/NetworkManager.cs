@@ -175,13 +175,30 @@ namespace SomniumSpace.Worlds.bently.networking
             
             int count = _pendingBatchSpawns.Count;
             
-            // Send all queued spawns
-            foreach (var spawn in _pendingBatchSpawns)
+            // Pack ALL spawns into one binary message instead of 500 individual JSON sends
+            // Format: [0x03][ushort count][per spawn: entityId len + entityId + entityType len + entityType + 24 bytes pos/rot]
+            // Use a simpler approach: one JSON message with all spawns
+            var batchMsg = new NetworkMessage
             {
-                StartCoroutine(SendMessageAsync(spawn));
+                Type = "client_batch_spawn",
+                Spawns = new EntitySpawnData[_pendingBatchSpawns.Count]
+            };
+            
+            for (int i = 0; i < _pendingBatchSpawns.Count; i++)
+            {
+                var spawn = _pendingBatchSpawns[i];
+                batchMsg.Spawns[i] = new EntitySpawnData
+                {
+                    EntityId = spawn.EntityId,
+                    EntityType = spawn.EntityType,
+                    Position = spawn.Position,
+                    Rotation = spawn.Rotation,
+                    OwnerId = spawn.OwnerId
+                };
             }
             
-            Debug.Log($"[NetworkManager] Registered {count} entities with server");
+            StartCoroutine(SendMessageAsync(batchMsg));
+            Debug.Log($"[NetworkManager] Registered {count} entities with server (single batch message)");
             _pendingBatchSpawns.Clear();
         }
         
