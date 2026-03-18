@@ -42,9 +42,11 @@ namespace SomniumSpace.Worlds.bently.networking
         private bool _isConnected = false;
         private bool _isReceiving = false;
         private string _clientId = null; // Our client ID from server
+        private bool _isMasterClient = false; // Are we the master client (first to connect)?
         
         public bool IsConnected => _isConnected;
         public string ClientId => _clientId;
+        public bool IsMasterClient => _isMasterClient;
         
         // Entity tracking
         private Dictionary<string, NetworkEntity> _entities = new Dictionary<string, NetworkEntity>();
@@ -247,10 +249,11 @@ namespace SomniumSpace.Worlds.bently.networking
                 switch (message.Type)
                 {
                     case "client_id":
-                        // Server assigned us an ID
+                        // Server assigned us an ID and master status
                         _clientId = message.OwnerId;
+                        _isMasterClient = message.IsMasterClient ?? false;
                         if (showDebugLogs)
-                            Debug.Log($"[NetworkManager] Received client ID: {_clientId}");
+                            Debug.Log($"[NetworkManager] Received client ID: {_clientId} {(_isMasterClient ? "[MASTER]" : "[SPECTATOR]")}");
                         break;
                     
                     case "spawn":
@@ -574,6 +577,7 @@ namespace SomniumSpace.Worlds.bently.networking
         public string EntityId;
         public string EntityType;
         public string OwnerId; // Which client owns this entity
+        public bool? IsMasterClient; // Is this client the master (first to connect)?
         public Vector3Data Position;
         public Vector3Data Rotation;
         public EntityUpdate[] Updates;

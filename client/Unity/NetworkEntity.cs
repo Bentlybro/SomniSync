@@ -41,8 +41,29 @@ namespace SomniumSpace.Worlds.bently.networking
             // Wait one frame to ensure NetworkManager.Start() has run
             yield return null;
             
+            // Wait until we receive our client ID from server
+            while (NetworkManager.Instance != null && string.IsNullOrEmpty(NetworkManager.Instance.ClientId))
+            {
+                yield return null;
+            }
+            
+            if (NetworkManager.Instance == null)
+            {
+                if (showDebugLogs)
+                    Debug.LogError("[NetworkEntity] NetworkManager not found!");
+                yield break;
+            }
+            
+            // Only master client spawns scene objects
+            if (!NetworkManager.Instance.IsMasterClient)
+            {
+                if (showDebugLogs)
+                    Debug.Log($"[NetworkEntity] Not master client - skipping spawn of {gameObject.name}");
+                yield break;
+            }
+            
             if (showDebugLogs)
-                Debug.Log($"[NetworkEntity] Attempting to register {gameObject.name}");
+                Debug.Log($"[NetworkEntity] Master client - registering {gameObject.name}");
             
             Register();
         }

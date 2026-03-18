@@ -9,6 +9,7 @@ public class NetworkMessage
     public string? EntityId { get; set; }
     public string? EntityType { get; set; }
     public string? OwnerId { get; set; } // Which client owns this entity
+    public bool? IsMasterClient { get; set; } // Is this client the master (first to connect)?
     public Vector3? Position { get; set; }
     public Vector3? Rotation { get; set; }
     public List<EntityUpdate>? Updates { get; set; }

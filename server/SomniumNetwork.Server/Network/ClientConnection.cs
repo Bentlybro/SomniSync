@@ -15,6 +15,7 @@ public class ClientConnection
     
     private static int _nextClientId = 1;
     private static readonly object _clientIdLock = new();
+    private static int _connectedClients = 0;
     
     public ClientConnection(EntityManager entityManager, NetworkBroadcaster broadcaster, MessageHandler messageHandler)
     {
@@ -28,14 +29,22 @@ public class ClientConnection
     /// </summary>
     public async Task HandleAsync(WebSocket socket)
     {
-        // Assign unique client ID
-        string clientId = GenerateClientId();
+        // Assign unique client ID and determine if master
+        string clientId;
+        bool isMasterClient;
+        
+        lock (_clientIdLock)
+        {
+            clientId = $"client_{_nextClientId++}";
+            _connectedClients++;
+            isMasterClient = (_connectedClients == 1); // First client is master
+        }
         
         _broadcaster.AddClient(socket);
-        Console.WriteLine($"[ClientConnection] Client connected: {clientId} ({_broadcaster.ClientCount} total)");
+        Console.WriteLine($"[ClientConnection] Client connected: {clientId} ({_broadcaster.ClientCount} total) {(isMasterClient ? "[MASTER]" : "")}");
         
-        // Send client their ID
-        await SendClientIdAsync(socket, clientId);
+        // Send client their ID and master status
+        await SendClientIdAsync(socket, clientId, isMasterClient);
         
         // Send all existing entities to new client
         await SyncExistingEntitiesAsync(socket);
@@ -43,23 +52,22 @@ public class ClientConnection
         // Receive and process messages
         await ReceiveMessagesAsync(socket, clientId);
         
+        // Decrement connected clients on disconnect
+        lock (_clientIdLock)
+        {
+            _connectedClients--;
+        }
+        
         Console.WriteLine($"[ClientConnection] Client disconnected: {clientId} ({_broadcaster.ClientCount - 1} remaining)");
     }
     
-    private static string GenerateClientId()
-    {
-        lock (_clientIdLock)
-        {
-            return $"client_{_nextClientId++}";
-        }
-    }
-    
-    private async Task SendClientIdAsync(WebSocket socket, string clientId)
+    private async Task SendClientIdAsync(WebSocket socket, string clientId, bool isMasterClient)
     {
         var idMsg = new NetworkMessage
         {
             Type = "client_id",
-            OwnerId = clientId
+            OwnerId = clientId,
+            IsMasterClient = isMasterClient
         };
         
         await _broadcaster.SendToClientAsync(socket, idMsg);
