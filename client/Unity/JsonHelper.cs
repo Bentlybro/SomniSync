@@ -106,11 +106,26 @@ namespace SomniumSpace.Worlds.bently.networking
                 
                 Debug.Log($"[JsonHelper] Wrapped JSON: {wrappedJson.Substring(0, Math.Min(300, wrappedJson.Length))}");
                 
-                var wrapper = JsonUtility.FromJson<EntityUpdateArrayWrapper>(wrappedJson);
-                
-                if (wrapper == null || wrapper.items == null)
+                EntityUpdateArrayWrapper wrapper = null;
+                try
                 {
-                    Debug.LogWarning("[JsonHelper] Failed to deserialize EntityUpdateArrayWrapper");
+                    wrapper = JsonUtility.FromJson<EntityUpdateArrayWrapper>(wrappedJson);
+                }
+                catch (Exception wrapperEx)
+                {
+                    Debug.LogError($"[JsonHelper] JsonUtility.FromJson threw exception: {wrapperEx.Message}\n{wrapperEx.StackTrace}");
+                    return null;
+                }
+                
+                if (wrapper == null)
+                {
+                    Debug.LogWarning("[JsonHelper] wrapper is null after JsonUtility.FromJson");
+                    return null;
+                }
+                
+                if (wrapper.items == null)
+                {
+                    Debug.LogWarning($"[JsonHelper] wrapper.items is null (wrapper was not null)");
                     return null;
                 }
                 
@@ -127,7 +142,7 @@ namespace SomniumSpace.Worlds.bently.networking
         
         // Helper wrapper class for array deserialization
         [System.Serializable]
-        private class EntityUpdateArrayWrapper
+        public class EntityUpdateArrayWrapper
         {
             public EntityUpdate[] items;
         }
