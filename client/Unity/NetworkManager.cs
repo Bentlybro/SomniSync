@@ -43,6 +43,7 @@ namespace SomniumSpace.Worlds.bently.networking
         private bool _isReceiving = false;
         private string _clientId = null; // Our client ID from server
         private bool _isMasterClient = false; // Are we the master client (first to connect)?
+        private bool _hasLoggedUpdateJson = false; // Debug flag to log first update JSON
         
         public bool IsConnected => _isConnected;
         public string ClientId => _clientId;
@@ -241,6 +242,13 @@ namespace SomniumSpace.Worlds.bently.networking
         {
             try
             {
+                // DEBUG: Log first update message JSON to see format
+                if (json.Contains("\"Type\":\"update\"") && !_hasLoggedUpdateJson)
+                {
+                    Debug.Log($"[NetworkManager] First update JSON: {json.Substring(0, Math.Min(300, json.Length))}");
+                    _hasLoggedUpdateJson = true;
+                }
+                
                 // Use JsonHelper instead of JsonUtility to handle nullable types correctly
                 var message = JsonHelper.DeserializeNetworkMessage(json);
                 
@@ -398,7 +406,7 @@ namespace SomniumSpace.Worlds.bently.networking
         {
             if (message.Updates == null)
             {
-                Debug.LogWarning("[NetworkManager] HandleUpdate: Updates is null");
+                Debug.LogWarning($"[NetworkManager] HandleUpdate: Updates is null, message.Type={message.Type}");
                 return;
             }
             

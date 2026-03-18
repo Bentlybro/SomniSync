@@ -111,8 +111,6 @@ public class NetworkBroadcaster
         if (movedEntities.Count == 0)
             return;
         
-        Console.WriteLine($"[NetworkBroadcaster] Broadcasting {movedEntities.Count} entity updates");
-        
         var updates = movedEntities.Select(e => new EntityUpdate
         {
             Id = e.Id,
@@ -125,6 +123,10 @@ public class NetworkBroadcaster
             Type = "update",
             Updates = updates
         };
+        
+        // DEBUG: Log the actual JSON being sent
+        var json = JsonSerializer.Serialize(message);
+        Console.WriteLine($"[NetworkBroadcaster] Broadcasting {updates.Count} updates, JSON sample: {json.Substring(0, Math.Min(200, json.Length))}...");
         
         await BroadcastMessageAsync(message);
     }
