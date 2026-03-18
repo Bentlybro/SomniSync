@@ -25,10 +25,10 @@ class Program
         
         // Start WebSocket server
         var listener = new HttpListener();
-        listener.Prefixes.Add("http://localhost:9090/");
+        listener.Prefixes.Add("http://*:9090/");
         listener.Start();
         
-        Console.WriteLine("[Server] Started on ws://localhost:9090/");
+        Console.WriteLine("[Server] Started on ws://0.0.0.0:9090/");
         Console.WriteLine("[Server] Ready for connections...");
         Console.WriteLine("[Server] Press Ctrl+C to stop");
         

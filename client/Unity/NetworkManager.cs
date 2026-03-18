@@ -18,7 +18,7 @@ namespace Bentlybro.CustomNetworking
         public static NetworkManager Instance { get; private set; }
         
         [Header("Connection")]
-        [Tooltip("WebSocket server URL")]
+        [Tooltip("WebSocket server URL (use localhost for same machine, or server IP for remote)")]
         public string serverUrl = "ws://localhost:9090/";
         
         [Tooltip("Auto-connect on Start()")]
