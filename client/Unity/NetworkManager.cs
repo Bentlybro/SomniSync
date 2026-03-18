@@ -413,6 +413,9 @@ namespace SomniumSpace.Worlds.bently.networking
         /// Process binary update message. Zero JSON parsing, zero string allocation.
         /// Format: [1 byte type][2 bytes count][per entity: 16 bytes GUID + 24 bytes floats]
         /// </summary>
+        private bool _loggedFirstBinary = false;
+        private int _binaryUpdateCount = 0;
+        
         private void ProcessBinaryMessage(byte[] data, int length)
         {
             if (length < 3) return;
@@ -423,6 +426,15 @@ namespace SomniumSpace.Worlds.bently.networking
             {
                 ushort count = BitConverter.ToUInt16(data, 1);
                 int offset = 3;
+                
+                _binaryUpdateCount++;
+                if (!_loggedFirstBinary)
+                {
+                    Debug.Log($"[NetworkManager] First binary update received! {count} entities in {length} bytes");
+                    _loggedFirstBinary = true;
+                }
+                
+                int matched = 0;
                 
                 for (int i = 0; i < count; i++)
                 {
@@ -451,13 +463,21 @@ namespace SomniumSpace.Worlds.bently.networking
                     if (_networkObjects.TryGetValue(entityId, out NetworkObject netObj))
                     {
                         netObj.ApplyServerUpdate(position, rotation);
+                        matched++;
                     }
                     else if (_spawnedEntities.TryGetValue(entityId, out GameObject obj))
                     {
                         var netTransform = obj.GetComponent<NetworkTransform>();
                         if (netTransform != null)
                             netTransform.ApplyServerUpdate(position, rotation);
+                        matched++;
                     }
+                }
+                
+                // Log match rate once (second update to avoid startup noise)
+                if (_binaryUpdateCount == 2)
+                {
+                    Debug.Log($"[NetworkManager] Binary update: {count} entities received, {matched} matched, {count - matched} unmatched. NetworkObjects: {_networkObjects.Count}, SpawnedEntities: {_spawnedEntities.Count}");
                 }
             }
         }

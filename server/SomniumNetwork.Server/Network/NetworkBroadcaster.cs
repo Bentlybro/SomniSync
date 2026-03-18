@@ -250,13 +250,29 @@ public class NetworkBroadcaster
         
         // Send as binary WebSocket message (skip clients still syncing)
         var tasks = new List<Task>();
+        int readyCount = 0;
+        int skippedCount = 0;
         foreach (var kvp in _clients)
         {
-            if (kvp.Value.State == WebSocketState.Open && 
-                _clientReady.TryGetValue(kvp.Key, out var ready) && ready)
+            if (kvp.Value.State != WebSocketState.Open)
+                continue;
+            
+            bool isReady = _clientReady.TryGetValue(kvp.Key, out var ready) && ready;
+            if (isReady)
             {
                 tasks.Add(SendBinaryWithLockAsync(kvp.Key, kvp.Value, segment));
+                readyCount++;
             }
+            else
+            {
+                skippedCount++;
+            }
+        }
+        
+        // Log once per second if clients are being skipped
+        if (skippedCount > 0 && count > 0 && DateTime.UtcNow.Second % 5 == 0)
+        {
+            Console.WriteLine($"[NetworkBroadcaster] Binary update: {count} entities, sent to {readyCount} ready clients, skipped {skippedCount} not-ready clients. Ready states: {string.Join(", ", _clientReady.Select(kvp => $"{kvp.Key}={kvp.Value}"))}");
         }
         
         try { await Task.WhenAll(tasks); }
