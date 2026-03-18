@@ -9,10 +9,19 @@ class Program
 {
     static async Task Main(string[] args)
     {
+        // Handle Ctrl+C gracefully
+        var cts = new CancellationTokenSource();
+        Console.CancelKeyPress += (sender, e) =>
+        {
+            Console.WriteLine("\n[Server] Shutting down...");
+            cts.Cancel();
+            e.Cancel = true;
+        };
+        
         var server = new GameServer();
         
         // Start game loop in background
-        _ = Task.Run(async () => await server.RunGameLoopAsync());
+        _ = Task.Run(async () => await server.RunGameLoopAsync(cts.Token), cts.Token);
         
         // Start WebSocket server
         var listener = new HttpListener();
@@ -21,24 +30,34 @@ class Program
         
         Console.WriteLine("[Server] Started on ws://localhost:9090/");
         Console.WriteLine("[Server] Ready for connections...");
+        Console.WriteLine("[Server] Press Ctrl+C to stop");
         
-        // TODO: Load entity spawns from config file
-        // For now, server just tracks entities that clients create
-        
-        while (true)
+        try
         {
-            var context = await listener.GetContextAsync();
-            
-            if (context.Request.IsWebSocketRequest)
+            while (!cts.Token.IsCancellationRequested)
             {
-                var wsContext = await context.AcceptWebSocketAsync(null);
-                _ = Task.Run(async () => await server.HandleClientAsync(wsContext.WebSocket));
+                var context = await listener.GetContextAsync();
+                
+                if (context.Request.IsWebSocketRequest)
+                {
+                    var wsContext = await context.AcceptWebSocketAsync(null);
+                    _ = Task.Run(async () => await server.HandleClientAsync(wsContext.WebSocket), cts.Token);
+                }
+                else
+                {
+                    context.Response.StatusCode = 400;
+                    context.Response.Close();
+                }
             }
-            else
-            {
-                context.Response.StatusCode = 400;
-                context.Response.Close();
-            }
+        }
+        catch (TaskCanceledException)
+        {
+            // Expected when cancelled
+        }
+        finally
+        {
+            listener.Stop();
+            Console.WriteLine("[Server] Stopped");
         }
     }
 }

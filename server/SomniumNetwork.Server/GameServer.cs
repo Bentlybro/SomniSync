@@ -57,12 +57,12 @@ public class GameServer
         }
     }
     
-    public async Task RunGameLoopAsync()
+    public async Task RunGameLoopAsync(CancellationToken cancellationToken = default)
     {
         var tickRate = 20; // 20 Hz
         var deltaTime = 1f / tickRate;
         
-        while (true)
+        while (!cancellationToken.IsCancellationRequested)
         {
             var startTime = DateTime.UtcNow;
             
