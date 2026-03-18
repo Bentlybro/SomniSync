@@ -207,15 +207,87 @@ namespace SomniumSpace.Worlds.bently.networking
             if (_pendingUpdates.Count == 0)
                 return;
             
-            // Send all updates as ONE message with the Updates array
-            var message = new NetworkMessage
-            {
-                Type = "client_batch_update",
-                Updates = _pendingUpdates.ToArray()
-            };
+            // Send as BINARY — same 0x01 format the server uses for broadcasts
+            // [0x01][ushort count][per entity: 16B GUID + 12B pos + 12B rot] = 3 + 40N bytes
+            // This is ~3x smaller than JSON AND zero parse overhead on server
+            int count = _pendingUpdates.Count;
+            int bufferSize = 3 + (count * 40);
+            byte[] buffer = new byte[bufferSize];
             
-            StartCoroutine(SendMessageAsync(message));
+            buffer[0] = 0x01;
+            buffer[1] = (byte)(count & 0xFF);
+            buffer[2] = (byte)((count >> 8) & 0xFF);
+            
+            int offset = 3;
+            for (int i = 0; i < count; i++)
+            {
+                var update = _pendingUpdates[i];
+                
+                // GUID (16 bytes)
+                byte[] guidBytes = new System.Guid(update.Id).ToByteArray();
+                System.Buffer.BlockCopy(guidBytes, 0, buffer, offset, 16);
+                offset += 16;
+                
+                // Position (12 bytes)
+                WriteFloat(buffer, offset, update.Position.X); offset += 4;
+                WriteFloat(buffer, offset, update.Position.Y); offset += 4;
+                WriteFloat(buffer, offset, update.Position.Z); offset += 4;
+                
+                // Rotation (12 bytes)
+                WriteFloat(buffer, offset, update.Rotation.X); offset += 4;
+                WriteFloat(buffer, offset, update.Rotation.Y); offset += 4;
+                WriteFloat(buffer, offset, update.Rotation.Z); offset += 4;
+            }
+            
+            StartCoroutine(SendBinaryAsync(buffer, offset));
             _pendingUpdates.Clear();
+        }
+        
+        private static void WriteFloat(byte[] buffer, int offset, float value)
+        {
+            byte[] bytes = System.BitConverter.GetBytes(value);
+            buffer[offset] = bytes[0];
+            buffer[offset + 1] = bytes[1];
+            buffer[offset + 2] = bytes[2];
+            buffer[offset + 3] = bytes[3];
+        }
+        
+        private IEnumerator SendBinaryAsync(byte[] data, int length)
+        {
+            if (_webSocket == null || _webSocket.State != WebSocketState.Open)
+                yield break;
+            
+            NetworkStats.MessagesSent++;
+            NetworkStats.BytesSent += length;
+            
+            Task sendTask = null;
+            try
+            {
+                sendTask = _webSocket.SendAsync(
+                    new ArraySegment<byte>(data, 0, length),
+                    WebSocketMessageType.Binary,
+                    true,
+                    CancellationToken.None
+                );
+            }
+            catch (System.Exception ex)
+            {
+                if (showDebugLogs)
+                    Debug.LogError($"[NetworkManager] Binary send exception: {ex.Message}");
+                yield break;
+            }
+            
+            yield return new WaitUntil(() => sendTask.IsCompleted);
+            
+            if (sendTask.IsFaulted)
+            {
+                if (!_hasLoggedSendError)
+                {
+                    _hasLoggedSendError = true;
+                    Debug.LogWarning("[NetworkManager] Connection lost — stopping sends until reconnected");
+                }
+                _isConnected = false;
+            }
         }
         
         public void Connect()

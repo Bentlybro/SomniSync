@@ -173,6 +173,49 @@ public class MessageHandler
         }
     }
     
+    /// <summary>
+    /// Handle binary position updates from master client.
+    /// Same format as broadcast: [0x01][ushort count][per entity: 16B GUID + 12B pos + 12B rot]
+    /// Zero JSON parsing, zero string allocation — pure speed.
+    /// </summary>
+    public void HandleBinaryMessage(byte[] data, int length, string clientId)
+    {
+        if (length < 3) return;
+        
+        byte msgType = data[0];
+        
+        if (msgType == 0x01) // Binary position update
+        {
+            ushort count = BitConverter.ToUInt16(data, 1);
+            int offset = 3;
+            
+            for (int i = 0; i < count; i++)
+            {
+                if (offset + 40 > length) break;
+                
+                // Read GUID (16 bytes)
+                var guid = new Guid(new ReadOnlySpan<byte>(data, offset, 16));
+                string entityId = guid.ToString();
+                offset += 16;
+                
+                // Read position (12 bytes)
+                float px = BitConverter.ToSingle(data, offset); offset += 4;
+                float py = BitConverter.ToSingle(data, offset); offset += 4;
+                float pz = BitConverter.ToSingle(data, offset); offset += 4;
+                
+                // Read rotation (12 bytes)
+                float rx = BitConverter.ToSingle(data, offset); offset += 4;
+                float ry = BitConverter.ToSingle(data, offset); offset += 4;
+                float rz = BitConverter.ToSingle(data, offset); offset += 4;
+                
+                var pos = new Vector3 { X = px, Y = py, Z = pz };
+                var rot = new Vector3 { X = rx, Y = ry, Z = rz };
+                
+                _entityManager.UpdateEntity(entityId, clientId, pos, rot);
+            }
+        }
+    }
+    
     private void HandleBatchUpdate(NetworkMessage message, string clientId)
     {
         if (message.Updates == null || message.Updates.Count == 0)

@@ -155,7 +155,15 @@ public class ClientConnection
                     break;
                 }
                 
-                if (result.MessageType == WebSocketMessageType.Text || result.MessageType == WebSocketMessageType.Binary)
+                if (result.MessageType == WebSocketMessageType.Binary)
+                {
+                    // Binary message from client (position updates)
+                    if (result.EndOfMessage)
+                    {
+                        _messageHandler.HandleBinaryMessage(buffer, result.Count, clientId);
+                    }
+                }
+                else if (result.MessageType == WebSocketMessageType.Text)
                 {
                     messageBuilder.Append(Encoding.UTF8.GetString(buffer, 0, result.Count));
                     
