@@ -105,6 +105,11 @@ namespace SomniumSpace.Worlds.bently.networking
             
             if (spawnOnStart)
             {
+                // Register as unlinked IMMEDIATELY so batch_sync can find us
+                // (don't wait for coroutine — batch_sync arrives fast)
+                if (NetworkManager.Instance != null)
+                    NetworkManager.Instance.RegisterUnlinkedObject(this);
+                
                 StartCoroutine(DelayedRegister());
             }
         }
@@ -131,9 +136,7 @@ namespace SomniumSpace.Worlds.bently.networking
             {
                 _isOwned = false;
                 SetPhysicsState(false); // Spectators don't simulate physics
-                
-                // Register as available for linking by batch_sync
-                NetworkManager.Instance.RegisterUnlinkedObject(this);
+                // Already registered as unlinked in Start() — just bail
                 yield break;
             }
             
