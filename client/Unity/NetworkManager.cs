@@ -398,12 +398,21 @@ namespace SomniumSpace.Worlds.bently.networking
         private void HandleUpdate(NetworkMessage message)
         {
             if (message.Updates == null)
+            {
+                Debug.LogWarning("[NetworkManager] HandleUpdate: Updates is null");
                 return;
+            }
+            
+            Debug.Log($"[NetworkManager] HandleUpdate: Received {message.Updates.Count} updates");
             
             foreach (var update in message.Updates)
             {
+                Debug.Log($"[NetworkManager] HandleUpdate: Processing update for entity {update.Id}");
+                
                 if (_spawnedEntities.TryGetValue(update.Id, out GameObject obj))
                 {
+                    Debug.Log($"[NetworkManager] HandleUpdate: Found entity {update.Id} in dictionary");
+                    
                     var netTransform = obj.GetComponent<NetworkTransform>();
                     if (netTransform != null)
                     {
@@ -415,8 +424,17 @@ namespace SomniumSpace.Worlds.bently.networking
                             ? new Vector3(update.Rotation.X, update.Rotation.Y, update.Rotation.Z)
                             : (Vector3?)null;
                         
+                        Debug.Log($"[NetworkManager] HandleUpdate: Applying position {position} to {obj.name}");
                         netTransform.ApplyServerUpdate(position, rotation);
                     }
+                    else
+                    {
+                        Debug.LogWarning($"[NetworkManager] HandleUpdate: No NetworkTransform on {obj.name}");
+                    }
+                }
+                else
+                {
+                    Debug.LogWarning($"[NetworkManager] HandleUpdate: Entity {update.Id} NOT in _spawnedEntities dictionary");
                 }
             }
         }

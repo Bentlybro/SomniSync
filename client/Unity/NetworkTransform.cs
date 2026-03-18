@@ -89,14 +89,7 @@ namespace SomniumSpace.Worlds.bently.networking
                     _nextUpdateTime = Time.time + _updateInterval;
                 }
             }
-            else
-            {
-                // Debug why we're not sending
-                if (_networkEntity == null)
-                    Debug.LogWarning($"[NetworkTransform] No NetworkEntity on {gameObject.name}");
-                else if (!_networkEntity.isOwned)
-                    Debug.Log($"[NetworkTransform] Not owned: {gameObject.name}");
-            }
+            // Removed "Not owned" spam - we know spectators don't send updates
         }
         
         private void Update()
@@ -147,8 +140,7 @@ namespace SomniumSpace.Worlds.bently.networking
                 _targetPosition = position.Value;
                 _hasReceivedUpdate = true;
                 
-                if (showDebugLogs)
-                    Debug.Log($"[NetworkTransform] Position update: {position.Value}");
+                Debug.Log($"[NetworkTransform] ApplyServerUpdate: Position {position.Value} on {gameObject.name}");
             }
             
             if (rotation.HasValue && syncRotation)
@@ -156,8 +148,7 @@ namespace SomniumSpace.Worlds.bently.networking
                 _targetRotation = Quaternion.Euler(rotation.Value);
                 _hasReceivedUpdate = true;
                 
-                if (showDebugLogs)
-                    Debug.Log($"[NetworkTransform] Rotation update: {rotation.Value}");
+                Debug.Log($"[NetworkTransform] ApplyServerUpdate: Rotation {rotation.Value} on {gameObject.name}");
             }
         }
     }
