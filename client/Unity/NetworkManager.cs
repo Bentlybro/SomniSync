@@ -324,12 +324,10 @@ namespace SomniumSpace.Worlds.bently.networking
             {
                 // Found an unregistered scene object with matching type
                 if (string.IsNullOrEmpty(sceneEntity.entityId) && 
-                    sceneEntity.entityType == message.EntityType &&
-                    !sceneEntity.isOwned)
+                    sceneEntity.entityType == message.EntityType)
                 {
                     obj = sceneEntity.gameObject;
-                    if (showDebugLogs)
-                        Debug.Log($"[NetworkManager] Linking existing scene object {obj.name} to entity {message.EntityId}");
+                    Debug.Log($"[NetworkManager] Linking existing scene object {obj.name} to entity {message.EntityId}");
                     break;
                 }
             }
