@@ -42,6 +42,10 @@ public class MessageHandler
                     HandleUpdate(message, clientId);
                     break;
                 
+                case "client_batch_update":
+                    HandleBatchUpdate(message, clientId);
+                    break;
+                
                 default:
                     Console.WriteLine($"[MessageHandler] Unknown message type: {message.Type}");
                     break;
@@ -108,6 +112,20 @@ public class MessageHandler
             };
             
             await _broadcaster.BroadcastMessageAsync(despawnMsg);
+        }
+    }
+    
+    private void HandleBatchUpdate(NetworkMessage message, string clientId)
+    {
+        if (message.Updates == null || message.Updates.Count == 0)
+            return;
+        
+        foreach (var update in message.Updates)
+        {
+            if (string.IsNullOrEmpty(update.Id) || update.Position == null)
+                continue;
+            
+            _entityManager.UpdateEntity(update.Id, clientId, update.Position, update.Rotation);
         }
     }
     

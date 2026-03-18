@@ -59,6 +59,7 @@ namespace SomniumSpace.Worlds.bently.networking
         private bool _hasLoggedSendError = false; // Only log send errors once per disconnect
         
         public bool IsConnected => _isConnected;
+        public int EntityCount => _spawnedEntities.Count + _networkObjects.Count;
         public string ClientId => _clientId;
         public bool IsMasterClient => _isMasterClient;
         
@@ -70,6 +71,11 @@ namespace SomniumSpace.Worlds.bently.networking
         // NetworkObject tracking (new unified system)
         private Dictionary<string, NetworkObject> _networkObjects = new Dictionary<string, NetworkObject>();
         private List<NetworkObject> _pendingNetworkObjects = new List<NetworkObject>();
+        
+        // Update batching — collects updates and sends as one message per tick
+        private List<EntityUpdate> _pendingUpdates = new List<EntityUpdate>();
+        private float _nextBatchTime = 0f;
+        private float _batchInterval = 1f / 60f; // Match server tick rate
         
         private void Awake()
         {
@@ -98,6 +104,29 @@ namespace SomniumSpace.Worlds.bently.networking
             {
                 UpdateConnectionStatus("CONNECTED", UnityEngine.Color.green);
             }
+            
+            // Flush batched updates
+            if (_isConnected && _pendingUpdates.Count > 0 && Time.time >= _nextBatchTime)
+            {
+                FlushBatchedUpdates();
+                _nextBatchTime = Time.time + _batchInterval;
+            }
+        }
+        
+        private void FlushBatchedUpdates()
+        {
+            if (_pendingUpdates.Count == 0)
+                return;
+            
+            // Send all updates as ONE message with the Updates array
+            var message = new NetworkMessage
+            {
+                Type = "client_batch_update",
+                Updates = _pendingUpdates.ToArray()
+            };
+            
+            StartCoroutine(SendMessageAsync(message));
+            _pendingUpdates.Clear();
         }
         
         public void Connect()
@@ -248,6 +277,8 @@ namespace SomniumSpace.Worlds.bently.networking
                     {
                         string json = messageBuilder.ToString();
                         messageBuilder.Clear();
+                        NetworkStats.MessagesReceived++;
+                        NetworkStats.BytesReceived += Encoding.UTF8.GetByteCount(json);
                         ProcessMessage(json);
                     }
                 }
@@ -667,6 +698,22 @@ namespace SomniumSpace.Worlds.bently.networking
             StartCoroutine(SendMessageAsync(message));
         }
         
+        /// <summary>
+        /// Queue an update for batched sending. Much more efficient than individual sends.
+        /// </summary>
+        public void QueueUpdate(NetworkObject obj, Vector3 position, Vector3 rotation)
+        {
+            if (!_isConnected || obj == null || !obj.IsOwned)
+                return;
+            
+            _pendingUpdates.Add(new EntityUpdate
+            {
+                Id = obj.entityId,
+                Position = new Vector3Data { X = position.x, Y = position.y, Z = position.z },
+                Rotation = new Vector3Data { X = rotation.x, Y = rotation.y, Z = rotation.z }
+            });
+        }
+        
         private GameObject GetPrefabForType(string entityType)
         {
             // Check registry
@@ -793,6 +840,9 @@ namespace SomniumSpace.Worlds.bently.networking
             
             string json = Newtonsoft.Json.JsonConvert.SerializeObject(message);
             byte[] bytes = Encoding.UTF8.GetBytes(json);
+            
+            NetworkStats.MessagesSent++;
+            NetworkStats.BytesSent += bytes.Length;
             
             Task sendTask = null;
             

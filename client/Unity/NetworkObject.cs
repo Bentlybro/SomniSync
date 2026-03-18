@@ -206,7 +206,7 @@ namespace SomniumSpace.Worlds.bently.networking
             if (posDelta < positionThreshold && rotDelta < rotationThreshold)
                 return;
             
-            NetworkManager.Instance.SendPhysicsUpdate(this, transform.position, transform.eulerAngles);
+            NetworkManager.Instance.QueueUpdate(this, transform.position, transform.eulerAngles);
             
             _lastSentPosition = transform.position;
             _lastSentRotation = transform.rotation;
