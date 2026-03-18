@@ -110,6 +110,10 @@ namespace SomniumSpace.Worlds.bently.networking
                 if (NetworkManager.Instance != null)
                     NetworkManager.Instance.RegisterUnlinkedObject(this);
                 
+                // Hide immediately on spectator — don't wait for coroutine
+                // Objects become visible when ApplyServerUpdate is called
+                SetRenderersVisible(false);
+                
                 StartCoroutine(DelayedRegister());
             }
         }
@@ -136,11 +140,12 @@ namespace SomniumSpace.Worlds.bently.networking
             {
                 _isOwned = false;
                 SetPhysicsState(false); // Spectators don't simulate physics
-                SetRenderersVisible(false); // Hide until positioned by batch_sync
-                // Already registered as unlinked in Start() — just bail
+                // Renderers already hidden in Start() — stay hidden until ApplyServerUpdate
                 yield break;
             }
             
+            // Master: re-show renderers (hidden in Start before we knew we were master)
+            SetRenderersVisible(true);
             Register();
         }
         
