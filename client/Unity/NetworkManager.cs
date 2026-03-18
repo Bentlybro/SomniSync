@@ -308,16 +308,40 @@ namespace SomniumSpace.Worlds.bently.networking
                 ? Quaternion.Euler(message.Rotation.X, message.Rotation.Y, message.Rotation.Z)
                 : Quaternion.identity;
             
-            // Find prefab for this entity type
-            GameObject prefab = GetPrefabForType(message.EntityType ?? "entity");
-            if (prefab == null)
+            GameObject obj = null;
+            
+            // PHOTON FUSION PATTERN: Check for existing scene object first
+            // (Scene objects already exist on all clients, we just link them to the entity ID)
+            NetworkEntity[] sceneEntities = FindObjectsOfType<NetworkEntity>();
+            foreach (var sceneEntity in sceneEntities)
             {
-                if (showDebugLogs)
-                    Debug.LogWarning($"[NetworkManager] No prefab for type '{message.EntityType}', skipping spawn");
-                return;
+                // Found an unregistered scene object with matching type
+                if (string.IsNullOrEmpty(sceneEntity.entityId) && 
+                    sceneEntity.entityType == message.EntityType &&
+                    !sceneEntity.isOwned)
+                {
+                    obj = sceneEntity.gameObject;
+                    if (showDebugLogs)
+                        Debug.Log($"[NetworkManager] Linking existing scene object {obj.name} to entity {message.EntityId}");
+                    break;
+                }
             }
             
-            GameObject obj = Instantiate(prefab, position, rotation);
+            // If no scene object found, instantiate from prefab (runtime-spawned objects)
+            if (obj == null)
+            {
+                GameObject prefab = GetPrefabForType(message.EntityType ?? "entity");
+                if (prefab == null)
+                {
+                    if (showDebugLogs)
+                        Debug.LogWarning($"[NetworkManager] No scene object or prefab for type '{message.EntityType}', skipping spawn");
+                    return;
+                }
+                
+                obj = Instantiate(prefab, position, rotation);
+                if (showDebugLogs)
+                    Debug.Log($"[NetworkManager] Instantiated new prefab for entity {message.EntityId}");
+            }
             
             var entity = obj.GetComponent<NetworkEntity>();
             if (entity == null)

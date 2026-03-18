@@ -54,12 +54,24 @@ namespace SomniumSpace.Worlds.bently.networking
                 yield break;
             }
             
-            // Only master client spawns scene objects
+            // Only master client spawns scene objects to server
             if (!NetworkManager.Instance.IsMasterClient)
             {
+                // Spectator: Keep object but disable physics (Photon Fusion pattern)
+                var rb = GetComponent<Rigidbody>();
+                if (rb != null)
+                {
+                    rb.isKinematic = true; // Disable physics simulation
+                    if (showDebugLogs)
+                        Debug.Log($"[NetworkEntity] Spectator - disabled physics on {gameObject.name}");
+                }
+                
+                // Mark as non-owned so we receive remote updates
+                isOwned = false;
+                
+                // Don't register with server (master will handle spawning)
                 if (showDebugLogs)
-                    Debug.Log($"[NetworkEntity] Not master client - destroying scene object {gameObject.name}");
-                Destroy(gameObject);
+                    Debug.Log($"[NetworkEntity] Spectator - waiting for remote updates on {gameObject.name}");
                 yield break;
             }
             
