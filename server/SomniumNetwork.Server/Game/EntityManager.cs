@@ -106,7 +106,7 @@ public class EntityManager
         lock (_entityLock)
         {
             _entities.Clear();
-            _ownership.Clear();
+            _entityOwners.Clear();
             Console.WriteLine($"[EntityManager] All entities cleared");
         }
     }
