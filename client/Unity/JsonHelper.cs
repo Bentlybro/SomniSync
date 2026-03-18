@@ -140,13 +140,6 @@ namespace SomniumSpace.Worlds.bently.networking
             }
         }
         
-        // Helper wrapper class for array deserialization
-        [System.Serializable]
-        public class EntityUpdateArrayWrapper
-        {
-            public EntityUpdate[] items;
-        }
-        
         /// <summary>
         /// Extract a boolean value from JSON string by field name.
         /// Handles nullable bools that JsonUtility breaks on.
@@ -352,5 +345,12 @@ namespace SomniumSpace.Worlds.bently.networking
                 return null;
             }
         }
+    }
+    
+    // Helper wrapper class for array deserialization (at namespace level, not nested)
+    [System.Serializable]
+    public class EntityUpdateArrayWrapper
+    {
+        public EntityUpdate[] items;
     }
 }
