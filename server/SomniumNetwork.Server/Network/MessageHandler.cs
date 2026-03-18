@@ -122,8 +122,28 @@ public class MessageHandler
         
         Console.WriteLine($"[MessageHandler] Batch spawn complete: {_entityManager.EntityCount} total entities");
         
-        // No need to broadcast individual spawns — spectators use request_sync
-        // which sends the full state as binary batch_sync (0x02)
+        // Auto-sync any connected spectators that aren't ready yet
+        // This handles the race condition where spectator connected before master registered entities
+        await SyncWaitingClientsAsync(clientId);
+    }
+    
+    /// <summary>
+    /// Send binary batch_sync to all connected clients that aren't ready yet.
+    /// Called after master finishes batch spawning entities.
+    /// </summary>
+    private async Task SyncWaitingClientsAsync(string excludeClientId)
+    {
+        var waitingClients = _broadcaster.GetNotReadyClients(excludeClientId);
+        
+        if (waitingClients.Count == 0)
+            return;
+        
+        Console.WriteLine($"[MessageHandler] Auto-syncing {waitingClients.Count} waiting client(s)");
+        
+        foreach (var waitingClientId in waitingClients)
+        {
+            await HandleRequestSyncAsync(waitingClientId);
+        }
     }
     
     private async Task HandleDespawnAsync(NetworkMessage message, string clientId)

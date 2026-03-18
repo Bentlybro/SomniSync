@@ -34,6 +34,23 @@ public class NetworkBroadcaster
     }
     
     /// <summary>
+    /// Get all connected clients that aren't ready yet (excluding a specific client).
+    /// Used to auto-sync spectators after master registers entities.
+    /// </summary>
+    public List<string> GetNotReadyClients(string excludeClientId)
+    {
+        var result = new List<string>();
+        foreach (var kvp in _clientReady)
+        {
+            if (kvp.Key != excludeClientId && !kvp.Value && _clients.TryGetValue(kvp.Key, out var socket) && socket.State == WebSocketState.Open)
+            {
+                result.Add(kvp.Key);
+            }
+        }
+        return result;
+    }
+    
+    /// <summary>
     /// Remove a disconnected client and handle host migration if needed.
     /// Returns the new master client ID if migration occurred, null otherwise.
     /// </summary>
