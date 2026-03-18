@@ -443,6 +443,13 @@ namespace SomniumSpace.Worlds.bently.networking
             if (!string.IsNullOrEmpty(entity.entityId))
             {
                 _entities[entity.entityId] = entity;
+                
+                // Also add to spawned entities dictionary so HandleUpdate can find it
+                if (entity.isOwned)
+                {
+                    _spawnedEntities[entity.entityId] = entity.gameObject;
+                    Debug.Log($"[NetworkManager] RegisterEntity: Added owned entity {entity.entityId} to _spawnedEntities");
+                }
             }
         }
         
