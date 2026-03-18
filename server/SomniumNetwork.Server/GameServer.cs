@@ -66,21 +66,14 @@ public class GameServer
         {
             var startTime = DateTime.UtcNow;
             
-            // Update entities - simple server-side movement to prove authority
+            // Update entities
             lock (_entityLock)
             {
                 _time += deltaTime;
                 
-                foreach (var entity in _entities.Values)
-                {
-                    // Simple up-down bobbing movement (server-controlled)
-                    entity.Position.Y = 1f + (float)Math.Sin(_time * 2f) * 0.5f;
-                    
-                    // Slow rotation
-                    entity.Rotation.Y += 20f * deltaTime; // 20 degrees per second
-                    if (entity.Rotation.Y > 360f)
-                        entity.Rotation.Y -= 360f;
-                }
+                // Server doesn't move entities by default
+                // Entities with client authority (physics objects) will send their own updates
+                // Entities with server authority (NPCs) would have AI logic here
             }
             
             // Send updates to all clients

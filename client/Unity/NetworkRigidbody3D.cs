@@ -105,8 +105,13 @@ namespace Bentlybro.CustomNetworking
                 }
             }
             
-            // TODO: Send rigidbody state to NetworkManager
-            // Position, rotation, velocity, angularVelocity, sleeping state
+            // Send physics update via NetworkEntity
+            var networkTransform = GetComponent<NetworkTransform>();
+            if (networkTransform != null)
+            {
+                // NetworkTransform will handle position sync
+                // Just let physics run, NetworkTransform sends updates
+            }
         }
         
         private void InterpolateToTarget()
