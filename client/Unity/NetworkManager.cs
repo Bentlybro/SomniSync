@@ -429,7 +429,9 @@ namespace SomniumSpace.Worlds.bently.networking
                     if (offset + 40 > length) break;
                     
                     // Read GUID (16 bytes)
-                    string entityId = new System.Guid(new ReadOnlySpan<byte>(data, offset, 16)).ToString();
+                    byte[] guidBytes = new byte[16];
+                    Buffer.BlockCopy(data, offset, guidBytes, 0, 16);
+                    string entityId = new System.Guid(guidBytes).ToString();
                     offset += 16;
                     
                     // Read position (12 bytes)
@@ -583,8 +585,21 @@ namespace SomniumSpace.Worlds.bently.networking
             {
                 obj = unlinked.gameObject;
                 unlinked.entityId = message.EntityId;
-                // Don't call ReleaseOwnership — spectator objects were never owned
                 _networkObjects[message.EntityId] = unlinked;
+                
+                // Set initial position immediately
+                if (message.Position != null)
+                    obj.transform.position = position;
+                if (message.Rotation != null)
+                    obj.transform.rotation = rotation;
+                
+                // Initialize snapshot interpolation to this position
+                unlinked.ApplyServerUpdate(position, message.Rotation != null 
+                    ? new Vector3(message.Rotation.X, message.Rotation.Y, message.Rotation.Z)
+                    : obj.transform.eulerAngles);
+                
+                _spawnedEntities[message.EntityId] = obj;
+                return; // Done — skip legacy NetworkEntity path
             }
             
             // If no scene object found, instantiate from prefab (runtime-spawned objects)

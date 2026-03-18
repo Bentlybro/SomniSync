@@ -234,6 +234,25 @@ namespace SomniumSpace.Worlds.bently.networking
         /// <summary>
         /// Apply position/rotation from the server (called by NetworkManager).
         /// </summary>
+        /// <summary>
+        /// Fast path for binary updates (no boxing).
+        /// </summary>
+        public void ApplyServerUpdate(Vector3 position, Vector3 rotation)
+        {
+            if (_isOwned) return;
+            
+            _fromPosition = _hasReceivedUpdate ? _toPosition : transform.position;
+            _fromRotation = _hasReceivedUpdate ? _toRotation : transform.rotation;
+            _prevSnapshotTime = _snapshotTime;
+            _snapshotTime = Time.time;
+            _interpolationT = 0f;
+            
+            if (syncPosition) _toPosition = position;
+            if (syncRotation) _toRotation = Quaternion.Euler(rotation);
+            
+            _hasReceivedUpdate = true;
+        }
+        
         public void ApplyServerUpdate(Vector3? position, Vector3? rotation)
         {
             if (_isOwned)
