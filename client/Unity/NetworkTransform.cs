@@ -131,6 +131,14 @@ namespace SomniumSpace.Worlds.bently.networking
         /// </summary>
         public void ApplyServerUpdate(Vector3? position, Vector3? rotation)
         {
+            // Don't apply server updates to owned entities - local physics is authoritative
+            if (_networkEntity != null && _networkEntity.isOwned)
+            {
+                if (showDebugLogs)
+                    Debug.Log($"[NetworkTransform] Ignoring server update for owned entity {gameObject.name}");
+                return;
+            }
+            
             if (position.HasValue && syncPosition)
             {
                 _targetPosition = position.Value;
