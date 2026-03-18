@@ -33,7 +33,7 @@ namespace SomniumSpace.Worlds.bently.networking
                 message.IsMasterClient = ExtractBool(json, "IsMasterClient");
                 
                 // Extract Updates array (JsonUtility can't handle arrays as class properties)
-                message.Updates = ExtractUpdates(json);
+                message.Updates = UpdatesParser.ParseUpdatesArray(json);
                 
                 return message;
             }
