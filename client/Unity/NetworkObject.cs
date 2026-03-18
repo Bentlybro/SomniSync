@@ -131,6 +131,9 @@ namespace SomniumSpace.Worlds.bently.networking
             {
                 _isOwned = false;
                 SetPhysicsState(false); // Spectators don't simulate physics
+                
+                // Register as available for linking by batch_sync
+                NetworkManager.Instance.RegisterUnlinkedObject(this);
                 yield break;
             }
             

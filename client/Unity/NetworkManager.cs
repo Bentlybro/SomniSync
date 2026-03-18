@@ -83,6 +83,9 @@ namespace SomniumSpace.Worlds.bently.networking
         private List<NetworkMessage> _pendingBatchSpawns = new List<NetworkMessage>();
         private float _nextSpawnFlushTime = 0f;
         
+        // Unlinked scene objects (spectator) — indexed by entityType for O(1) lookup
+        private Dictionary<string, Queue<NetworkObject>> _unlinkedObjects = new Dictionary<string, Queue<NetworkObject>>();
+        
         private void Awake()
         {
             if (Instance != null && Instance != this)
@@ -123,6 +126,21 @@ namespace SomniumSpace.Worlds.bently.networking
             {
                 FlushBatchedSpawns();
             }
+        }
+        
+        public void RegisterUnlinkedObject(NetworkObject obj)
+        {
+            string type = obj.entityType;
+            if (!_unlinkedObjects.ContainsKey(type))
+                _unlinkedObjects[type] = new Queue<NetworkObject>();
+            _unlinkedObjects[type].Enqueue(obj);
+        }
+        
+        private NetworkObject TakeUnlinkedObject(string entityType)
+        {
+            if (_unlinkedObjects.TryGetValue(entityType, out var queue) && queue.Count > 0)
+                return queue.Dequeue();
+            return null;
         }
         
         private void FlushBatchedSpawns()
@@ -559,36 +577,14 @@ namespace SomniumSpace.Worlds.bently.networking
             
             GameObject obj = null;
             
-            // Check for existing scene object first — try NetworkObject (new), then NetworkEntity (legacy)
-            NetworkObject[] sceneNetworkObjects = FindObjectsByType<NetworkObject>(FindObjectsSortMode.None);
-            foreach (var sceneObj in sceneNetworkObjects)
+            // Try to link with a pre-registered unlinked scene object (O(1) lookup)
+            NetworkObject unlinked = TakeUnlinkedObject(message.EntityType);
+            if (unlinked != null)
             {
-                if (string.IsNullOrEmpty(sceneObj.entityId) && 
-                    sceneObj.entityType == message.EntityType)
-                {
-                    obj = sceneObj.gameObject;
-                    // Link it up
-                    sceneObj.entityId = message.EntityId;
-                    sceneObj.ReleaseOwnership();
-                    _networkObjects[message.EntityId] = sceneObj;
-                    if (showDebugLogs) Debug.Log($"[NetworkManager] Linking scene NetworkObject {obj.name} to entity {message.EntityId}");
-                    break;
-                }
-            }
-            
-            if (obj == null)
-            {
-                NetworkEntity[] sceneEntities = FindObjectsByType<NetworkEntity>(FindObjectsSortMode.None);
-                foreach (var sceneEntity in sceneEntities)
-                {
-                    if (string.IsNullOrEmpty(sceneEntity.entityId) && 
-                        sceneEntity.entityType == message.EntityType)
-                    {
-                        obj = sceneEntity.gameObject;
-                        if (showDebugLogs) Debug.Log($"[NetworkManager] Linking scene NetworkEntity {obj.name} to entity {message.EntityId}");
-                        break;
-                    }
-                }
+                obj = unlinked.gameObject;
+                unlinked.entityId = message.EntityId;
+                // Don't call ReleaseOwnership — spectator objects were never owned
+                _networkObjects[message.EntityId] = unlinked;
             }
             
             // If no scene object found, instantiate from prefab (runtime-spawned objects)
