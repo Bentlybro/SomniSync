@@ -1027,8 +1027,8 @@ namespace SomniumSpace.Worlds.bently.networking
                 }
             });
             
-            // Delay flush to collect all spawns from this frame
-            _nextSpawnFlushTime = Time.time + 0.1f;
+            // Delay flush to collect ALL spawns (800+ objects register across multiple frames)
+            _nextSpawnFlushTime = Time.time + 1.0f;
         }
         
         public void SendPhysicsUpdate(NetworkObject obj, Vector3 position, Vector3 rotation)
