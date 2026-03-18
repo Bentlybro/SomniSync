@@ -135,12 +135,14 @@ namespace SomniumSpace.Worlds.bently.networking
             {
                 _targetPosition = position.Value;
                 _hasReceivedUpdate = true;
+                Debug.Log($"[NetworkTransform] ApplyServerUpdate: Position ({position.Value.x:F2}, {position.Value.y:F2}, {position.Value.z:F2}) on {gameObject.name}");
             }
             
             if (rotation.HasValue && syncRotation)
             {
                 _targetRotation = Quaternion.Euler(rotation.Value);
                 _hasReceivedUpdate = true;
+                Debug.Log($"[NetworkTransform] ApplyServerUpdate: Rotation ({rotation.Value.x:F2}, {rotation.Value.y:F2}, {rotation.Value.z:F2}) on {gameObject.name}");
             }
         }
     }
