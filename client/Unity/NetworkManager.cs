@@ -41,8 +41,10 @@ namespace Bentlybro.CustomNetworking
         private CancellationTokenSource _cancellationTokenSource;
         private bool _isConnected = false;
         private bool _isReceiving = false;
+        private string _clientId = null; // Our client ID from server
         
         public bool IsConnected => _isConnected;
+        public string ClientId => _clientId;
         
         // Entity tracking
         private Dictionary<string, NetworkEntity> _entities = new Dictionary<string, NetworkEntity>();
@@ -244,6 +246,13 @@ namespace Bentlybro.CustomNetworking
                 
                 switch (message.Type)
                 {
+                    case "client_id":
+                        // Server assigned us an ID
+                        _clientId = message.OwnerId;
+                        if (showDebugLogs)
+                            Debug.Log($"[NetworkManager] Received client ID: {_clientId}");
+                        break;
+                    
                     case "spawn":
                         HandleSpawn(message);
                         break;
@@ -274,8 +283,16 @@ namespace Bentlybro.CustomNetworking
             if (string.IsNullOrEmpty(message.EntityId))
                 return;
             
-            // Don't spawn if already exists (including local entities we own)
-            if (_spawnedEntities.ContainsKey(message.EntityId) || _entities.ContainsKey(message.EntityId))
+            // Don't spawn if we own this entity (it's already in our scene)
+            if (!string.IsNullOrEmpty(message.OwnerId) && message.OwnerId == _clientId)
+            {
+                if (showDebugLogs)
+                    Debug.Log($"[NetworkManager] Ignoring spawn for owned entity: {message.EntityId}");
+                return;
+            }
+            
+            // Don't spawn if already exists
+            if (_spawnedEntities.ContainsKey(message.EntityId))
                 return;
             
             // Spawn entity
@@ -306,6 +323,16 @@ namespace Bentlybro.CustomNetworking
             
             entity.entityId = message.EntityId;
             entity.entityType = message.EntityType ?? "entity";
+            entity.isOwned = false; // We don't own remote entities
+            
+            // Disable physics for remote entities - they just render server state
+            var rb = obj.GetComponent<Rigidbody>();
+            if (rb != null)
+            {
+                rb.isKinematic = true; // Make kinematic so we can move it via transform
+                if (showDebugLogs)
+                    Debug.Log($"[NetworkManager] Disabled physics for remote entity: {message.EntityId}");
+            }
             
             _spawnedEntities[message.EntityId] = obj;
             
@@ -439,6 +466,35 @@ namespace Bentlybro.CustomNetworking
             StartCoroutine(SendMessageAsync(message));
         }
         
+        /// <summary>
+        /// Send physics state update to server for owned entities
+        /// </summary>
+        public void SendPhysicsUpdate(NetworkEntity entity, Vector3 position, Vector3 rotation)
+        {
+            if (!_isConnected || entity == null || !entity.isOwned)
+                return;
+            
+            var message = new NetworkMessage
+            {
+                Type = "client_update",
+                EntityId = entity.entityId,
+                Position = new Vector3Data
+                {
+                    X = position.x,
+                    Y = position.y,
+                    Z = position.z
+                },
+                Rotation = new Vector3Data
+                {
+                    X = rotation.x,
+                    Y = rotation.y,
+                    Z = rotation.z
+                }
+            };
+            
+            StartCoroutine(SendMessageAsync(message));
+        }
+        
         private void SpawnPendingEntities()
         {
             if (showDebugLogs && _pendingSpawns.Count > 0)
@@ -512,11 +568,13 @@ namespace Bentlybro.CustomNetworking
     
     // Message classes (must match server protocol)
     [Serializable]
+    [Serializable]
     public class NetworkMessage
     {
         public string Type;
         public string EntityId;
         public string EntityType;
+        public string OwnerId; // Which client owns this entity
         public Vector3Data Position;
         public Vector3Data Rotation;
         public EntityUpdate[] Updates;

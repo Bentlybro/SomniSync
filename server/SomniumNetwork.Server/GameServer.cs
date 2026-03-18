@@ -8,11 +8,14 @@ namespace SomniumNetwork.Server;
 public class GameServer
 {
     private readonly Dictionary<string, Entity> _entities = new();
+    private readonly Dictionary<string, string> _entityOwners = new(); // EntityId -> ClientId
+    private readonly Dictionary<string, WebSocket> _clientSockets = new(); // ClientId -> WebSocket
     private readonly ConcurrentBag<WebSocket> _clients = new();
     private readonly object _entityLock = new();
     private float _time = 0f;
+    private int _nextClientId = 1;
     
-    public void SpawnEntity(string id, string type, float x, float y, float z)
+    public void SpawnEntity(string id, string type, float x, float y, float z, string ownerId)
     {
         lock (_entityLock)
         {
@@ -25,20 +28,22 @@ public class GameServer
             };
             
             _entities[id] = entity;
+            _entityOwners[id] = ownerId; // Track ownership
             
             if (_entities.Count % 100 == 0)
             {
                 Console.WriteLine($"[Server] Total entities: {_entities.Count}");
             }
             
-            // Send spawn message to all clients
+            // Send spawn message to all clients with ownership info
             var msg = new NetworkMessage
             {
                 Type = "spawn",
                 EntityId = id,
                 EntityType = type,
                 Position = entity.Position,
-                Rotation = entity.Rotation
+                Rotation = entity.Rotation,
+                OwnerId = ownerId // Tell clients who owns this
             };
             
             _ = BroadcastMessageAsync(msg);
@@ -175,8 +180,31 @@ public class GameServer
     
     public async Task HandleClientAsync(WebSocket socket)
     {
+        // Assign client ID
+        string clientId;
+        lock (_entityLock)
+        {
+            clientId = $"client_{_nextClientId++}";
+            _clientSockets[clientId] = socket;
+        }
+        
         _clients.Add(socket);
-        Console.WriteLine($"[Server] Client connected ({_clients.Count} total)");
+        Console.WriteLine($"[Server] Client connected: {clientId} ({_clients.Count} total)");
+        
+        // Send client their ID
+        var idMsg = new NetworkMessage
+        {
+            Type = "client_id",
+            OwnerId = clientId
+        };
+        var idJson = JsonSerializer.Serialize(idMsg);
+        var idBytes = Encoding.UTF8.GetBytes(idJson);
+        await socket.SendAsync(
+            new ArraySegment<byte>(idBytes),
+            WebSocketMessageType.Text,
+            true,
+            CancellationToken.None
+        );
         
         // Send all existing entities to new client
         lock (_entityLock)
@@ -223,7 +251,7 @@ public class GameServer
                 if (result.MessageType == WebSocketMessageType.Text)
                 {
                     string json = Encoding.UTF8.GetString(buffer, 0, result.Count);
-                    await HandleClientMessageAsync(json);
+                    await HandleClientMessageAsync(json, clientId);
                 }
             }
         }
@@ -240,10 +268,16 @@ public class GameServer
             }
         }
         
-        Console.WriteLine($"[Server] Client disconnected ({_clients.Count - 1} remaining)");
+        // Clean up on disconnect
+        lock (_entityLock)
+        {
+            _clientSockets.Remove(clientId);
+        }
+        
+        Console.WriteLine($"[Server] Client disconnected: {clientId} ({_clients.Count - 1} remaining)");
     }
     
-    private Task HandleClientMessageAsync(string json)
+    private Task HandleClientMessageAsync(string json, string clientId)
     {
         try
         {
@@ -257,13 +291,14 @@ public class GameServer
                 case "client_spawn":
                     if (!string.IsNullOrEmpty(message.EntityId) && message.Position != null)
                     {
-                        Console.WriteLine($"[Server] Client spawned entity: {message.EntityId}");
+                        Console.WriteLine($"[Server] Client {clientId} spawned entity: {message.EntityId}");
                         SpawnEntity(
                             message.EntityId,
                             message.EntityType ?? "entity",
                             message.Position.X,
                             message.Position.Y,
-                            message.Position.Z
+                            message.Position.Z,
+                            clientId // Assign ownership to spawning client
                         );
                     }
                     break;
@@ -271,8 +306,43 @@ public class GameServer
                 case "client_despawn":
                     if (!string.IsNullOrEmpty(message.EntityId))
                     {
-                        Console.WriteLine($"[Server] Client despawned entity: {message.EntityId}");
-                        DespawnEntity(message.EntityId);
+                        // Validate ownership
+                        lock (_entityLock)
+                        {
+                            if (_entityOwners.TryGetValue(message.EntityId, out var ownerId) && ownerId == clientId)
+                            {
+                                Console.WriteLine($"[Server] Client {clientId} despawned entity: {message.EntityId}");
+                                DespawnEntity(message.EntityId);
+                            }
+                            else
+                            {
+                                Console.WriteLine($"[Server] Client {clientId} tried to despawn entity {message.EntityId} but doesn't own it");
+                            }
+                        }
+                    }
+                    break;
+                
+                case "client_update":
+                    // Handle physics state updates from owning client
+                    if (!string.IsNullOrEmpty(message.EntityId) && message.Position != null)
+                    {
+                        lock (_entityLock)
+                        {
+                            // Validate ownership
+                            if (_entityOwners.TryGetValue(message.EntityId, out var ownerId) && ownerId == clientId)
+                            {
+                                // Update entity state
+                                if (_entities.TryGetValue(message.EntityId, out var entity))
+                                {
+                                    entity.Position = message.Position;
+                                    if (message.Rotation != null)
+                                    {
+                                        entity.Rotation = message.Rotation;
+                                    }
+                                    entity.MarkAsDirty(); // Force send on next update
+                                }
+                            }
+                        }
                     }
                     break;
                 

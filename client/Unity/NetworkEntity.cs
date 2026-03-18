@@ -25,6 +25,7 @@ namespace Bentlybro.CustomNetworking
         public bool showDebugLogs = false;
         
         public bool IsSpawned { get; private set; }
+        public bool isOwned = true; // By default, scene objects are owned by the client that spawned them
         
         private void Start()
         {

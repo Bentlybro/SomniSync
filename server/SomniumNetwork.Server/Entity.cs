@@ -30,6 +30,13 @@ public class Entity
         LastSentPosition = new Vector3 { X = Position.X, Y = Position.Y, Z = Position.Z };
         LastSentRotation = new Vector3 { X = Rotation.X, Y = Rotation.Y, Z = Rotation.Z };
     }
+    
+    public void MarkAsDirty()
+    {
+        // Reset last sent to force update on next tick
+        LastSentPosition = new Vector3 { X = float.MaxValue, Y = float.MaxValue, Z = float.MaxValue };
+        LastSentRotation = new Vector3 { X = float.MaxValue, Y = float.MaxValue, Z = float.MaxValue };
+    }
 }
 
 public class Vector3

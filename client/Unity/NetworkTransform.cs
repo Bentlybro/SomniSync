@@ -35,11 +35,56 @@ namespace Bentlybro.CustomNetworking
         private Vector3 _targetScale;
         private bool _hasReceivedUpdate = false;
         
+        private NetworkEntity _networkEntity;
+        private Vector3 _lastSentPosition;
+        private Quaternion _lastSentRotation;
+        private float _updateInterval = 0.05f; // 20 Hz update rate
+        private float _nextUpdateTime = 0f;
+        
         private void Start()
         {
             _targetPosition = transform.position;
             _targetRotation = transform.rotation;
             _targetScale = transform.localScale;
+            
+            _networkEntity = GetComponent<NetworkEntity>();
+            if (_networkEntity == null)
+            {
+                Debug.LogError($"[NetworkTransform] NetworkEntity component required on {gameObject.name}");
+                enabled = false;
+                return;
+            }
+            
+            _lastSentPosition = transform.position;
+            _lastSentRotation = transform.rotation;
+        }
+        
+        private void FixedUpdate()
+        {
+            // If we own this entity, send physics updates to server
+            if (_networkEntity != null && _networkEntity.isOwned && NetworkManager.Instance != null)
+            {
+                if (Time.time >= _nextUpdateTime)
+                {
+                    // Check if moved significantly (delta compression)
+                    float positionDelta = Vector3.Distance(transform.position, _lastSentPosition);
+                    float rotationDelta = Quaternion.Angle(transform.rotation, _lastSentRotation);
+                    
+                    if (positionDelta > 0.01f || rotationDelta > 1f) // 1cm or 1 degree threshold
+                    {
+                        NetworkManager.Instance.SendPhysicsUpdate(
+                            _networkEntity,
+                            transform.position,
+                            transform.eulerAngles
+                        );
+                        
+                        _lastSentPosition = transform.position;
+                        _lastSentRotation = transform.rotation;
+                    }
+                    
+                    _nextUpdateTime = Time.time + _updateInterval;
+                }
+            }
         }
         
         private void Update()

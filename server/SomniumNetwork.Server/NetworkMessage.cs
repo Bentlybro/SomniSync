@@ -2,9 +2,10 @@ namespace SomniumNetwork.Server;
 
 public class NetworkMessage
 {
-    public string Type { get; set; } = ""; // "spawn", "despawn", "update", "variable"
+    public string Type { get; set; } = ""; // "spawn", "despawn", "update", "variable", "client_id"
     public string? EntityId { get; set; }
     public string? EntityType { get; set; }
+    public string? OwnerId { get; set; } // Which client owns this entity
     public Vector3? Position { get; set; }
     public Vector3? Rotation { get; set; }
     public List<EntityUpdate>? Updates { get; set; }

@@ -92,10 +92,16 @@ namespace Bentlybro.CustomNetworking
         
         private void UpdateAuthority()
         {
-            // TODO: Get actual authority from NetworkManager
-            // For now: stateAuthority == 0 means server controls (we don't have authority)
-            // stateAuthority > 0 means a client controls it
-            _hasAuthority = (stateAuthority > 0); // Simplified for now
+            // Check if we own this entity
+            if (_networkEntity != null)
+            {
+                _hasAuthority = _networkEntity.isOwned;
+            }
+            else
+            {
+                // Fallback: use stateAuthority field
+                _hasAuthority = (stateAuthority > 0);
+            }
         }
         
         private void SendPhysicsState()
