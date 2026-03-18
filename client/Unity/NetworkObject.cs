@@ -92,21 +92,21 @@ namespace SomniumSpace.Worlds.bently.networking
             // Auto-detect rigidbody
             _rigidbody = GetComponent<Rigidbody>();
             _hasRigidbody = _rigidbody != null;
-        }
-        
-        private void Start()
-        {
+            
             _fromPosition = transform.position;
             _toPosition = transform.position;
             _fromRotation = transform.rotation;
             _toRotation = transform.rotation;
             _lastSentPosition = transform.position;
             _lastSentRotation = transform.rotation;
-            
+        }
+        
+        private void Start()
+        {
             if (spawnOnStart)
             {
-                // Register as unlinked IMMEDIATELY so batch_sync can find us
-                // (don't wait for coroutine — batch_sync arrives fast)
+                // Register as unlinked in Awake is too early (NetworkManager might not exist yet)
+                // So register here in Start, but BEFORE the coroutine
                 if (NetworkManager.Instance != null)
                     NetworkManager.Instance.RegisterUnlinkedObject(this);
                 

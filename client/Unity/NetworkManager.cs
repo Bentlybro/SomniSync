@@ -59,6 +59,8 @@ namespace SomniumSpace.Worlds.bently.networking
         private bool _isReconnecting = false;
         private bool _hasLoggedSendError = false; // Only log send errors once per disconnect
         private System.IO.MemoryStream _binaryBuffer; // For multi-frame binary messages
+        private bool _sceneObjectsReady = false; // Set true after first frame (all Start() calls done)
+        private Queue<NetworkMessage> _deferredSpawns = new Queue<NetworkMessage>(); // Spawns received before scene ready
         
         public bool IsConnected => _isConnected;
         public int EntityCount => _spawnedEntities.Count;
@@ -108,6 +110,19 @@ namespace SomniumSpace.Worlds.bently.networking
         
         private void Update()
         {
+            // Mark scene objects ready after first frame (all Start() calls have run)
+            if (!_sceneObjectsReady)
+            {
+                _sceneObjectsReady = true;
+                Debug.Log($"[NetworkManager] Scene objects ready. Unlinked objects registered: {string.Join(", ", _unlinkedObjects.Select(kvp => $"{kvp.Key}:{kvp.Value.Count}"))}");
+                
+                // Process any spawns that arrived before scene was ready
+                while (_deferredSpawns.Count > 0)
+                {
+                    HandleSpawn(_deferredSpawns.Dequeue());
+                }
+            }
+            
             // Update status display every frame
             if (connectionStatusText != null && _isConnected)
             {
@@ -542,6 +557,25 @@ namespace SomniumSpace.Worlds.bently.networking
             if (message.Spawns == null || message.Spawns.Length == 0)
                 return;
             
+            // Defer if scene objects haven't registered yet
+            if (!_sceneObjectsReady)
+            {
+                // Convert to individual deferred spawns
+                foreach (var spawn in message.Spawns)
+                {
+                    _deferredSpawns.Enqueue(new NetworkMessage
+                    {
+                        Type = "spawn",
+                        EntityId = spawn.EntityId,
+                        EntityType = spawn.EntityType,
+                        OwnerId = spawn.OwnerId,
+                        Position = spawn.Position,
+                        Rotation = spawn.Rotation
+                    });
+                }
+                return;
+            }
+            
             Debug.Log($"[NetworkManager] Batch sync: receiving {message.Spawns.Length} entities");
             
             int spawned = 0;
@@ -580,13 +614,19 @@ namespace SomniumSpace.Worlds.bently.networking
             // Don't spawn if we own this entity (it's already in our scene)
             if (!string.IsNullOrEmpty(message.OwnerId) && message.OwnerId == _clientId)
             {
-                // Ignore — server broadcasts spawns to all clients including owner
                 return;
             }
             
             // Don't spawn if already exists
             if (_spawnedEntities.ContainsKey(message.EntityId))
                 return;
+            
+            // Defer if scene objects haven't registered yet
+            if (!_sceneObjectsReady)
+            {
+                _deferredSpawns.Enqueue(message);
+                return;
+            }
             
             // Spawn entity
             Vector3 position = message.Position != null 
