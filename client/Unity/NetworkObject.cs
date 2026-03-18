@@ -93,6 +93,14 @@ namespace SomniumSpace.Worlds.bently.networking
             _rigidbody = GetComponent<Rigidbody>();
             _hasRigidbody = _rigidbody != null;
             
+            // IMMEDIATELY freeze physics for ALL objects until we know if we're master or spectator.
+            // Without this, 800 rigidbodies collide and explode during the frames before
+            // DelayedRegister() runs SetPhysicsState(false).
+            if (_hasRigidbody)
+            {
+                _rigidbody.isKinematic = true;
+            }
+            
             _fromPosition = transform.position;
             _toPosition = transform.position;
             _fromRotation = transform.rotation;
@@ -135,10 +143,12 @@ namespace SomniumSpace.Worlds.bently.networking
             if (!_isMaster)
             {
                 _isOwned = false;
-                SetPhysicsState(false); // Spectators don't simulate physics
+                // Physics already frozen in Awake(), stays frozen for spectators
                 yield break;
             }
             
+            // Master: re-enable physics now that we know we're the authority
+            SetPhysicsState(true);
             Register();
         }
         
