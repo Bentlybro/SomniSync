@@ -98,7 +98,7 @@ namespace Bentlybro.CustomNetworking
             // Check sleep threshold
             if (useRenderSleepThreshold)
             {
-                float velocity = _rigidbody.velocity.magnitude + _rigidbody.angularVelocity.magnitude;
+                float velocity = _rigidbody.linearVelocity.magnitude + _rigidbody.angularVelocity.magnitude;
                 if (velocity < renderSleepThreshold && _rigidbody.IsSleeping())
                 {
                     return; // Don't send updates when sleeping
@@ -129,8 +129,8 @@ namespace Bentlybro.CustomNetworking
             else
             {
                 // Interpolate rigidbody (includes velocity)
-                _rigidbody.velocity = Vector3.Lerp(
-                    _rigidbody.velocity,
+                _rigidbody.linearVelocity = Vector3.Lerp(
+                    _rigidbody.linearVelocity,
                     _targetVelocity,
                     Time.fixedDeltaTime * 10f
                 );
