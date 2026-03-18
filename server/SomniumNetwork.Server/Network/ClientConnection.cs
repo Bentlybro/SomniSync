@@ -63,6 +63,9 @@ public class ClientConnection
             IsMasterClient = isMasterClient
         };
         
+        // DEBUG: Log what we're actually sending
+        Console.WriteLine($"[ClientConnection] Sending to {clientId}: IsMasterClient={isMasterClient}");
+        
         await _broadcaster.SendToClientAsync(socket, idMsg);
     }
     

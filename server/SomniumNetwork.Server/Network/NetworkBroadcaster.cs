@@ -82,6 +82,12 @@ public class NetworkBroadcaster
         var json = JsonSerializer.Serialize(message);
         var bytes = Encoding.UTF8.GetBytes(json);
         
+        // DEBUG: Log JSON for client_id messages
+        if (message.Type == "client_id")
+        {
+            Console.WriteLine($"[NetworkBroadcaster] Sending JSON: {json}");
+        }
+        
         try
         {
             await socket.SendAsync(
