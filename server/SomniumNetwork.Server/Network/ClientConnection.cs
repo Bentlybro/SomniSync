@@ -51,8 +51,8 @@ public class ClientConnection
         // Send client their ID and master status
         await SendClientIdAsync(socket, clientId, isMasterClient);
         
-        // Send all existing entities to new client
-        await SyncExistingEntitiesAsync(socket);
+        // Send all existing entities to new client (pauses updates until done)
+        await SyncExistingEntitiesAsync(socket, clientId);
         
         // Receive and process messages
         await ReceiveMessagesAsync(socket, clientId);
@@ -75,24 +75,38 @@ public class ClientConnection
         await _broadcaster.SendToSocketAsync(socket, idMsg);
     }
     
-    private async Task SyncExistingEntitiesAsync(WebSocket socket)
+    private async Task SyncExistingEntitiesAsync(WebSocket socket, string clientId)
     {
         var entities = _entityManager.GetAllEntities();
         
-        foreach (var entity in entities)
+        if (entities.Count == 0)
         {
-            var msg = new NetworkMessage
-            {
-                Type = "spawn",
-                EntityId = entity.Id,
-                EntityType = entity.Type,
-                Position = entity.Position,
-                Rotation = entity.Rotation,
-                OwnerId = _entityManager.GetOwner(entity.Id)
-            };
-            
-            await _broadcaster.SendToSocketAsync(socket, msg);
+            _broadcaster.SetClientReady(clientId);
+            return;
         }
+        
+        // Send ONE batch_sync message with all entities (not 500 individual spawns)
+        var spawns = entities.Select(entity => new EntitySpawnData
+        {
+            EntityId = entity.Id,
+            EntityType = entity.Type,
+            Position = entity.Position,
+            Rotation = entity.Rotation,
+            OwnerId = _entityManager.GetOwner(entity.Id)
+        }).ToList();
+        
+        var batchMsg = new NetworkMessage
+        {
+            Type = "batch_sync",
+            Spawns = spawns
+        };
+        
+        await _broadcaster.SendToSocketAsync(socket, batchMsg);
+        
+        Console.WriteLine($"[ClientConnection] Sent batch_sync with {entities.Count} entities to {clientId}");
+        
+        // Now mark client ready for real-time updates
+        _broadcaster.SetClientReady(clientId);
     }
     
     private async Task HandleDisconnectAsync(string clientId)

@@ -13,6 +13,7 @@ public class NetworkBroadcaster
 {
     private readonly ConcurrentDictionary<string, WebSocket> _clients = new();
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _sendLocks = new();
+    private readonly ConcurrentDictionary<string, bool> _clientReady = new(); // false = syncing initial state
     private string? _masterClientId = null;
     private readonly object _masterLock = new();
     
@@ -23,6 +24,13 @@ public class NetworkBroadcaster
     {
         _clients[clientId] = socket;
         _sendLocks[clientId] = new SemaphoreSlim(1, 1);
+        _clientReady[clientId] = false; // Not ready until initial sync complete
+    }
+    
+    public void SetClientReady(string clientId)
+    {
+        _clientReady[clientId] = true;
+        Console.WriteLine($"[NetworkBroadcaster] Client {clientId} ready for updates");
     }
     
     /// <summary>
@@ -33,6 +41,7 @@ public class NetworkBroadcaster
     {
         _clients.TryRemove(clientId, out _);
         _sendLocks.TryRemove(clientId, out _);
+        _clientReady.TryRemove(clientId, out _);
         
         lock (_masterLock)
         {
@@ -239,11 +248,12 @@ public class NetworkBroadcaster
         
         var segment = new ArraySegment<byte>(buffer, 0, offset);
         
-        // Send as binary WebSocket message
+        // Send as binary WebSocket message (skip clients still syncing)
         var tasks = new List<Task>();
         foreach (var kvp in _clients)
         {
-            if (kvp.Value.State == WebSocketState.Open)
+            if (kvp.Value.State == WebSocketState.Open && 
+                _clientReady.TryGetValue(kvp.Key, out var ready) && ready)
             {
                 tasks.Add(SendBinaryWithLockAsync(kvp.Key, kvp.Value, segment));
             }

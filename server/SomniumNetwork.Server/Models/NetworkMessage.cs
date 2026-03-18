@@ -13,12 +13,22 @@ public class NetworkMessage
     public Vector3? Position { get; set; }
     public Vector3? Rotation { get; set; }
     public List<EntityUpdate>? Updates { get; set; }
+    public List<EntitySpawnData>? Spawns { get; set; } // For batch_sync
     public Dictionary<string, object>? Variables { get; set; }
 }
 
 public class EntityUpdate
 {
     public string Id { get; set; } = "";
+    public Vector3? Position { get; set; }
+    public Vector3? Rotation { get; set; }
+}
+
+public class EntitySpawnData
+{
+    public string EntityId { get; set; } = "";
+    public string EntityType { get; set; } = "";
+    public string? OwnerId { get; set; }
     public Vector3? Position { get; set; }
     public Vector3? Rotation { get; set; }
 }

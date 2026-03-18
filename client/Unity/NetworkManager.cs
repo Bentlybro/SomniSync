@@ -468,6 +468,10 @@ namespace SomniumSpace.Worlds.bently.networking
                         HandleSpawn(message);
                         break;
                     
+                    case "batch_sync":
+                        HandleBatchSync(message);
+                        break;
+                    
                     case "despawn":
                         HandleDespawn(message);
                         break;
@@ -491,6 +495,41 @@ namespace SomniumSpace.Worlds.bently.networking
                 if (showDebugLogs)
                     Debug.LogError($"[NetworkManager] Error processing message: {ex.Message}");
             }
+        }
+        
+        private void HandleBatchSync(NetworkMessage message)
+        {
+            if (message.Spawns == null || message.Spawns.Length == 0)
+                return;
+            
+            Debug.Log($"[NetworkManager] Batch sync: receiving {message.Spawns.Length} entities");
+            
+            int spawned = 0;
+            foreach (var spawn in message.Spawns)
+            {
+                // Skip owned entities
+                if (!string.IsNullOrEmpty(spawn.OwnerId) && spawn.OwnerId == _clientId)
+                    continue;
+                
+                // Skip existing
+                if (_spawnedEntities.ContainsKey(spawn.EntityId))
+                    continue;
+                
+                // Convert to a spawn message and reuse existing logic
+                var spawnMsg = new NetworkMessage
+                {
+                    Type = "spawn",
+                    EntityId = spawn.EntityId,
+                    EntityType = spawn.EntityType,
+                    OwnerId = spawn.OwnerId,
+                    Position = spawn.Position,
+                    Rotation = spawn.Rotation
+                };
+                HandleSpawn(spawnMsg);
+                spawned++;
+            }
+            
+            Debug.Log($"[NetworkManager] Batch sync complete: spawned {spawned} entities");
         }
         
         private void HandleSpawn(NetworkMessage message)
@@ -1011,6 +1050,7 @@ namespace SomniumSpace.Worlds.bently.networking
         public Vector3Data Position;
         public Vector3Data Rotation;
         public EntityUpdate[] Updates;
+        public EntitySpawnData[] Spawns; // For batch_sync
     }
     
     [Serializable]
@@ -1025,6 +1065,16 @@ namespace SomniumSpace.Worlds.bently.networking
     public class EntityUpdate
     {
         public string Id;
+        public Vector3Data Position;
+        public Vector3Data Rotation;
+    }
+    
+    [Serializable]
+    public class EntitySpawnData
+    {
+        public string EntityId;
+        public string EntityType;
+        public string OwnerId;
         public Vector3Data Position;
         public Vector3Data Rotation;
     }
