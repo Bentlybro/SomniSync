@@ -170,7 +170,7 @@ public class GameServer
         }
         
         // Keep connection alive and receive messages
-        var buffer = new byte[8192];
+        var buffer = new byte[65536]; // 64KB buffer
         try
         {
             while (socket.State == WebSocketState.Open)
@@ -192,12 +192,20 @@ public class GameServer
                 }
             }
         }
+        catch (WebSocketException)
+        {
+            // Normal disconnect, don't log
+        }
         catch (Exception ex)
         {
-            Console.WriteLine($"[Server] Client error: {ex.Message}");
+            // Log unexpected errors only
+            if (!ex.Message.Contains("internal WebSocket error"))
+            {
+                Console.WriteLine($"[Server] Client error: {ex.Message}");
+            }
         }
         
-        Console.WriteLine($"[Server] Client disconnected");
+        Console.WriteLine($"[Server] Client disconnected ({_clients.Count - 1} remaining)");
     }
     
     private Task HandleClientMessageAsync(string json)

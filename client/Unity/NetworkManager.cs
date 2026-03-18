@@ -155,7 +155,8 @@ namespace Bentlybro.CustomNetworking
                 yield break;
             
             _isReceiving = true;
-            byte[] buffer = new byte[8192];
+            byte[] buffer = new byte[65536]; // 64KB buffer for large updates
+            StringBuilder messageBuilder = new StringBuilder();
             
             while (_isConnected && _webSocket != null && _webSocket.State == WebSocketState.Open)
             {
@@ -185,8 +186,17 @@ namespace Bentlybro.CustomNetworking
                 
                 if (result.MessageType == WebSocketMessageType.Text)
                 {
-                    string json = Encoding.UTF8.GetString(buffer, 0, result.Count);
-                    ProcessMessage(json);
+                    // Handle multi-part messages
+                    string chunk = Encoding.UTF8.GetString(buffer, 0, result.Count);
+                    messageBuilder.Append(chunk);
+                    
+                    // Only process when we have complete message
+                    if (result.EndOfMessage)
+                    {
+                        string json = messageBuilder.ToString();
+                        messageBuilder.Clear();
+                        ProcessMessage(json);
+                    }
                 }
             }
             

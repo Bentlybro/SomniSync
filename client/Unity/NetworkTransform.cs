@@ -22,7 +22,7 @@ namespace Bentlybro.CustomNetworking
         [Header("Interpolation")]
         [Tooltip("Interpolation speed (higher = snappier, lower = smoother)")]
         [Range(1f, 50f)]
-        public float interpolationSpeed = 10f;
+        public float interpolationSpeed = 20f;
         
         [Tooltip("Use smooth interpolation (Lerp) vs instant updates")]
         public bool useInterpolation = true;
