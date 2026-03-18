@@ -96,8 +96,10 @@ namespace SomniumSpace.Worlds.bently.networking
         
         private void Start()
         {
-            _targetPosition = transform.position;
-            _targetRotation = transform.rotation;
+            _fromPosition = transform.position;
+            _toPosition = transform.position;
+            _fromRotation = transform.rotation;
+            _toRotation = transform.rotation;
             _lastSentPosition = transform.position;
             _lastSentRotation = transform.rotation;
             
