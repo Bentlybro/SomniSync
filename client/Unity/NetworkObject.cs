@@ -144,7 +144,7 @@ namespace SomniumSpace.Worlds.bently.networking
             
             _isSpawned = true;
             
-            Debug.Log($"[NetworkObject] Registered: {gameObject.name} (ID: {entityId}, owned: {_isOwned})");
+            // Registration complete — no per-entity log to avoid spam with 200+ objects
         }
         
         private void FixedUpdate()

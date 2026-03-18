@@ -58,7 +58,10 @@ public class MessageHandler
         if (string.IsNullOrEmpty(message.EntityId) || message.Position == null)
             return;
         
-        Console.WriteLine($"[MessageHandler] Client {clientId} spawned entity: {message.EntityId}");
+        // Only log every 50th spawn to avoid spam during bulk registration
+        var count = _entityManager.EntityCount;
+        if (count <= 5 || count % 50 == 0)
+            Console.WriteLine($"[MessageHandler] Client {clientId} spawned entity: {message.EntityId} ({count + 1} total)");
         
         var entity = _entityManager.SpawnEntity(
             message.EntityId,

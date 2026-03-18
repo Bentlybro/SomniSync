@@ -42,7 +42,7 @@ namespace SomniumSpace.Worlds.bently.networking
         public int maxReconnectAttempts = 0;
         
         [Header("Debug")]
-        public bool showDebugLogs = true;
+        public bool showDebugLogs = false;
         
         [Tooltip("Optional TextMeshPro to show connection status")]
         public TMPro.TextMeshPro connectionStatusText;
@@ -56,6 +56,7 @@ namespace SomniumSpace.Worlds.bently.networking
         private bool _hasLoggedUpdateJson = false; // Debug flag to log first update JSON
         private int _reconnectAttempts = 0;
         private bool _isReconnecting = false;
+        private bool _hasLoggedSendError = false; // Only log send errors once per disconnect
         
         public bool IsConnected => _isConnected;
         public string ClientId => _clientId;
@@ -309,12 +310,7 @@ namespace SomniumSpace.Worlds.bently.networking
         {
             try
             {
-                // DEBUG: Log first update message JSON to see format
-                if (json.Contains("\"Type\":\"update\"") && !_hasLoggedUpdateJson)
-                {
-                    Debug.Log($"[NetworkManager] First update JSON: {json.Substring(0, Math.Min(300, json.Length))}");
-                    _hasLoggedUpdateJson = true;
-                }
+                // Removed first-update debug logging
                 
                 // Use JsonHelper (Newtonsoft) for deserialization
                 var message = JsonHelper.DeserializeNetworkMessage(json);
@@ -370,7 +366,7 @@ namespace SomniumSpace.Worlds.bently.networking
             if (!string.IsNullOrEmpty(message.OwnerId) && message.OwnerId == _clientId)
             {
                 if (showDebugLogs)
-                    Debug.Log($"[NetworkManager] Ignoring spawn for owned entity: {message.EntityId}");
+                    // Silently ignore — this is normal (server broadcasts spawns to all clients including owner)
                 return;
             }
             
@@ -401,7 +397,7 @@ namespace SomniumSpace.Worlds.bently.networking
                     sceneObj.entityId = message.EntityId;
                     sceneObj.ReleaseOwnership();
                     _networkObjects[message.EntityId] = sceneObj;
-                    Debug.Log($"[NetworkManager] Linking scene NetworkObject {obj.name} to entity {message.EntityId}");
+                    if (showDebugLogs) Debug.Log($"[NetworkManager] Linking scene NetworkObject {obj.name} to entity {message.EntityId}");
                     break;
                 }
             }
@@ -415,7 +411,7 @@ namespace SomniumSpace.Worlds.bently.networking
                         sceneEntity.entityType == message.EntityType)
                     {
                         obj = sceneEntity.gameObject;
-                        Debug.Log($"[NetworkManager] Linking scene NetworkEntity {obj.name} to entity {message.EntityId}");
+                        if (showDebugLogs) Debug.Log($"[NetworkManager] Linking scene NetworkEntity {obj.name} to entity {message.EntityId}");
                         break;
                     }
                 }
@@ -434,7 +430,7 @@ namespace SomniumSpace.Worlds.bently.networking
                 
                 obj = Instantiate(prefab, position, rotation);
                 if (showDebugLogs)
-                    Debug.Log($"[NetworkManager] Instantiated new prefab for entity {message.EntityId}");
+                    if (showDebugLogs) Debug.Log($"[NetworkManager] Instantiated new prefab for entity {message.EntityId}");
             }
             
             var entity = obj.GetComponent<NetworkEntity>();
@@ -453,7 +449,7 @@ namespace SomniumSpace.Worlds.bently.networking
             {
                 rb.isKinematic = true; // Make kinematic so we can move it via transform
                 if (showDebugLogs)
-                    Debug.Log($"[NetworkManager] Disabled physics for remote entity: {message.EntityId}");
+                    if (showDebugLogs) Debug.Log($"[NetworkManager] Disabled physics for remote entity: {message.EntityId}");
             }
             
             _spawnedEntities[message.EntityId] = obj;
@@ -471,7 +467,7 @@ namespace SomniumSpace.Worlds.bently.networking
             }
             
             if (showDebugLogs)
-                Debug.Log($"[NetworkManager] Spawned entity: {message.EntityId} at {position}");
+                if (showDebugLogs) Debug.Log($"[NetworkManager] Spawned entity: {message.EntityId} at {position}");
         }
         
         private void HandleDespawn(NetworkMessage message)
@@ -485,7 +481,7 @@ namespace SomniumSpace.Worlds.bently.networking
                 Destroy(obj);
                 
                 if (showDebugLogs)
-                    Debug.Log($"[NetworkManager] Despawned entity: {message.EntityId}");
+                    if (showDebugLogs) Debug.Log($"[NetworkManager] Despawned entity: {message.EntityId}");
             }
         }
         
@@ -586,7 +582,7 @@ namespace SomniumSpace.Worlds.bently.networking
                 if (entity.isOwned)
                 {
                     _spawnedEntities[entity.entityId] = entity.gameObject;
-                    Debug.Log($"[NetworkManager] RegisterEntity: Added owned entity {entity.entityId} to _spawnedEntities");
+                    if (showDebugLogs) Debug.Log($"[NetworkManager] RegisterEntity: Added owned entity {entity.entityId} to _spawnedEntities");
                 }
             }
         }
@@ -627,7 +623,7 @@ namespace SomniumSpace.Worlds.bently.networking
                 {
                     _pendingNetworkObjects.Add(obj);
                     if (showDebugLogs)
-                        Debug.Log($"[NetworkManager] Queued {obj.gameObject.name} for spawn");
+                        if (showDebugLogs) Debug.Log($"[NetworkManager] Queued {obj.gameObject.name} for spawn");
                 }
                 return;
             }
@@ -816,9 +812,14 @@ namespace SomniumSpace.Worlds.bently.networking
             // Yield outside of try-catch
             yield return new WaitUntil(() => sendTask.IsCompleted);
             
-            if (sendTask.IsFaulted && showDebugLogs)
+            if (sendTask.IsFaulted)
             {
-                Debug.LogError($"[NetworkManager] Send error: {sendTask.Exception?.Message}");
+                if (!_hasLoggedSendError)
+                {
+                    _hasLoggedSendError = true;
+                    Debug.LogWarning("[NetworkManager] Connection lost — stopping sends until reconnected");
+                }
+                _isConnected = false;
             }
         }
         
