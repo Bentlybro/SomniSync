@@ -58,7 +58,8 @@ namespace SomniumSpace.Worlds.bently.networking
             if (!NetworkManager.Instance.IsMasterClient)
             {
                 if (showDebugLogs)
-                    Debug.Log($"[NetworkEntity] Not master client - skipping spawn of {gameObject.name}");
+                    Debug.Log($"[NetworkEntity] Not master client - destroying scene object {gameObject.name}");
+                Destroy(gameObject);
                 yield break;
             }
             
