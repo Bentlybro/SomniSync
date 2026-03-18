@@ -15,7 +15,6 @@ public class ClientConnection
     
     private static int _nextClientId = 1;
     private static readonly object _clientIdLock = new();
-    private static int _connectedClients = 0;
     
     public ClientConnection(EntityManager entityManager, NetworkBroadcaster broadcaster, MessageHandler messageHandler)
     {
@@ -29,16 +28,16 @@ public class ClientConnection
     /// </summary>
     public async Task HandleAsync(WebSocket socket)
     {
-        // Assign unique client ID and determine if master
+        // Assign unique client ID
         string clientId;
-        bool isMasterClient;
         
         lock (_clientIdLock)
         {
             clientId = $"client_{_nextClientId++}";
-            _connectedClients++;
-            isMasterClient = (_connectedClients == 1); // First client is master
         }
+        
+        // Master is determined by client ID number (client_1 is always master)
+        bool isMasterClient = (clientId == "client_1");
         
         _broadcaster.AddClient(socket);
         Console.WriteLine($"[ClientConnection] Client connected: {clientId} ({_broadcaster.ClientCount} total) {(isMasterClient ? "[MASTER]" : "")}");
@@ -51,12 +50,6 @@ public class ClientConnection
         
         // Receive and process messages
         await ReceiveMessagesAsync(socket, clientId);
-        
-        // Decrement connected clients on disconnect
-        lock (_clientIdLock)
-        {
-            _connectedClients--;
-        }
         
         Console.WriteLine($"[ClientConnection] Client disconnected: {clientId} ({_broadcaster.ClientCount - 1} remaining)");
     }
