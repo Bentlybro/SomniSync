@@ -122,6 +122,14 @@ namespace SomniumSpace.Worlds.bently.networking
                     HandleSpawn(_deferredSpawns.Dequeue());
                 }
                 
+                // Process deferred binary batch sync if it arrived before scene was ready
+                if (_deferredBinarySync != null)
+                {
+                    ProcessBinaryMessage(_deferredBinarySync, _deferredBinarySyncLength);
+                    _deferredBinarySync = null;
+                    _deferredBinarySyncLength = 0;
+                }
+                
                 // request_sync is now triggered from client_id handler via RequestSyncWhenReady()
             }
             
@@ -497,6 +505,98 @@ namespace SomniumSpace.Worlds.bently.networking
                     Debug.Log($"[NetworkManager] Binary update: {count} entities received, {matched} matched, {count - matched} unmatched. NetworkObjects: {_networkObjects.Count}, SpawnedEntities: {_spawnedEntities.Count}");
                 }
             }
+            else if (msgType == 0x02) // Binary batch sync
+            {
+                if (length < 4) return;
+                
+                ushort entityCount = BitConverter.ToUInt16(data, 1);
+                byte typeCount = data[3];
+                int offset = 4;
+                
+                // Read type table
+                string[] typeNames = new string[typeCount];
+                for (int t = 0; t < typeCount; t++)
+                {
+                    if (offset >= length) return;
+                    byte nameLen = data[offset++];
+                    typeNames[t] = System.Text.Encoding.UTF8.GetString(data, offset, nameLen);
+                    offset += nameLen;
+                }
+                
+                // Defer if scene objects haven't registered yet
+                if (!_sceneObjectsReady)
+                {
+                    // Store raw data and process later
+                    _deferredBinarySync = new byte[length];
+                    Buffer.BlockCopy(data, 0, _deferredBinarySync, 0, length);
+                    _deferredBinarySyncLength = length;
+                    Debug.Log($"[NetworkManager] Deferred binary batch sync: {entityCount} entities, {length} bytes");
+                    return;
+                }
+                
+                ProcessBinaryBatchSync(data, length, entityCount, typeNames, offset);
+            }
+        }
+        
+        private byte[] _deferredBinarySync = null;
+        private int _deferredBinarySyncLength = 0;
+        
+        private void ProcessBinaryBatchSync(byte[] data, int length, ushort entityCount, string[] typeNames, int offset)
+        {
+            int linked = 0;
+            int skipped = 0;
+            
+            for (int i = 0; i < entityCount; i++)
+            {
+                if (offset + 41 > length) break;
+                
+                // Read GUID (16 bytes)
+                byte[] guidBytes = new byte[16];
+                Buffer.BlockCopy(data, offset, guidBytes, 0, 16);
+                string entityId = new System.Guid(guidBytes).ToString();
+                offset += 16;
+                
+                // Read type index (1 byte)
+                byte typeIndex = data[offset++];
+                string entityType = typeIndex < typeNames.Length ? typeNames[typeIndex] : "unknown";
+                
+                // Read position (12 bytes)
+                float px = BitConverter.ToSingle(data, offset); offset += 4;
+                float py = BitConverter.ToSingle(data, offset); offset += 4;
+                float pz = BitConverter.ToSingle(data, offset); offset += 4;
+                
+                // Read rotation (12 bytes)
+                float rx = BitConverter.ToSingle(data, offset); offset += 4;
+                float ry = BitConverter.ToSingle(data, offset); offset += 4;
+                float rz = BitConverter.ToSingle(data, offset); offset += 4;
+                
+                // Skip already-linked
+                if (_spawnedEntities.ContainsKey(entityId))
+                {
+                    skipped++;
+                    continue;
+                }
+                
+                // Link to unlinked scene object
+                NetworkObject unlinked = TakeUnlinkedObject(entityType);
+                if (unlinked != null)
+                {
+                    Vector3 pos = new Vector3(px, py, pz);
+                    Vector3 rot = new Vector3(rx, ry, rz);
+                    
+                    unlinked.entityId = entityId;
+                    _networkObjects[entityId] = unlinked;
+                    
+                    unlinked.transform.position = pos;
+                    unlinked.transform.rotation = Quaternion.Euler(rot);
+                    unlinked.ApplyServerUpdate(pos, rot);
+                    
+                    _spawnedEntities[entityId] = unlinked.gameObject;
+                    linked++;
+                }
+            }
+            
+            Debug.Log($"[NetworkManager] Binary batch sync: linked {linked}, skipped {skipped}, total {_spawnedEntities.Count}. {length} bytes for {entityCount} entities");
         }
         
         private void ProcessMessage(string json)

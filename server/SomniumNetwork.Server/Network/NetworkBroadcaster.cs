@@ -160,6 +160,17 @@ public class NetworkBroadcaster
     }
     
     /// <summary>
+    /// Send raw binary data to a specific client.
+    /// </summary>
+    public async Task SendBinaryToClientAsync(string clientId, byte[] data, int length)
+    {
+        if (!_clients.TryGetValue(clientId, out var socket) || socket.State != WebSocketState.Open)
+            return;
+        
+        await SendBinaryWithLockAsync(clientId, socket, new ArraySegment<byte>(data, 0, length));
+    }
+    
+    /// <summary>
     /// Send a message to a specific socket.
     /// </summary>
     public async Task SendToSocketAsync(WebSocket socket, NetworkMessage message)

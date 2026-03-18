@@ -154,24 +154,67 @@ public class MessageHandler
         if (entities.Count == 0)
             return;
         
-        var spawns = entities.Select(entity => new EntitySpawnData
+        // Build type table (deduplicate entity type strings)
+        var typeToIndex = new Dictionary<string, byte>();
+        var typeNames = new List<string>();
+        foreach (var entity in entities)
         {
-            EntityId = entity.Id,
-            EntityType = entity.Type,
-            Position = entity.Position,
-            Rotation = entity.Rotation,
-            OwnerId = _entityManager.GetOwner(entity.Id)
-        }).ToList();
+            if (!typeToIndex.ContainsKey(entity.Type))
+            {
+                typeToIndex[entity.Type] = (byte)typeNames.Count;
+                typeNames.Add(entity.Type);
+            }
+        }
         
-        var batchMsg = new NetworkMessage
+        // Binary format:
+        // [0x02][ushort count][byte type_count]
+        // [type table: byte name_len + N bytes name × type_count]
+        // [per entity: 16 bytes GUID + byte type_index + 12 bytes pos + 12 bytes rot = 41 bytes]
+        int typeTableSize = 0;
+        foreach (var name in typeNames)
+            typeTableSize += 1 + System.Text.Encoding.UTF8.GetByteCount(name);
+        
+        int headerSize = 1 + 2 + 1; // type byte + count + type_count
+        int perEntity = 16 + 1 + 12 + 12; // GUID + type_index + pos + rot = 41
+        int totalSize = headerSize + typeTableSize + (entities.Count * perEntity);
+        
+        var buffer = new byte[totalSize];
+        int offset = 0;
+        
+        // Header
+        buffer[offset++] = 0x02; // Binary batch sync
+        BitConverter.TryWriteBytes(buffer.AsSpan(offset, 2), (ushort)entities.Count);
+        offset += 2;
+        buffer[offset++] = (byte)typeNames.Count;
+        
+        // Type table
+        foreach (var name in typeNames)
         {
-            Type = "batch_sync",
-            Spawns = spawns
-        };
+            var nameBytes = System.Text.Encoding.UTF8.GetBytes(name);
+            buffer[offset++] = (byte)nameBytes.Length;
+            Array.Copy(nameBytes, 0, buffer, offset, nameBytes.Length);
+            offset += nameBytes.Length;
+        }
         
-        await _broadcaster.SendToClientAsync(clientId, batchMsg);
+        // Entities
+        foreach (var entity in entities)
+        {
+            entity.BinaryId.TryWriteBytes(buffer.AsSpan(offset, 16));
+            offset += 16;
+            
+            buffer[offset++] = typeToIndex[entity.Type];
+            
+            BitConverter.TryWriteBytes(buffer.AsSpan(offset, 4), entity.Position.X); offset += 4;
+            BitConverter.TryWriteBytes(buffer.AsSpan(offset, 4), entity.Position.Y); offset += 4;
+            BitConverter.TryWriteBytes(buffer.AsSpan(offset, 4), entity.Position.Z); offset += 4;
+            BitConverter.TryWriteBytes(buffer.AsSpan(offset, 4), entity.Rotation.X); offset += 4;
+            BitConverter.TryWriteBytes(buffer.AsSpan(offset, 4), entity.Rotation.Y); offset += 4;
+            BitConverter.TryWriteBytes(buffer.AsSpan(offset, 4), entity.Rotation.Z); offset += 4;
+        }
+        
+        await _broadcaster.SendBinaryToClientAsync(clientId, buffer, offset);
         _broadcaster.SetClientReady(clientId);
         
-        Console.WriteLine($"[MessageHandler] Sent requested sync with {entities.Count} entities to {clientId}");
+        Console.WriteLine($"[MessageHandler] Sent binary batch sync: {entities.Count} entities, {offset} bytes, {typeNames.Count} types to {clientId}");
     }
 }
