@@ -623,35 +623,34 @@ namespace SomniumSpace.Worlds.bently.networking
         public string entityType;
         public GameObject prefab;
     }
-}
-
-// Message classes (must match server protocol) - moved to namespace level for JsonUtility compatibility
-[Serializable]
-public class NetworkMessage
-{
-    public string Type;
-    public string EntityId;
-    public string EntityType;
-    public string OwnerId; // Which client owns this entity
-    public bool? IsMasterClient; // Is this client the master (first to connect)?
-    public Vector3Data Position;
-    public Vector3Data Rotation;
-    public EntityUpdate[] Updates;
-}
-
-[Serializable]
-public class Vector3Data
-{
-    public float X;
-    public float Y;
-    public float Z;
-}
-
-[Serializable]
-public class EntityUpdate
-{
-    public string Id;
-    public Vector3Data Position;
-    public Vector3Data Rotation;
-}
+    
+    // Message classes (must match server protocol) - at namespace level for JsonUtility compatibility
+    [Serializable]
+    public class NetworkMessage
+    {
+        public string Type;
+        public string EntityId;
+        public string EntityType;
+        public string OwnerId; // Which client owns this entity
+        public bool? IsMasterClient; // Is this client the master (first to connect)?
+        public Vector3Data Position;
+        public Vector3Data Rotation;
+        public EntityUpdate[] Updates;
+    }
+    
+    [Serializable]
+    public class Vector3Data
+    {
+        public float X;
+        public float Y;
+        public float Z;
+    }
+    
+    [Serializable]
+    public class EntityUpdate
+    {
+        public string Id;
+        public Vector3Data Position;
+        public Vector3Data Rotation;
+    }
 }
