@@ -47,6 +47,7 @@ namespace Bentlybro.CustomNetworking
         // Entity tracking
         private Dictionary<string, NetworkEntity> _entities = new Dictionary<string, NetworkEntity>();
         private Dictionary<string, GameObject> _spawnedEntities = new Dictionary<string, GameObject>();
+        private List<NetworkEntity> _pendingSpawns = new List<NetworkEntity>();
         
         private void Awake()
         {
@@ -127,6 +128,9 @@ namespace Bentlybro.CustomNetworking
                     Debug.Log("[NetworkManager] Connected!");
                 
                 UpdateConnectionStatus("CONNECTED", UnityEngine.Color.green);
+                
+                // Spawn all registered entities that were waiting
+                SpawnPendingEntities();
                 
                 // Start receiving messages
                 StartCoroutine(ReceiveMessagesAsync());
@@ -400,8 +404,13 @@ namespace Bentlybro.CustomNetworking
         {
             if (!_isConnected)
             {
-                if (showDebugLogs)
-                    Debug.LogWarning($"[NetworkManager] Cannot spawn {entity.gameObject.name} - not connected");
+                // Queue for spawning once connected
+                if (!_pendingSpawns.Contains(entity))
+                {
+                    _pendingSpawns.Add(entity);
+                    if (showDebugLogs)
+                        Debug.Log($"[NetworkManager] Queued {entity.gameObject.name} for spawn (waiting for connection)");
+                }
                 return;
             }
             
@@ -428,6 +437,22 @@ namespace Bentlybro.CustomNetworking
             };
             
             StartCoroutine(SendMessageAsync(message));
+        }
+        
+        private void SpawnPendingEntities()
+        {
+            if (showDebugLogs && _pendingSpawns.Count > 0)
+                Debug.Log($"[NetworkManager] Spawning {_pendingSpawns.Count} queued entities");
+            
+            foreach (var entity in _pendingSpawns)
+            {
+                if (entity != null)
+                {
+                    SpawnEntityOnServer(entity);
+                }
+            }
+            
+            _pendingSpawns.Clear();
         }
         
         private IEnumerator SendMessageAsync(NetworkMessage message)
