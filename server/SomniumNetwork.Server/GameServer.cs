@@ -26,6 +26,11 @@ public class GameServer
             
             _entities[id] = entity;
             
+            if (_entities.Count % 100 == 0)
+            {
+                Console.WriteLine($"[Server] Total entities: {_entities.Count}");
+            }
+            
             // Send spawn message to all clients
             var msg = new NetworkMessage
             {
@@ -130,22 +135,42 @@ public class GameServer
         var json = JsonSerializer.Serialize(message);
         var bytes = Encoding.UTF8.GetBytes(json);
         
+        // Log message size for debugging
+        if (bytes.Length > 50000)
+        {
+            Console.WriteLine($"[Server] Large message: {bytes.Length / 1024}KB, {message.Updates?.Count ?? 0} updates");
+        }
+        
         var tasks = new List<Task>();
         
         foreach (var client in _clients)
         {
             if (client.State == WebSocketState.Open)
             {
-                tasks.Add(client.SendAsync(
-                    new ArraySegment<byte>(bytes),
-                    WebSocketMessageType.Text,
-                    true,
-                    CancellationToken.None
-                ));
+                try
+                {
+                    tasks.Add(client.SendAsync(
+                        new ArraySegment<byte>(bytes),
+                        WebSocketMessageType.Text,
+                        true,
+                        CancellationToken.None
+                    ));
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[Server] Send failed: {ex.Message}");
+                }
             }
         }
         
-        await Task.WhenAll(tasks);
+        try
+        {
+            await Task.WhenAll(tasks);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Server] Broadcast error: {ex.Message}");
+        }
     }
     
     public async Task HandleClientAsync(WebSocket socket)
