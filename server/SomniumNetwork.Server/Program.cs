@@ -9,22 +9,28 @@ class Program
 {
     static async Task Main(string[] args)
     {
+        var server = new GameServer();
+        var listener = new HttpListener();
+        
         // Handle Ctrl+C gracefully
         var cts = new CancellationTokenSource();
+        var shutdownRequested = false;
         Console.CancelKeyPress += (sender, e) =>
         {
+            if (shutdownRequested)
+                return; // Ignore repeated Ctrl+C
+            
+            shutdownRequested = true;
             Console.WriteLine("\n[Server] Shutting down...");
             cts.Cancel();
-            e.Cancel = true;
+            listener.Stop(); // Stop listener to unblock GetContextAsync
+            e.Cancel = true; // Prevent immediate termination, allow cleanup
         };
-        
-        var server = new GameServer();
         
         // Start game loop in background
         _ = Task.Run(async () => await server.RunGameLoopAsync(cts.Token), cts.Token);
         
         // Start WebSocket server
-        var listener = new HttpListener();
         listener.Prefixes.Add("http://*:9090/");
         listener.Start();
         
@@ -54,10 +60,18 @@ class Program
         {
             // Expected when cancelled
         }
+        catch (HttpListenerException)
+        {
+            // Expected when listener is stopped during GetContextAsync
+        }
         finally
         {
-            listener.Stop();
+            if (listener.IsListening)
+                listener.Stop();
             Console.WriteLine("[Server] Stopped");
         }
+        
+        // Give tasks a moment to finish cleanup
+        await Task.Delay(100);
     }
 }
