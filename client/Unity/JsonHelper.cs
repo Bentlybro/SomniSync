@@ -53,43 +53,74 @@ namespace SomniumSpace.Worlds.bently.networking
             try
             {
                 // Find the Updates array in JSON
-                string searchPattern = "\"Updates\":[";
+                string searchPattern = "\"Updates\":";
                 int startIndex = json.IndexOf(searchPattern);
                 
                 if (startIndex == -1)
-                    return null; // Field not found or null
-                
-                // Check if it's null
-                if (json.Substring(startIndex + searchPattern.Length - 1, 4) == "null")
-                    return null;
+                {
+                    Debug.Log("[JsonHelper] Updates field not found in JSON");
+                    return null; // Field not found
+                }
                 
                 startIndex += searchPattern.Length;
                 
-                // Find matching closing bracket
+                // Skip whitespace
+                while (startIndex < json.Length && char.IsWhiteSpace(json[startIndex]))
+                    startIndex++;
+                
+                // Check if it's null
+                if (startIndex + 4 <= json.Length && json.Substring(startIndex, 4) == "null")
+                {
+                    Debug.Log("[JsonHelper] Updates is explicitly null");
+                    return null;
+                }
+                
+                // Should be at '[' now
+                if (json[startIndex] != '[')
+                {
+                    Debug.LogWarning($"[JsonHelper] Expected '[' but found '{json[startIndex]}' at position {startIndex}");
+                    return null;
+                }
+                
+                startIndex++; // Skip opening '['
+                
+                // Find matching closing bracket (handle nested arrays/objects)
                 int depth = 1;
                 int endIndex = startIndex;
                 while (endIndex < json.Length && depth > 0)
                 {
-                    if (json[endIndex] == '[')
+                    if (json[endIndex] == '[' || json[endIndex] == '{')
                         depth++;
-                    else if (json[endIndex] == ']')
+                    else if (json[endIndex] == ']' || json[endIndex] == '}')
                         depth--;
                     endIndex++;
                 }
                 
-                // Extract array JSON
+                // Extract array contents (without outer brackets)
                 string arrayJson = json.Substring(startIndex, endIndex - startIndex - 1);
                 
-                // Parse array manually (Unity can't do this directly)
-                // Wrap in an object so JsonUtility can handle it
-                string wrappedJson = "{\"items\":" + arrayJson + "}";
+                Debug.Log($"[JsonHelper] Extracted Updates array JSON: {arrayJson.Substring(0, Math.Min(200, arrayJson.Length))}");
+                
+                // Parse array manually - wrap in object so JsonUtility can handle it
+                string wrappedJson = "{\"items\":[" + arrayJson + "]}";
+                
+                Debug.Log($"[JsonHelper] Wrapped JSON: {wrappedJson.Substring(0, Math.Min(300, wrappedJson.Length))}");
+                
                 var wrapper = JsonUtility.FromJson<EntityUpdateArrayWrapper>(wrappedJson);
                 
-                return wrapper?.items;
+                if (wrapper == null || wrapper.items == null)
+                {
+                    Debug.LogWarning("[JsonHelper] Failed to deserialize EntityUpdateArrayWrapper");
+                    return null;
+                }
+                
+                Debug.Log($"[JsonHelper] Successfully extracted {wrapper.items.Length} updates");
+                
+                return wrapper.items;
             }
             catch (Exception ex)
             {
-                Debug.LogWarning($"[JsonHelper] Failed to extract Updates array: {ex.Message}");
+                Debug.LogError($"[JsonHelper] Failed to extract Updates array: {ex.Message}\n{ex.StackTrace}");
                 return null;
             }
         }
