@@ -193,26 +193,86 @@ public class NetworkBroadcaster
     }
     
     /// <summary>
-    /// Broadcast entity updates (delta compression).
+    /// Broadcast entity updates using binary protocol.
+    /// Format: [1 byte type=0x01][2 bytes count][per entity: 16 bytes GUID + 24 bytes floats]
+    /// 40 bytes per entity vs ~120 bytes JSON = 3x smaller + zero parse overhead
     /// </summary>
     public async Task BroadcastUpdatesAsync(List<Entity> movedEntities)
     {
         if (movedEntities.Count == 0)
             return;
         
-        var updates = movedEntities.Select(e => new EntityUpdate
-        {
-            Id = e.Id,
-            Position = e.Position,
-            Rotation = e.Rotation
-        }).ToList();
+        int count = movedEntities.Count;
+        int bufferSize = 3 + (count * 40); // header + entities
+        byte[] buffer = new byte[bufferSize];
         
-        var message = new NetworkMessage
-        {
-            Type = "update",
-            Updates = updates
-        };
+        // Header
+        buffer[0] = 0x01; // Binary update message type
+        BitConverter.TryWriteBytes(buffer.AsSpan(1, 2), (ushort)count);
         
-        await BroadcastMessageAsync(message);
+        // Pack entities
+        int offset = 3;
+        for (int i = 0; i < count; i++)
+        {
+            var entity = movedEntities[i];
+            
+            // 16 bytes GUID
+            entity.BinaryId.TryWriteBytes(buffer.AsSpan(offset, 16));
+            offset += 16;
+            
+            // Position (12 bytes)
+            BitConverter.TryWriteBytes(buffer.AsSpan(offset, 4), entity.Position.X);
+            offset += 4;
+            BitConverter.TryWriteBytes(buffer.AsSpan(offset, 4), entity.Position.Y);
+            offset += 4;
+            BitConverter.TryWriteBytes(buffer.AsSpan(offset, 4), entity.Position.Z);
+            offset += 4;
+            
+            // Rotation (12 bytes)
+            BitConverter.TryWriteBytes(buffer.AsSpan(offset, 4), entity.Rotation.X);
+            offset += 4;
+            BitConverter.TryWriteBytes(buffer.AsSpan(offset, 4), entity.Rotation.Y);
+            offset += 4;
+            BitConverter.TryWriteBytes(buffer.AsSpan(offset, 4), entity.Rotation.Z);
+            offset += 4;
+        }
+        
+        var segment = new ArraySegment<byte>(buffer, 0, offset);
+        
+        // Send as binary WebSocket message
+        var tasks = new List<Task>();
+        foreach (var kvp in _clients)
+        {
+            if (kvp.Value.State == WebSocketState.Open)
+            {
+                tasks.Add(SendBinaryWithLockAsync(kvp.Key, kvp.Value, segment));
+            }
+        }
+        
+        try { await Task.WhenAll(tasks); }
+        catch { /* errors handled per-client in SendBinaryWithLockAsync */ }
+    }
+    
+    private async Task SendBinaryWithLockAsync(string clientId, WebSocket socket, ArraySegment<byte> data)
+    {
+        if (!_sendLocks.TryGetValue(clientId, out var semaphore))
+            return;
+        
+        await semaphore.WaitAsync();
+        try
+        {
+            if (socket.State == WebSocketState.Open)
+            {
+                await socket.SendAsync(data, WebSocketMessageType.Binary, true, CancellationToken.None);
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[NetworkBroadcaster] Binary send failed to {clientId}: {ex.Message}");
+        }
+        finally
+        {
+            semaphore.Release();
+        }
     }
 }

@@ -58,6 +58,7 @@ namespace SomniumSpace.Worlds.bently.networking
         private int _reconnectAttempts = 0;
         private bool _isReconnecting = false;
         private bool _hasLoggedSendError = false; // Only log send errors once per disconnect
+        private System.IO.MemoryStream _binaryBuffer; // For multi-frame binary messages
         
         public bool IsConnected => _isConnected;
         public int EntityCount => _spawnedEntities.Count;
@@ -265,7 +266,7 @@ namespace SomniumSpace.Worlds.bently.networking
                 yield break;
             
             _isReceiving = true;
-            byte[] buffer = new byte[65536]; // 64KB buffer for large updates
+            byte[] buffer = new byte[131072]; // 128KB buffer (supports ~3000 entities in binary)
             StringBuilder messageBuilder = new StringBuilder();
             
             while (_isConnected && _webSocket != null && _webSocket.State == WebSocketState.Open)
@@ -294,13 +295,37 @@ namespace SomniumSpace.Worlds.bently.networking
                     break;
                 }
                 
-                if (result.MessageType == WebSocketMessageType.Text)
+                if (result.MessageType == WebSocketMessageType.Binary)
                 {
-                    // Handle multi-part messages
+                    // Binary update — fast path, no JSON parsing
+                    if (result.EndOfMessage)
+                    {
+                        NetworkStats.MessagesReceived++;
+                        NetworkStats.BytesReceived += result.Count;
+                        ProcessBinaryMessage(buffer, result.Count);
+                    }
+                    else
+                    {
+                        // Multi-frame binary (unlikely for updates but handle it)
+                        if (_binaryBuffer == null)
+                            _binaryBuffer = new System.IO.MemoryStream();
+                        _binaryBuffer.Write(buffer, 0, result.Count);
+                        if (result.EndOfMessage)
+                        {
+                            byte[] fullBuffer = _binaryBuffer.ToArray();
+                            _binaryBuffer.SetLength(0);
+                            NetworkStats.MessagesReceived++;
+                            NetworkStats.BytesReceived += fullBuffer.Length;
+                            ProcessBinaryMessage(fullBuffer, fullBuffer.Length);
+                        }
+                    }
+                }
+                else if (result.MessageType == WebSocketMessageType.Text)
+                {
+                    // JSON messages (spawns, control messages)
                     string chunk = Encoding.UTF8.GetString(buffer, 0, result.Count);
                     messageBuilder.Append(chunk);
                     
-                    // Only process when we have complete message
                     if (result.EndOfMessage)
                     {
                         string json = messageBuilder.ToString();
@@ -363,6 +388,57 @@ namespace SomniumSpace.Worlds.bently.networking
             {
                 _reconnectAttempts = 0;
                 Debug.Log("[NetworkManager] Reconnected successfully!");
+            }
+        }
+        
+        /// <summary>
+        /// Process binary update message. Zero JSON parsing, zero string allocation.
+        /// Format: [1 byte type][2 bytes count][per entity: 16 bytes GUID + 24 bytes floats]
+        /// </summary>
+        private void ProcessBinaryMessage(byte[] data, int length)
+        {
+            if (length < 3) return;
+            
+            byte msgType = data[0];
+            
+            if (msgType == 0x01) // Binary update
+            {
+                ushort count = BitConverter.ToUInt16(data, 1);
+                int offset = 3;
+                
+                for (int i = 0; i < count; i++)
+                {
+                    if (offset + 40 > length) break;
+                    
+                    // Read GUID (16 bytes)
+                    string entityId = new System.Guid(new ReadOnlySpan<byte>(data, offset, 16)).ToString();
+                    offset += 16;
+                    
+                    // Read position (12 bytes)
+                    float px = BitConverter.ToSingle(data, offset); offset += 4;
+                    float py = BitConverter.ToSingle(data, offset); offset += 4;
+                    float pz = BitConverter.ToSingle(data, offset); offset += 4;
+                    
+                    // Read rotation (12 bytes)
+                    float rx = BitConverter.ToSingle(data, offset); offset += 4;
+                    float ry = BitConverter.ToSingle(data, offset); offset += 4;
+                    float rz = BitConverter.ToSingle(data, offset); offset += 4;
+                    
+                    Vector3 position = new Vector3(px, py, pz);
+                    Vector3 rotation = new Vector3(rx, ry, rz);
+                    
+                    // Apply to entity — try NetworkObject first, then legacy
+                    if (_networkObjects.TryGetValue(entityId, out NetworkObject netObj))
+                    {
+                        netObj.ApplyServerUpdate(position, rotation);
+                    }
+                    else if (_spawnedEntities.TryGetValue(entityId, out GameObject obj))
+                    {
+                        var netTransform = obj.GetComponent<NetworkTransform>();
+                        if (netTransform != null)
+                            netTransform.ApplyServerUpdate(position, rotation);
+                    }
+                }
             }
         }
         

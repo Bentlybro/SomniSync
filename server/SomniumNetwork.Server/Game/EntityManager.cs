@@ -34,7 +34,8 @@ public class EntityManager
                 Id = id,
                 Type = type,
                 Position = position,
-                Rotation = rotation
+                Rotation = rotation,
+                BinaryId = Guid.Parse(id)
             };
             
             _entities[id] = entity;
@@ -111,6 +112,10 @@ public class EntityManager
             
             foreach (var entity in _entities.Values)
             {
+                // Skip sleeping entities entirely — huge perf win
+                if (entity.IsSleeping)
+                    continue;
+                
                 if (entity.HasMoved())
                 {
                     moved.Add(entity);

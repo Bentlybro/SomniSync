@@ -15,6 +15,14 @@ public class Entity
     public Vector3 LastSentPosition { get; set; } = new();
     public Vector3 LastSentRotation { get; set; } = new();
     
+    // Network sleep — stop sending updates for stationary objects
+    public bool IsSleeping { get; set; } = false;
+    public int SleepCounter { get; set; } = 0;
+    private const int SleepThreshold = 30; // ~0.5 sec at 60Hz before sleeping
+    
+    // Binary ID for fast serialization (assigned on spawn)
+    public Guid BinaryId { get; set; }
+    
     public bool HasMoved(float threshold = 0.01f)
     {
         // Squared distance (avoids sqrt — much faster for 1000+ entities)
@@ -23,15 +31,32 @@ public class Entity
         float dz = Position.Z - LastSentPosition.Z;
         float posSqr = dx * dx + dy * dy + dz * dz;
         
-        if (posSqr > threshold * threshold)
+        bool moved = posSqr > threshold * threshold;
+        
+        if (!moved)
+        {
+            // Check all rotation axes
+            float rx = MathF.Abs(Rotation.X - LastSentRotation.X);
+            float ry = MathF.Abs(Rotation.Y - LastSentRotation.Y);
+            float rz = MathF.Abs(Rotation.Z - LastSentRotation.Z);
+            moved = rx > 1f || ry > 1f || rz > 1f;
+        }
+        
+        if (moved)
+        {
+            SleepCounter = 0;
+            IsSleeping = false;
             return true;
-        
-        // Check all rotation axes
-        float rx = MathF.Abs(Rotation.X - LastSentRotation.X);
-        float ry = MathF.Abs(Rotation.Y - LastSentRotation.Y);
-        float rz = MathF.Abs(Rotation.Z - LastSentRotation.Z);
-        
-        return rx > 1f || ry > 1f || rz > 1f;
+        }
+        else
+        {
+            SleepCounter++;
+            if (SleepCounter >= SleepThreshold)
+            {
+                IsSleeping = true;
+            }
+            return false;
+        }
     }
     
     public void MarkAsSent()
@@ -42,8 +67,9 @@ public class Entity
     
     public void MarkAsDirty()
     {
-        // Reset last sent to force update on next tick
         LastSentPosition = new Vector3 { X = float.MaxValue, Y = float.MaxValue, Z = float.MaxValue };
         LastSentRotation = new Vector3 { X = float.MaxValue, Y = float.MaxValue, Z = float.MaxValue };
+        IsSleeping = false;
+        SleepCounter = 0;
     }
 }
