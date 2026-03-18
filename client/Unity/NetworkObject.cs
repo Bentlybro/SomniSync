@@ -105,6 +105,11 @@ namespace SomniumSpace.Worlds.bently.networking
         {
             if (spawnOnStart)
             {
+                // Freeze physics immediately — don't let objects simulate before we know
+                // if we're master or spectator. Master re-enables in DelayedRegister().
+                if (_hasRigidbody)
+                    _rigidbody.isKinematic = true;
+                
                 // Register as unlinked in Awake is too early (NetworkManager might not exist yet)
                 // So register here in Start, but BEFORE the coroutine
                 if (NetworkManager.Instance != null)
@@ -135,10 +140,12 @@ namespace SomniumSpace.Worlds.bently.networking
             if (!_isMaster)
             {
                 _isOwned = false;
-                SetPhysicsState(false); // Spectators don't simulate physics
+                // Already frozen in Start(), stays frozen for spectators
                 yield break;
             }
             
+            // Master: re-enable physics now
+            SetPhysicsState(true);
             Register();
         }
         
