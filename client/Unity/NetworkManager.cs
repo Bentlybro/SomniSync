@@ -122,13 +122,7 @@ namespace SomniumSpace.Worlds.bently.networking
                     HandleSpawn(_deferredSpawns.Dequeue());
                 }
                 
-                // Request full state sync from server (don't rely on spawn trickle)
-                if (_isConnected && !_isMasterClient)
-                {
-                    var syncRequest = new NetworkMessage { Type = "request_sync" };
-                    StartCoroutine(SendMessageAsync(syncRequest));
-                    Debug.Log("[NetworkManager] Requested full sync from server");
-                }
+                // request_sync is now triggered from client_id handler via RequestSyncWhenReady()
             }
             
             // Update status display every frame
@@ -525,6 +519,12 @@ namespace SomniumSpace.Worlds.bently.networking
                         _isMasterClient = message.IsMasterClient ?? false;
                         if (showDebugLogs)
                             Debug.Log($"[NetworkManager] Received client ID: {_clientId} {(_isMasterClient ? "[MASTER]" : "[SPECTATOR]")}");
+                        
+                        // Spectators request full state sync once scene is ready
+                        if (!_isMasterClient)
+                        {
+                            StartCoroutine(RequestSyncWhenReady());
+                        }
                         break;
                     
                     case "spawn":
@@ -1052,6 +1052,17 @@ namespace SomniumSpace.Worlds.bently.networking
                 }
                 _pendingNetworkObjects.Clear();
             }
+        }
+        
+        private IEnumerator RequestSyncWhenReady()
+        {
+            // Wait until scene objects have registered (all Start() calls complete)
+            while (!_sceneObjectsReady)
+                yield return null;
+            
+            var syncRequest = new NetworkMessage { Type = "request_sync" };
+            yield return StartCoroutine(SendMessageAsync(syncRequest));
+            Debug.Log("[NetworkManager] Requested full sync from server");
         }
         
         private IEnumerator SendMessageAsync(NetworkMessage message)
