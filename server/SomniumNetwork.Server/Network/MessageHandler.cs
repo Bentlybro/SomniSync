@@ -121,7 +121,7 @@ public class MessageHandler
         
         if (!updated)
         {
-            Console.WriteLine($"[MessageHandler] Failed to update entity {message.EntityId} - ownership check failed");
+            // Silently ignore — common during reconnects when client has stale entity IDs
         }
     }
 }

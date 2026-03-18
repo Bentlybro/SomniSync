@@ -146,6 +146,7 @@ namespace SomniumSpace.Worlds.bently.networking
             if (connectTask.IsCompleted && !connectTask.IsFaulted)
             {
                 _isConnected = true;
+                _hasLoggedSendError = false;
                 if (showDebugLogs)
                     Debug.Log("[NetworkManager] Connected!");
                 
@@ -222,7 +223,7 @@ namespace SomniumSpace.Worlds.bently.networking
                 if (receiveTask.IsFaulted)
                 {
                     if (showDebugLogs)
-                        Debug.LogError($"[NetworkManager] Receive error: {receiveTask.Exception?.Message}");
+                        // Connection dropped — don't spam, auto-reconnect will handle it
                     break;
                 }
                 
