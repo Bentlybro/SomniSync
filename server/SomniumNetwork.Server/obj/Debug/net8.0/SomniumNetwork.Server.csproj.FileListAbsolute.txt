@@ -1,0 +1,15 @@
+D:\Desktop\desktop misc\python coding\somnium-network\server\SomniumNetwork.Server\bin\Debug\net8.0\SomniumNetwork.Server.exe
+D:\Desktop\desktop misc\python coding\somnium-network\server\SomniumNetwork.Server\bin\Debug\net8.0\SomniumNetwork.Server.deps.json
+D:\Desktop\desktop misc\python coding\somnium-network\server\SomniumNetwork.Server\bin\Debug\net8.0\SomniumNetwork.Server.runtimeconfig.json
+D:\Desktop\desktop misc\python coding\somnium-network\server\SomniumNetwork.Server\bin\Debug\net8.0\SomniumNetwork.Server.dll
+D:\Desktop\desktop misc\python coding\somnium-network\server\SomniumNetwork.Server\bin\Debug\net8.0\SomniumNetwork.Server.pdb
+D:\Desktop\desktop misc\python coding\somnium-network\server\SomniumNetwork.Server\obj\Debug\net8.0\SomniumNetwork.Server.GeneratedMSBuildEditorConfig.editorconfig
+D:\Desktop\desktop misc\python coding\somnium-network\server\SomniumNetwork.Server\obj\Debug\net8.0\SomniumNetwork.Server.AssemblyInfoInputs.cache
+D:\Desktop\desktop misc\python coding\somnium-network\server\SomniumNetwork.Server\obj\Debug\net8.0\SomniumNetwork.Server.AssemblyInfo.cs
+D:\Desktop\desktop misc\python coding\somnium-network\server\SomniumNetwork.Server\obj\Debug\net8.0\SomniumNetwork.Server.csproj.CoreCompileInputs.cache
+D:\Desktop\desktop misc\python coding\somnium-network\server\SomniumNetwork.Server\obj\Debug\net8.0\SomniumNetwork.Server.sourcelink.json
+D:\Desktop\desktop misc\python coding\somnium-network\server\SomniumNetwork.Server\obj\Debug\net8.0\SomniumNetwork.Server.dll
+D:\Desktop\desktop misc\python coding\somnium-network\server\SomniumNetwork.Server\obj\Debug\net8.0\refint\SomniumNetwork.Server.dll
+D:\Desktop\desktop misc\python coding\somnium-network\server\SomniumNetwork.Server\obj\Debug\net8.0\SomniumNetwork.Server.pdb
+D:\Desktop\desktop misc\python coding\somnium-network\server\SomniumNetwork.Server\obj\Debug\net8.0\SomniumNetwork.Server.genruntimeconfig.cache
+D:\Desktop\desktop misc\python coding\somnium-network\server\SomniumNetwork.Server\obj\Debug\net8.0\ref\SomniumNetwork.Server.dll
