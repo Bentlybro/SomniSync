@@ -42,6 +42,8 @@ cargo build --release
 # Linux/macOS
 ./target/release/somnium-relay                       # default: ws://0.0.0.0:9090
 ./target/release/somnium-relay 0.0.0.0:8080          # custom port
+
+git pull && cargo build --release && .\target\release\somnium-relay.exe
 ```
 
 ## Client (Unity/Somnium)
