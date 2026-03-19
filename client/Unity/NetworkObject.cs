@@ -83,7 +83,7 @@ namespace SomniumSpace.Worlds.bently.networking
             if (_autoClaimedByPush && IsClaimedLocally && _hasRb)
             {
                 bool touching = (Time.time - _lastContactTime) < 0.1f;
-                bool settled = _rb.velocity.sqrMagnitude < 0.05f &&
+                bool settled = _rb.linearVelocity.sqrMagnitude < 0.05f &&
                                _rb.angularVelocity.sqrMagnitude < 0.05f;
 
                 // Release when: not touching AND object has stopped moving
@@ -123,7 +123,7 @@ namespace SomniumSpace.Worlds.bently.networking
         {
             // Only chain-claim if WE are claimed locally and have velocity
             if (!IsClaimedLocally || !_hasRb) return;
-            if (_rb.velocity.sqrMagnitude < 0.1f) return;
+            if (_rb.linearVelocity.sqrMagnitude < 0.1f) return;
 
             var other = collision.gameObject.GetComponent<NetworkObject>();
             if (other == null) return;
@@ -248,7 +248,7 @@ namespace SomniumSpace.Worlds.bently.networking
                 // Spectator: return to kinematic, lock in final position
                 if (_hasRb)
                 {
-                    _rb.velocity = Vector3.zero;
+                    _rb.linearVelocity = Vector3.zero;
                     _rb.angularVelocity = Vector3.zero;
                     _rb.isKinematic = true;
                 }
@@ -289,7 +289,7 @@ namespace SomniumSpace.Worlds.bently.networking
                 if (_hasRb)
                 {
                     _rb.isKinematic = false;
-                    _rb.velocity = Vector3.zero;
+                    _rb.linearVelocity = Vector3.zero;
                     _rb.angularVelocity = Vector3.zero;
                 }
             }
