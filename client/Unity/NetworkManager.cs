@@ -270,6 +270,10 @@ namespace SomniumSpace.Worlds.bently.networking
                     HandleInteractionUpdates(data, length);
                     break;
 
+                case 0x04: // Variable updates (from any client)
+                    HandleVariableUpdate(data, length);
+                    break;
+
                 case 0xFF: // Control message
                     if (length >= 2)
                         HandleControl(data, length);
@@ -556,6 +560,26 @@ namespace SomniumSpace.Worlds.bently.networking
         }
 
         // =====================================================================
+        // Variable Updates (0x04) — custom variables
+        // =====================================================================
+
+        private void HandleVariableUpdate(byte[] data, int length)
+        {
+            if (length < 4) return;
+            ushort objId = ReadU16(data, 1);
+            int varCount = data[3];
+
+            if (_objectMap.TryGetValue(objId, out var obj))
+            {
+                var netVars = obj.GetComponent<NetworkVariables>();
+                if (netVars != null)
+                {
+                    netVars.ApplyRemoteUpdate(data, 4, varCount);
+                }
+            }
+        }
+
+        // =====================================================================
         // Snapshot (0x02) — full state for new clients
         // =====================================================================
         // Format: [0x02][u16 count][per entity: u16 local_id + 12B pos + 12B rot = 26B]
@@ -630,6 +654,9 @@ namespace SomniumSpace.Worlds.bently.networking
             MessagesSent++;
             BytesSent += data.Length;
         }
+
+        /// <summary>Public send for components like NetworkVariables.</summary>
+        public void SendBinaryPublic(byte[] data) => SendBinary(data);
 
         // =====================================================================
         // Binary Helpers

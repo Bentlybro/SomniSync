@@ -11,6 +11,7 @@ use tokio_tungstenite::tungstenite::Message;
 const MSG_POSITION_UPDATE: u8 = 0x01;
 const MSG_SNAPSHOT: u8 = 0x02;
 const MSG_INTERACTION_UPDATE: u8 = 0x03;
+const MSG_VARIABLE_UPDATE: u8 = 0x04;
 const CTRL_YOU_ARE_MASTER: u8 = 0x01;
 const CTRL_YOU_ARE_SPECTATOR: u8 = 0x02;
 const CTRL_SEND_SNAPSHOT: u8 = 0x03;
@@ -213,7 +214,7 @@ async fn handle_connection(stream: TcpStream, addr: SocketAddr, room: Arc<RwLock
                     }
 
                     // Interaction updates from any client → broadcast to all others
-                    MSG_INTERACTION_UPDATE => {
+                    MSG_INTERACTION_UPDATE | MSG_VARIABLE_UPDATE => {
                         let room = room.read().await;
                         let msg = Message::Binary(data);
                         for (&id, c) in &room.clients {
