@@ -404,7 +404,7 @@ namespace SomniumSpace.Worlds.bently.networking
 
             if (movedCount == 0) return;
 
-            int size = 3 + movedCount * BYTES_PER_ENTITY;
+            int size = 3 + movedCount * Protocol.BYTES_PER_ENTITY;
             byte[] buf = new byte[size];
             buf[0] = 0x01;
             WriteU16(buf, 1, (ushort)movedCount);
@@ -440,7 +440,7 @@ namespace SomniumSpace.Worlds.bently.networking
 
             if (movedCount == 0) return;
 
-            int size = 3 + movedCount * BYTES_PER_ENTITY;
+            int size = 3 + movedCount * Protocol.BYTES_PER_ENTITY;
             byte[] buf = new byte[size];
             buf[0] = 0x03;
             WriteU16(buf, 1, (ushort)movedCount);
@@ -465,7 +465,7 @@ namespace SomniumSpace.Worlds.bently.networking
         /// </summary>
         public void SendInteractionUpdate(NetworkObject obj)
         {
-            byte[] buf = new byte[3 + BYTES_PER_ENTITY];
+            byte[] buf = new byte[3 + Protocol.BYTES_PER_ENTITY];
             buf[0] = 0x03;
             WriteU16(buf, 1, 1);
             WriteEntityCompact(buf, 3, obj.LocalId,
@@ -509,7 +509,7 @@ namespace SomniumSpace.Worlds.bently.networking
             ushort count = BitConverter.ToUInt16(data, 1);
             int offset = 3;
 
-            for (int i = 0; i < count && offset + BYTES_PER_ENTITY <= length; i++)
+            for (int i = 0; i < count && offset + Protocol.BYTES_PER_ENTITY <= length; i++)
             {
                 ushort localId;
                 Vector3 pos, rot;
@@ -539,7 +539,7 @@ namespace SomniumSpace.Worlds.bently.networking
             ushort count = BitConverter.ToUInt16(data, 1);
             int offset = 3;
 
-            for (int i = 0; i < count && offset + BYTES_PER_ENTITY <= length; i++)
+            for (int i = 0; i < count && offset + Protocol.BYTES_PER_ENTITY <= length; i++)
             {
                 ushort localId;
                 Vector3 pos, rot;
@@ -623,7 +623,7 @@ namespace SomniumSpace.Worlds.bently.networking
             if (_objects.Count == 0) return;
 
             int count = _objects.Count;
-            int size = 3 + count * BYTES_PER_ENTITY;
+            int size = 3 + count * Protocol.BYTES_PER_ENTITY;
             byte[] buf = new byte[size];
             buf[0] = 0x02;
             WriteU16(buf, 1, (ushort)count);
@@ -647,7 +647,7 @@ namespace SomniumSpace.Worlds.bently.networking
             int offset = 3;
             int applied = 0;
 
-            for (int i = 0; i < count && offset + BYTES_PER_ENTITY <= length; i++)
+            for (int i = 0; i < count && offset + Protocol.BYTES_PER_ENTITY <= length; i++)
             {
                 ushort localId;
                 Vector3 pos, rot;
@@ -682,137 +682,19 @@ namespace SomniumSpace.Worlds.bently.networking
         public void SendBinaryPublic(byte[] data) => SendBinary(data);
 
         // =====================================================================
-        // Binary Helpers
+        // Binary Helpers (delegates to Protocol for shared encoding)
         // =====================================================================
 
         private static void WriteU16(byte[] buf, int offset, ushort value)
-        {
-            buf[offset] = (byte)(value & 0xFF);
-            buf[offset + 1] = (byte)(value >> 8);
-        }
+            => Protocol.WriteU16(buf, offset, value);
 
         private static void WriteFloat(byte[] buf, int offset, float value)
-        {
-            byte[] bytes = BitConverter.GetBytes(value);
-            buf[offset] = bytes[0];
-            buf[offset + 1] = bytes[1];
-            buf[offset + 2] = bytes[2];
-            buf[offset + 3] = bytes[3];
-        }
+            => Protocol.WriteFloat(buf, offset, value);
 
-        // =====================================================================
-        // Compact encoding: half-float position + uint16 rotation
-        // Per entity: 2 (id) + 6 (pos half) + 6 (rot u16) = 14 bytes
-        // =====================================================================
-
-        private const int BYTES_PER_ENTITY = 14;
-
-        /// <summary>Write a float as IEEE 754 half-precision (16-bit).</summary>
-        private static void WriteHalf(byte[] buf, int offset, float value)
-        {
-            // Convert float32 to float16 (IEEE 754 half-precision)
-            int bits = BitConverter.ToInt32(BitConverter.GetBytes(value), 0);
-            int sign = (bits >> 16) & 0x8000;
-            int exp = ((bits >> 23) & 0xFF) - 127 + 15;
-            int mantissa = bits & 0x007FFFFF;
-
-            ushort half;
-            if (exp <= 0)
-            {
-                // Underflow → zero
-                half = (ushort)sign;
-            }
-            else if (exp >= 31)
-            {
-                // Overflow → infinity
-                half = (ushort)(sign | 0x7C00);
-            }
-            else
-            {
-                half = (ushort)(sign | (exp << 10) | (mantissa >> 13));
-            }
-
-            buf[offset] = (byte)(half & 0xFF);
-            buf[offset + 1] = (byte)(half >> 8);
-        }
-
-        /// <summary>Read an IEEE 754 half-precision float as float32.</summary>
-        private static float ReadHalf(byte[] buf, int offset)
-        {
-            ushort half = (ushort)(buf[offset] | (buf[offset + 1] << 8));
-            int sign = (half >> 15) & 1;
-            int exp = (half >> 10) & 0x1F;
-            int mantissa = half & 0x3FF;
-
-            int fbits;
-            if (exp == 0)
-            {
-                if (mantissa == 0) fbits = sign << 31; // Zero
-                else
-                {
-                    // Denormalized
-                    exp = 1;
-                    while ((mantissa & 0x400) == 0) { mantissa <<= 1; exp--; }
-                    mantissa &= 0x3FF;
-                    fbits = (sign << 31) | ((exp + 127 - 15) << 23) | (mantissa << 13);
-                }
-            }
-            else if (exp == 31)
-            {
-                fbits = (sign << 31) | 0x7F800000 | (mantissa << 13); // Inf/NaN
-            }
-            else
-            {
-                fbits = (sign << 31) | ((exp + 127 - 15) << 23) | (mantissa << 13);
-            }
-
-            return BitConverter.ToSingle(BitConverter.GetBytes(fbits), 0);
-        }
-
-        /// <summary>Write euler angle (0-360) as uint16 (0-65535).</summary>
-        private static void WriteRotU16(byte[] buf, int offset, float degrees)
-        {
-            // Normalize to 0-360
-            degrees = degrees % 360f;
-            if (degrees < 0) degrees += 360f;
-            ushort val = (ushort)(degrees * (65535f / 360f));
-            buf[offset] = (byte)(val & 0xFF);
-            buf[offset + 1] = (byte)(val >> 8);
-        }
-
-        /// <summary>Read uint16 rotation back to euler degrees (0-360).</summary>
-        private static float ReadRotU16(byte[] buf, int offset)
-        {
-            ushort val = (ushort)(buf[offset] | (buf[offset + 1] << 8));
-            return val * (360f / 65535f);
-        }
-
-        /// <summary>Write one entity in compact format: [u16 id][half x][half y][half z][u16 rx][u16 ry][u16 rz]</summary>
         private static int WriteEntityCompact(byte[] buf, int offset, ushort id, Vector3 pos, Vector3 rot)
-        {
-            WriteU16(buf, offset, id); offset += 2;
-            WriteHalf(buf, offset, pos.x); offset += 2;
-            WriteHalf(buf, offset, pos.y); offset += 2;
-            WriteHalf(buf, offset, pos.z); offset += 2;
-            WriteRotU16(buf, offset, rot.x); offset += 2;
-            WriteRotU16(buf, offset, rot.y); offset += 2;
-            WriteRotU16(buf, offset, rot.z); offset += 2;
-            return offset;
-        }
+            => Protocol.WriteEntityCompact(buf, offset, id, pos, rot);
 
-        /// <summary>Read one entity from compact format.</summary>
         private static int ReadEntityCompact(byte[] buf, int offset, out ushort id, out Vector3 pos, out Vector3 rot)
-        {
-            id = (ushort)(buf[offset] | (buf[offset + 1] << 8)); offset += 2;
-            float px = ReadHalf(buf, offset); offset += 2;
-            float py = ReadHalf(buf, offset); offset += 2;
-            float pz = ReadHalf(buf, offset); offset += 2;
-            float rx = ReadRotU16(buf, offset); offset += 2;
-            float ry = ReadRotU16(buf, offset); offset += 2;
-            float rz = ReadRotU16(buf, offset); offset += 2;
-            pos = new Vector3(px, py, pz);
-            rot = new Vector3(rx, ry, rz);
-            return offset;
-        }
+            => Protocol.ReadEntityCompact(buf, offset, out id, out pos, out rot);
     }
 }
