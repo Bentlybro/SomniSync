@@ -110,7 +110,7 @@ namespace SomniumSpace.Worlds.bently.networking
             _objects.Clear();
             _objectMap.Clear();
 
-            var all = FindObjectsOfType<NetworkObject>();
+            var all = FindObjectsByType<NetworkObject>(FindObjectsSortMode.None);
 
             // Sort deterministically: by entityType, then by name, then by position
             Array.Sort(all, (a, b) =>
