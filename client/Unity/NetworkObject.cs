@@ -136,27 +136,39 @@ namespace SomniumSpace.Worlds.bently.networking
 
         /// <summary>
         /// Determines if a collider belongs to a player.
-        /// Checks common patterns: Player tag, player layer, or parent hierarchy.
+        /// Somnium player hierarchy:
+        ///   Original Player: [Name] [ID] [Player:X]
+        ///     Player.NonXR.Body(Clone) / Player.XR.Body(Clone)
+        ///       NonXR.Body / XR.Body  ← has Rigidbody + CharacterController
         /// </summary>
         private static bool IsPlayerCollider(GameObject go)
         {
-            // Check tag first (most reliable if Somnium sets it)
-            if (go.CompareTag("Player")) return true;
-
-            // Walk up the hierarchy looking for player indicators
+            // Walk up hierarchy (max 6 levels) looking for Somnium player indicators
             Transform t = go.transform;
-            for (int i = 0; i < 5 && t != null; i++)
+            for (int i = 0; i < 6 && t != null; i++)
             {
-                // Check for common Somnium player components/names
-                if (t.name.Contains("Player") || t.name.Contains("Avatar"))
+                string name = t.name;
+
+                // Somnium-specific: NonXR.Body / XR.Body (the actual collider object)
+                if (name == "NonXR.Body" || name == "XR.Body")
                     return true;
-                // Check if it has a CharacterController (common player indicator)
+
+                // Somnium player root: starts with "Original Player:" or "Simulator Player:"
+                if (name.StartsWith("Original Player:") || name.StartsWith("Simulator Player:"))
+                    return true;
+
+                // Somnium body clones
+                if (name.Contains("NonXR.Body") || name.Contains("XR.Body"))
+                    return true;
+
+                // Generic fallback: CharacterController = player
                 if (t.GetComponent<CharacterController>() != null)
                     return true;
+
                 t = t.parent;
             }
 
-            // Fallback: if the collider is NOT a NetworkObject, it's likely a player
+            // Last resort: if it's NOT a NetworkObject, treat as player
             // (all synced objects have NetworkObject, players don't)
             if (go.GetComponent<NetworkObject>() == null &&
                 go.GetComponentInParent<NetworkObject>() == null)
