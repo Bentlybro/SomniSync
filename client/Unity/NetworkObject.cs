@@ -112,6 +112,24 @@ namespace SomniumSpace.Worlds.bently.networking
             }
         }
 
+        // =================================================================
+        // Chain claiming: claimed objects that hit other objects claim them too
+        // =================================================================
+
+        private void OnCollisionEnter(Collision collision)
+        {
+            // Only chain-claim if WE are claimed locally and have velocity
+            if (!IsClaimedLocally || !_hasRb) return;
+            if (_rb.velocity.sqrMagnitude < 0.1f) return;
+
+            var other = collision.gameObject.GetComponent<NetworkObject>();
+            if (other == null) return;
+            if (other.IsClaimedLocally || other.IsClaimedByRemote) return;
+
+            // Chain claim: this moving object hit a static one, claim it too
+            other.OnPlayerPush();
+        }
+
         /// <summary>
         /// Called by NetworkManager when role is determined.
         /// Master: enable physics. Spectator: keep kinematic.
