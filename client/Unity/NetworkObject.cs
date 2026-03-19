@@ -18,13 +18,23 @@ namespace SomniumSpace.Worlds.bently.networking
         // Assigned by NetworkManager during deterministic sort
         [HideInInspector] public ushort LocalId;
 
+        /// <summary>
+        /// True if this object is currently claimed by the local client for interaction.
+        /// </summary>
+        public bool IsClaimedLocally { get; private set; }
+
+        /// <summary>
+        /// Client ID that currently owns this object (0 = master/default).
+        /// </summary>
+        public ushort ClaimedByClient { get; private set; }
+
         // Snapshot interpolation
         private Vector3 _fromPos, _toPos;
         private Vector3 _fromRot, _toRot;
         private float _interpT = 1f;
         private float _interpDuration = 0.016f; // ~60Hz
 
-        // Delta tracking (master only)
+        // Delta tracking (for sending updates)
         private Vector3 _lastSentPos;
         private Vector3 _lastSentRot;
 
@@ -132,6 +142,88 @@ namespace SomniumSpace.Worlds.bently.networking
             _fromPos = _toPos = pos;
             _fromRot = _toRot = rot;
             _interpT = 1f;
+        }
+
+        /// <summary>
+        /// Call when the local player grabs/interacts with this object.
+        /// Works for both master and spectator clients.
+        /// </summary>
+        public void Grab()
+        {
+            if (NetworkManager.Instance == null || !NetworkManager.Instance.IsConnected) return;
+            if (IsClaimedLocally) return; // Already claimed
+
+            IsClaimedLocally = true;
+            ClaimedByClient = NetworkManager.Instance.ClientId;
+
+            if (!NetworkManager.Instance.IsMaster)
+            {
+                // Spectator: enable physics so the player can move it
+                if (_hasRb) _rb.isKinematic = false;
+            }
+
+            // Tell everyone we own this now
+            NetworkManager.Instance.SendClaim(LocalId);
+            _lastSentPos = transform.position;
+            _lastSentRot = transform.eulerAngles;
+        }
+
+        /// <summary>
+        /// Call when the local player releases this object.
+        /// </summary>
+        public void Release()
+        {
+            if (NetworkManager.Instance == null || !NetworkManager.Instance.IsConnected) return;
+            if (!IsClaimedLocally) return;
+
+            IsClaimedLocally = false;
+            ClaimedByClient = 0;
+
+            if (!NetworkManager.Instance.IsMaster)
+            {
+                // Spectator: return to kinematic
+                if (_hasRb) _rb.isKinematic = true;
+            }
+
+            // Tell everyone we released it
+            NetworkManager.Instance.SendRelease(LocalId);
+        }
+
+        /// <summary>
+        /// Called by NetworkManager when a remote client claims this object.
+        /// </summary>
+        public void OnRemoteClaim(ushort clientId)
+        {
+            ClaimedByClient = clientId;
+
+            if (NetworkManager.Instance != null && NetworkManager.Instance.IsMaster)
+            {
+                // Master: stop simulating this object (remote client controls it now)
+                if (_hasRb) _rb.isKinematic = true;
+            }
+        }
+
+        /// <summary>
+        /// Called by NetworkManager when a remote client releases this object.
+        /// </summary>
+        public void OnRemoteRelease()
+        {
+            ClaimedByClient = 0;
+
+            if (NetworkManager.Instance != null && NetworkManager.Instance.IsMaster)
+            {
+                // Master: resume simulating this object
+                if (_hasRb) _rb.isKinematic = false;
+            }
+        }
+
+        /// <summary>
+        /// Is this object currently claimed by a non-master client?
+        /// Master uses this to skip it in position updates.
+        /// </summary>
+        public bool IsClaimedByRemote
+        {
+            get { return ClaimedByClient != 0 && !IsClaimedLocally; }
         }
 
         private float GetSmoothingDuration()

@@ -10,10 +10,13 @@ use tokio_tungstenite::tungstenite::Message;
 // --- Protocol constants ---
 const MSG_POSITION_UPDATE: u8 = 0x01;
 const MSG_SNAPSHOT: u8 = 0x02;
+const MSG_INTERACTION_UPDATE: u8 = 0x03;
 const CTRL_YOU_ARE_MASTER: u8 = 0x01;
 const CTRL_YOU_ARE_SPECTATOR: u8 = 0x02;
 const CTRL_SEND_SNAPSHOT: u8 = 0x03;
 const CTRL_MASTER_CHANGED: u8 = 0x04;
+const CTRL_CLAIM: u8 = 0x05;
+const CTRL_RELEASE: u8 = 0x06;
 
 type Tx = futures_util::stream::SplitSink<
     tokio_tungstenite::WebSocketStream<TcpStream>,
@@ -31,6 +34,8 @@ struct Room {
     next_id: u16,
     /// Cached latest snapshot from master so late-joiners get it instantly
     latest_snapshot: Option<Vec<u8>>,
+    /// Object ownership: object_local_id → client_id (only for claimed objects)
+    claimed_objects: HashMap<u16, u16>,
 }
 
 impl Room {
@@ -40,6 +45,7 @@ impl Room {
             master_id: None,
             next_id: 1,
             latest_snapshot: None,
+            claimed_objects: HashMap::new(),
         }
     }
 
@@ -56,6 +62,8 @@ impl Room {
 
     fn remove_client(&mut self, id: u16) -> Option<u16> {
         self.clients.remove(&id);
+        // Release all objects claimed by this client
+        self.claimed_objects.retain(|_, owner| *owner != id);
         if self.master_id == Some(id) {
             self.master_id = None;
             self.latest_snapshot = None;
@@ -204,9 +212,55 @@ async fn handle_connection(stream: TcpStream, addr: SocketAddr, room: Arc<RwLock
                         }
                     }
 
-                    // Control messages
+                    // Interaction updates from any client → broadcast to all others
+                    MSG_INTERACTION_UPDATE => {
+                        let room = room.read().await;
+                        let msg = Message::Binary(data);
+                        for (&id, c) in &room.clients {
+                            if id != client_id {
+                                let mut tx = c.tx.lock().await;
+                                let _ = tx.send(msg.clone()).await;
+                            }
+                        }
+                    }
+
+                    // Control messages from clients (claim/release)
                     0xFF => {
-                        // Clients shouldn't send control messages, ignore
+                        if data.len() >= 6 {
+                            let ctrl = data[1];
+                            let obj_id = u16::from_le_bytes([data[2], data[3]]);
+                            let sender_id = u16::from_le_bytes([data[4], data[5]]);
+
+                            match ctrl {
+                                CTRL_CLAIM => {
+                                    let mut room = room.write().await;
+                                    room.claimed_objects.insert(obj_id, sender_id);
+                                    info!("[Room] Client_{} claimed object {}", sender_id, obj_id);
+                                    // Broadcast to all (including master)
+                                    let msg = Message::Binary(data);
+                                    for (&id, c) in &room.clients {
+                                        if id != client_id {
+                                            let mut tx = c.tx.lock().await;
+                                            let _ = tx.send(msg.clone()).await;
+                                        }
+                                    }
+                                }
+                                CTRL_RELEASE => {
+                                    let mut room = room.write().await;
+                                    room.claimed_objects.remove(&obj_id);
+                                    info!("[Room] Client_{} released object {}", sender_id, obj_id);
+                                    // Broadcast to all
+                                    let msg = Message::Binary(data);
+                                    for (&id, c) in &room.clients {
+                                        if id != client_id {
+                                            let mut tx = c.tx.lock().await;
+                                            let _ = tx.send(msg.clone()).await;
+                                        }
+                                    }
+                                }
+                                _ => {} // Ignore other control from clients
+                            }
+                        }
                     }
 
                     _ => {

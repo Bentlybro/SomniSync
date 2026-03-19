@@ -82,13 +82,18 @@ namespace SomniumSpace.Worlds.bently.networking
                 Debug.Log($"[Net] Scene ready. {_objects.Count} objects registered.");
             }
 
-            if (!IsConnected || !IsMaster) return;
+            if (!IsConnected) return;
 
             // Send position updates at configured rate
             if (Time.time >= _nextSendTime)
             {
                 _nextSendTime = Time.time + _sendInterval;
-                SendPositionUpdates();
+
+                if (IsMaster)
+                    SendPositionUpdates();
+
+                // Any client sends interaction updates for objects they've claimed
+                SendInteractionUpdates();
             }
         }
 
@@ -217,12 +222,16 @@ namespace SomniumSpace.Worlds.bently.networking
 
             switch (msgType)
             {
-                case 0x01: // Position updates
+                case 0x01: // Position updates (from master)
                     HandlePositionUpdates(data, length);
                     break;
 
                 case 0x02: // Snapshot
                     HandleSnapshot(data, length);
+                    break;
+
+                case 0x03: // Interaction updates (from any client)
+                    HandleInteractionUpdates(data, length);
                     break;
 
                 case 0xFF: // Control message
@@ -270,6 +279,29 @@ namespace SomniumSpace.Worlds.bently.networking
                     EnablePhysicsOnAll(true);
                     SendSnapshot();
                     break;
+
+                case 0x05: // Remote client claimed an object
+                    if (length >= 6)
+                    {
+                        ushort claimObjId = BitConverter.ToUInt16(data, 2);
+                        ushort claimClientId = BitConverter.ToUInt16(data, 4);
+                        if (_objectMap.TryGetValue(claimObjId, out var claimObj))
+                        {
+                            claimObj.OnRemoteClaim(claimClientId);
+                        }
+                    }
+                    break;
+
+                case 0x06: // Remote client released an object
+                    if (length >= 6)
+                    {
+                        ushort releaseObjId = BitConverter.ToUInt16(data, 2);
+                        if (_objectMap.TryGetValue(releaseObjId, out var releaseObj))
+                        {
+                            releaseObj.OnRemoteRelease();
+                        }
+                    }
+                    break;
             }
         }
 
@@ -291,10 +323,11 @@ namespace SomniumSpace.Worlds.bently.networking
         {
             if (_objects.Count == 0) return;
 
-            // Count moved objects first
+            // Count moved objects first (skip objects claimed by remote clients)
             int movedCount = 0;
             foreach (var obj in _objects)
             {
+                if (obj.IsClaimedByRemote) continue;
                 if (obj.HasMoved(positionThreshold, rotationThreshold))
                     movedCount++;
             }
@@ -310,6 +343,7 @@ namespace SomniumSpace.Worlds.bently.networking
             int offset = 3;
             foreach (var obj in _objects)
             {
+                if (obj.IsClaimedByRemote) continue;
                 if (!obj.HasMoved(positionThreshold, rotationThreshold))
                     continue;
 
@@ -325,6 +359,77 @@ namespace SomniumSpace.Worlds.bently.networking
                 obj.MarkSent();
             }
 
+            SendBinary(buf);
+        }
+
+        /// <summary>
+        /// Send position updates for objects this client has claimed (interaction).
+        /// Works for both master and spectator.
+        /// </summary>
+        private void SendInteractionUpdates()
+        {
+            int movedCount = 0;
+            foreach (var obj in _objects)
+            {
+                if (!obj.IsClaimedLocally) continue;
+                if (obj.HasMoved(positionThreshold, rotationThreshold))
+                    movedCount++;
+            }
+
+            if (movedCount == 0) return;
+
+            int size = 3 + movedCount * 26;
+            byte[] buf = new byte[size];
+            buf[0] = 0x03; // Interaction update
+            WriteU16(buf, 1, (ushort)movedCount);
+
+            int offset = 3;
+            foreach (var obj in _objects)
+            {
+                if (!obj.IsClaimedLocally) continue;
+                if (!obj.HasMoved(positionThreshold, rotationThreshold))
+                    continue;
+
+                WriteU16(buf, offset, obj.LocalId); offset += 2;
+                var pos = obj.transform.position;
+                var rot = obj.transform.eulerAngles;
+                WriteFloat(buf, offset, pos.x); offset += 4;
+                WriteFloat(buf, offset, pos.y); offset += 4;
+                WriteFloat(buf, offset, pos.z); offset += 4;
+                WriteFloat(buf, offset, rot.x); offset += 4;
+                WriteFloat(buf, offset, rot.y); offset += 4;
+                WriteFloat(buf, offset, rot.z); offset += 4;
+                obj.MarkSent();
+            }
+
+            SendBinary(buf);
+        }
+
+        /// <summary>
+        /// Send a claim message for an object (called by NetworkObject.Grab()).
+        /// </summary>
+        public void SendClaim(ushort objectId)
+        {
+            // [0xFF][0x05][u16 object_id][u16 client_id]
+            byte[] buf = new byte[6];
+            buf[0] = 0xFF;
+            buf[1] = 0x05;
+            WriteU16(buf, 2, objectId);
+            WriteU16(buf, 4, ClientId);
+            SendBinary(buf);
+        }
+
+        /// <summary>
+        /// Send a release message for an object (called by NetworkObject.Release()).
+        /// </summary>
+        public void SendRelease(ushort objectId)
+        {
+            // [0xFF][0x06][u16 object_id][u16 client_id]
+            byte[] buf = new byte[6];
+            buf[0] = 0xFF;
+            buf[1] = 0x06;
+            WriteU16(buf, 2, objectId);
+            WriteU16(buf, 4, ClientId);
             SendBinary(buf);
         }
 
@@ -358,6 +463,38 @@ namespace SomniumSpace.Worlds.bently.networking
 
             if (_snapFramesRemaining > 0)
                 _snapFramesRemaining--;
+        }
+
+        /// <summary>
+        /// Handle interaction updates from remote clients (0x03).
+        /// Any client applies these — master sees spectator interactions, spectators see others'.
+        /// </summary>
+        private void HandleInteractionUpdates(byte[] data, int length)
+        {
+            if (!_sceneReady) return;
+
+            ushort count = BitConverter.ToUInt16(data, 1);
+            int offset = 3;
+
+            for (int i = 0; i < count && offset + 26 <= length; i++)
+            {
+                ushort localId = BitConverter.ToUInt16(data, offset); offset += 2;
+                float px = BitConverter.ToSingle(data, offset); offset += 4;
+                float py = BitConverter.ToSingle(data, offset); offset += 4;
+                float pz = BitConverter.ToSingle(data, offset); offset += 4;
+                float rx = BitConverter.ToSingle(data, offset); offset += 4;
+                float ry = BitConverter.ToSingle(data, offset); offset += 4;
+                float rz = BitConverter.ToSingle(data, offset); offset += 4;
+
+                if (_objectMap.TryGetValue(localId, out var obj))
+                {
+                    // Don't apply if we locally own this object
+                    if (!obj.IsClaimedLocally)
+                    {
+                        obj.ApplyUpdate(new Vector3(px, py, pz), new Vector3(rx, ry, rz));
+                    }
+                }
+            }
         }
 
         // =====================================================================
