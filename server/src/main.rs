@@ -323,8 +323,19 @@ async fn main() {
 
     let room = Arc::new(RwLock::new(Room::new()));
 
-    while let Ok((stream, addr)) = listener.accept().await {
-        let room = room.clone();
-        tokio::spawn(handle_connection(stream, addr, room));
+    let shutdown = tokio::signal::ctrl_c();
+    tokio::pin!(shutdown);
+
+    loop {
+        tokio::select! {
+            Ok((stream, addr)) = listener.accept() => {
+                let room = room.clone();
+                tokio::spawn(handle_connection(stream, addr, room));
+            }
+            _ = &mut shutdown => {
+                info!("[Server] Shutting down...");
+                break;
+            }
+        }
     }
 }
