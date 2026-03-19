@@ -77,13 +77,15 @@ namespace SomniumSpace.Worlds.bently.networking
                 transform.eulerAngles = LerpAngles(_fromRot, _toRot, _interpT);
             }
 
-            // Auto-release if no longer being pushed
-            if (_autoClaimedByPush && IsClaimedLocally)
+            // Auto-release: keep claimed while moving, release once settled
+            if (_autoClaimedByPush && IsClaimedLocally && _hasRb)
             {
-                float elapsed = Time.time - _lastContactTime;
-                bool settled = _hasRb && _rb.velocity.sqrMagnitude < 0.01f &&
-                               _rb.angularVelocity.sqrMagnitude < 0.01f;
-                if (elapsed > AUTO_RELEASE_DELAY || (settled && elapsed > 0.2f))
+                bool touching = (Time.time - _lastContactTime) < 0.1f;
+                bool settled = _rb.velocity.sqrMagnitude < 0.05f &&
+                               _rb.angularVelocity.sqrMagnitude < 0.05f;
+
+                // Release when: not touching AND object has stopped moving
+                if (!touching && settled)
                 {
                     _autoClaimedByPush = false;
                     Release();
