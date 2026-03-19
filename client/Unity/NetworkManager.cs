@@ -298,6 +298,14 @@ namespace SomniumSpace.Worlds.bently.networking
                     HandleVariableUpdate(data, length);
                     break;
 
+                case 0x06: // Event (RPC) from any client
+                    HandleEvent(data, length);
+                    break;
+
+                case 0x07: // Animator state from any client
+                    HandleAnimatorState(data, length);
+                    break;
+
                 case 0xFF: // Control message
                     if (length >= 2)
                         HandleControl(data, length);
@@ -599,6 +607,44 @@ namespace SomniumSpace.Worlds.bently.networking
                 if (netVars != null)
                 {
                     netVars.ApplyRemoteUpdate(data, 4, varCount);
+                }
+            }
+        }
+
+        // =====================================================================
+        // Events (0x06) — fire-and-forget RPCs
+        // =====================================================================
+
+        private void HandleEvent(byte[] data, int length)
+        {
+            if (length < 4) return;
+            ushort objId = (ushort)(data[1] | (data[2] << 8));
+
+            if (_objectMap.TryGetValue(objId, out var obj))
+            {
+                var netEvents = obj.GetComponent<NetworkEvents>();
+                if (netEvents != null)
+                {
+                    netEvents.ApplyRemoteEvent(data, 3, length);
+                }
+            }
+        }
+
+        // =====================================================================
+        // Animator State (0x07)
+        // =====================================================================
+
+        private void HandleAnimatorState(byte[] data, int length)
+        {
+            if (length < 10) return;
+            ushort objId = (ushort)(data[1] | (data[2] << 8));
+
+            if (_objectMap.TryGetValue(objId, out var obj))
+            {
+                var netAnim = obj.GetComponent<NetworkAnimator>();
+                if (netAnim != null)
+                {
+                    netAnim.ApplyRemoteState(data, 3);
                 }
             }
         }

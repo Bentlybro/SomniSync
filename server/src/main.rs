@@ -12,6 +12,8 @@ const MSG_POSITION_UPDATE: u8 = 0x01;
 const MSG_SNAPSHOT: u8 = 0x02;
 const MSG_INTERACTION_UPDATE: u8 = 0x03;
 const MSG_VARIABLE_UPDATE: u8 = 0x04;
+const MSG_EVENT: u8 = 0x06;
+const MSG_ANIMATOR: u8 = 0x07;
 const CTRL_YOU_ARE_MASTER: u8 = 0x01;
 const CTRL_YOU_ARE_SPECTATOR: u8 = 0x02;
 const CTRL_SEND_SNAPSHOT: u8 = 0x03;
@@ -214,7 +216,7 @@ async fn handle_connection(stream: TcpStream, addr: SocketAddr, room: Arc<RwLock
                     }
 
                     // Interaction updates from any client → broadcast to all others
-                    MSG_INTERACTION_UPDATE | MSG_VARIABLE_UPDATE => {
+                    MSG_INTERACTION_UPDATE | MSG_VARIABLE_UPDATE | MSG_EVENT | MSG_ANIMATOR => {
                         let room = room.read().await;
                         let msg = Message::Binary(data);
                         for (&id, c) in &room.clients {
