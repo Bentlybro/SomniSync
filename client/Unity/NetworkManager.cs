@@ -49,6 +49,12 @@ namespace SomniumSpace.Worlds.bently.networking
         private int _snapFramesRemaining;
         private const int SNAP_FRAMES_AFTER_SNAPSHOT = 3;
 
+        // Periodic resync snapshot (master only)
+        [Header("Resync")]
+        [Tooltip("Seconds between full snapshots to prevent drift (0 = disabled)")]
+        public float resyncInterval = 5f;
+        private float _nextResyncTime;
+
         // Stats (public for NetworkStats overlay)
         public static int MessagesSent;
         public static int MessagesReceived;
@@ -101,6 +107,13 @@ namespace SomniumSpace.Worlds.bently.networking
 
                 // Any client sends interaction updates for objects they've claimed
                 SendInteractionUpdates();
+            }
+
+            // Periodic full snapshot to correct drift (master only)
+            if (IsMaster && resyncInterval > 0 && Time.time >= _nextResyncTime)
+            {
+                _nextResyncTime = Time.time + resyncInterval;
+                SendSnapshot();
             }
         }
 
