@@ -566,7 +566,7 @@ namespace SomniumSpace.Worlds.bently.networking
         private void HandleVariableUpdate(byte[] data, int length)
         {
             if (length < 4) return;
-            ushort objId = ReadU16(data, 1);
+            ushort objId = (ushort)(data[1] | (data[2] << 8));
             int varCount = data[3];
 
             if (_objectMap.TryGetValue(objId, out var obj))
