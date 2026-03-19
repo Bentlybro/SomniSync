@@ -38,13 +38,10 @@ namespace SomniumSpace.Worlds.bently.networking
         private Vector3 _lastSentPos;
         private Vector3 _lastSentRot;
 
-        // Auto-claim: release after no proximity for this duration
+        // Auto-claim state (managed by PlayerPushDetector)
         private const float AUTO_RELEASE_DELAY = 1.0f;
-        private const float CLAIM_RADIUS = 1.5f;   // How close player needs to be to push
-        private const float RELEASE_RADIUS = 2.5f;  // Release when player is this far
-        private float _lastProximityTime;
-        private bool _autoClaimedByProximity;
-        private static Transform _localPlayer;
+        private float _lastContactTime;
+        private bool _autoClaimedByPush;
 
         // Components
         private Rigidbody _rb;
@@ -80,82 +77,37 @@ namespace SomniumSpace.Worlds.bently.networking
                 transform.eulerAngles = LerpAngles(_fromRot, _toRot, _interpT);
             }
 
-            // Proximity-based auto-claim/release for spectators
-            if (NetworkManager.Instance != null && !NetworkManager.Instance.IsMaster &&
-                NetworkManager.Instance.IsConnected && _hasRb)
+            // Auto-release if no longer being pushed
+            if (_autoClaimedByPush && IsClaimedLocally)
             {
-                CheckPlayerProximity();
+                float elapsed = Time.time - _lastContactTime;
+                bool settled = _hasRb && _rb.velocity.sqrMagnitude < 0.01f &&
+                               _rb.angularVelocity.sqrMagnitude < 0.01f;
+                if (elapsed > AUTO_RELEASE_DELAY || (settled && elapsed > 0.2f))
+                {
+                    _autoClaimedByPush = false;
+                    Release();
+                }
             }
         }
 
         // =================================================================
-        // Auto-claim via proximity (CharacterController doesn't fire OnCollisionEnter)
+        // Push detection (called by PlayerPushDetector on the player body)
         // =================================================================
-
-        private void CheckPlayerProximity()
-        {
-            // Find local player once and cache
-            if (_localPlayer == null)
-            {
-                _localPlayer = FindLocalPlayerBody();
-                if (_localPlayer == null) return;
-            }
-
-            float dist = Vector3.Distance(transform.position, _localPlayer.position);
-
-            if (!IsClaimedLocally)
-            {
-                // Claim when player is close enough and object isn't owned by someone else
-                if (dist < CLAIM_RADIUS && !IsClaimedByRemote)
-                {
-                    _autoClaimedByProximity = true;
-                    _lastProximityTime = Time.time;
-                    Grab();
-                }
-            }
-            else if (_autoClaimedByProximity)
-            {
-                // Track proximity while claimed
-                if (dist < RELEASE_RADIUS)
-                {
-                    _lastProximityTime = Time.time;
-                }
-                else
-                {
-                    float elapsed = Time.time - _lastProximityTime;
-                    bool settled = _rb.velocity.sqrMagnitude < 0.01f &&
-                                   _rb.angularVelocity.sqrMagnitude < 0.01f;
-                    if (elapsed > AUTO_RELEASE_DELAY || (settled && elapsed > 0.2f))
-                    {
-                        _autoClaimedByProximity = false;
-                        Release();
-                    }
-                }
-            }
-        }
 
         /// <summary>
-        /// Find the local player's body transform (NonXR.Body or XR.Body).
-        /// Searches for Somnium's player hierarchy once, caches result.
+        /// Called by PlayerPushDetector when the local player's CharacterController
+        /// hits this object. Zero per-frame cost — only fires on actual collision.
         /// </summary>
-        private static Transform FindLocalPlayerBody()
+        public void OnPlayerPush()
         {
-            // Look for the Original Player root (local player)
-            foreach (var go in FindObjectsByType<CharacterController>(FindObjectsSortMode.None))
+            _lastContactTime = Time.time;
+
+            if (!IsClaimedLocally && !IsClaimedByRemote)
             {
-                Transform t = go.transform;
-                // Check if this is NonXR.Body or XR.Body
-                if (t.name == "NonXR.Body" || t.name == "XR.Body")
-                {
-                    // Verify it's the local "Original Player" (not a Simulator/remote)
-                    Transform root = t.parent;
-                    while (root != null && root.parent != null)
-                        root = root.parent;
-                    if (root != null && root.name.StartsWith("Original Player:"))
-                        return t;
-                }
+                _autoClaimedByPush = true;
+                Grab();
             }
-            return null;
         }
 
         /// <summary>

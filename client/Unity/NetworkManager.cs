@@ -43,6 +43,7 @@ namespace SomniumSpace.Worlds.bently.networking
         private readonly byte[] _recvBuffer = new byte[65536];
         private float _sendInterval;
         private float _nextSendTime;
+        private bool _pushDetectorAttached;
 
         // After snapshot, snap first N updates instead of interpolating
         private int _snapFramesRemaining;
@@ -84,6 +85,12 @@ namespace SomniumSpace.Worlds.bently.networking
 
             if (!IsConnected) return;
 
+            // Attach push detector to local player (once)
+            if (!_pushDetectorAttached && !IsMaster)
+            {
+                AttachPushDetector();
+            }
+
             // Send position updates at configured rate
             if (Time.time >= _nextSendTime)
             {
@@ -95,6 +102,35 @@ namespace SomniumSpace.Worlds.bently.networking
                 // Any client sends interaction updates for objects they've claimed
                 SendInteractionUpdates();
             }
+        }
+
+        // =====================================================================
+        // Push Detector (attach to local player at runtime)
+        // =====================================================================
+
+        private void AttachPushDetector()
+        {
+            // Find the local player's body (NonXR.Body or XR.Body)
+            foreach (var cc in FindObjectsByType<CharacterController>(FindObjectsSortMode.None))
+            {
+                string name = cc.gameObject.name;
+                if (name != "NonXR.Body" && name != "XR.Body") continue;
+
+                // Verify it's under "Original Player:" (local, not remote)
+                Transform root = cc.transform;
+                while (root.parent != null) root = root.parent;
+                if (!root.name.StartsWith("Original Player:")) continue;
+
+                // Attach our detector if not already there
+                if (cc.GetComponent<PlayerPushDetector>() == null)
+                {
+                    cc.gameObject.AddComponent<PlayerPushDetector>();
+                    Debug.Log($"[Net] Push detector attached to {cc.gameObject.name}");
+                }
+                _pushDetectorAttached = true;
+                return;
+            }
+            // Player not spawned yet — will retry next frame
         }
 
         // =====================================================================
