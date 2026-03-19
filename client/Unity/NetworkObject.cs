@@ -38,6 +38,12 @@ namespace SomniumSpace.Worlds.bently.networking
         private Vector3 _lastSentPos;
         private Vector3 _lastSentRot;
 
+        // Auto-claim: release after no contact for this duration
+        private const float AUTO_RELEASE_DELAY = 1.0f;
+        private int _contactCount;
+        private float _lastContactTime;
+        private bool _autoClaimedByContact;
+
         // Components
         private Rigidbody _rb;
         private bool _hasRb;
@@ -62,8 +68,8 @@ namespace SomniumSpace.Worlds.bently.networking
 
         private void Update()
         {
-            // Spectator interpolation
-            if (_interpT < 1f)
+            // Spectator interpolation (only when not claimed locally)
+            if (_interpT < 1f && !IsClaimedLocally)
             {
                 _interpT += Time.deltaTime / _interpDuration;
                 if (_interpT > 1f) _interpT = 1f;
@@ -71,6 +77,92 @@ namespace SomniumSpace.Worlds.bently.networking
                 transform.position = Vector3.Lerp(_fromPos, _toPos, _interpT);
                 transform.eulerAngles = LerpAngles(_fromRot, _toRot, _interpT);
             }
+
+            // Auto-release: if we claimed this via contact and no player contacts remain
+            if (_autoClaimedByContact && IsClaimedLocally && _contactCount <= 0)
+            {
+                float elapsed = Time.time - _lastContactTime;
+                // Release quickly if object has settled (low velocity) or after timeout
+                bool settled = _hasRb && _rb.velocity.sqrMagnitude < 0.01f &&
+                               _rb.angularVelocity.sqrMagnitude < 0.01f;
+                if (elapsed > AUTO_RELEASE_DELAY || (settled && elapsed > 0.2f))
+                {
+                    _autoClaimedByContact = false;
+                    Release();
+                }
+            }
+        }
+
+        // =================================================================
+        // Auto-claim on physics contact (spectators push objects)
+        // =================================================================
+
+        private void OnCollisionEnter(Collision collision)
+        {
+            if (NetworkManager.Instance == null) return;
+            // Only auto-claim for non-master clients when not already claimed by someone else
+            if (NetworkManager.Instance.IsMaster) return;
+            if (IsClaimedByRemote) return;
+
+            // Check if the colliding object is a player (tagged or layer-based)
+            // Somnium player colliders are typically on the player GameObject hierarchy
+            if (!IsPlayerCollider(collision.gameObject)) return;
+
+            _contactCount++;
+            _lastContactTime = Time.time;
+
+            if (!IsClaimedLocally)
+            {
+                _autoClaimedByContact = true;
+                Grab();
+            }
+        }
+
+        private void OnCollisionStay(Collision collision)
+        {
+            if (IsClaimedLocally && _autoClaimedByContact)
+            {
+                _lastContactTime = Time.time;
+            }
+        }
+
+        private void OnCollisionExit(Collision collision)
+        {
+            if (!IsPlayerCollider(collision.gameObject)) return;
+            _contactCount--;
+            if (_contactCount < 0) _contactCount = 0;
+            _lastContactTime = Time.time;
+        }
+
+        /// <summary>
+        /// Determines if a collider belongs to a player.
+        /// Checks common patterns: Player tag, player layer, or parent hierarchy.
+        /// </summary>
+        private static bool IsPlayerCollider(GameObject go)
+        {
+            // Check tag first (most reliable if Somnium sets it)
+            if (go.CompareTag("Player")) return true;
+
+            // Walk up the hierarchy looking for player indicators
+            Transform t = go.transform;
+            for (int i = 0; i < 5 && t != null; i++)
+            {
+                // Check for common Somnium player components/names
+                if (t.name.Contains("Player") || t.name.Contains("Avatar"))
+                    return true;
+                // Check if it has a CharacterController (common player indicator)
+                if (t.GetComponent<CharacterController>() != null)
+                    return true;
+                t = t.parent;
+            }
+
+            // Fallback: if the collider is NOT a NetworkObject, it's likely a player
+            // (all synced objects have NetworkObject, players don't)
+            if (go.GetComponent<NetworkObject>() == null &&
+                go.GetComponentInParent<NetworkObject>() == null)
+                return true;
+
+            return false;
         }
 
         /// <summary>
