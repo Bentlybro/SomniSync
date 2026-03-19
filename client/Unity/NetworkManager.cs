@@ -45,11 +45,6 @@ namespace SomniumSpace.Worlds.bently.networking
         private float _nextSendTime;
         private bool _pushDetectorAttached;
 
-        // Player position reporting for AOI
-        private Transform _localPlayerTransform;
-        private float _nextPlayerPosSend;
-        private const float PLAYER_POS_INTERVAL = 0.1f; // 10Hz is plenty for AOI
-
         // After snapshot, snap first N updates instead of interpolating
         private int _snapFramesRemaining;
         private const int SNAP_FRAMES_AFTER_SNAPSHOT = 3;
@@ -96,13 +91,6 @@ namespace SomniumSpace.Worlds.bently.networking
                 AttachPushDetector();
             }
 
-            // Report player position to server for AOI (10Hz)
-            if (Time.time >= _nextPlayerPosSend)
-            {
-                _nextPlayerPosSend = Time.time + PLAYER_POS_INTERVAL;
-                SendPlayerPosition();
-            }
-
             // Send position updates at configured rate
             if (Time.time >= _nextSendTime)
             {
@@ -143,38 +131,6 @@ namespace SomniumSpace.Worlds.bently.networking
                 return;
             }
             // Player not spawned yet — will retry next frame
-        }
-
-        // =====================================================================
-        // Player Position (for server-side AOI)
-        // =====================================================================
-
-        private void SendPlayerPosition()
-        {
-            if (_localPlayerTransform == null)
-            {
-                // Try to find player — reuse push detector's search
-                foreach (var cc in FindObjectsByType<CharacterController>(FindObjectsSortMode.None))
-                {
-                    string name = cc.gameObject.name;
-                    if (name != "NonXR.Body" && name != "XR.Body") continue;
-                    Transform root = cc.transform;
-                    while (root.parent != null) root = root.parent;
-                    if (!root.name.StartsWith("Original Player:")) continue;
-                    _localPlayerTransform = cc.transform;
-                    break;
-                }
-                if (_localPlayerTransform == null) return;
-            }
-
-            // [0x05][f32 x][f32 y][f32 z] = 13 bytes
-            byte[] buf = new byte[13];
-            buf[0] = 0x05;
-            var pos = _localPlayerTransform.position;
-            WriteFloat(buf, 1, pos.x);
-            WriteFloat(buf, 5, pos.y);
-            WriteFloat(buf, 9, pos.z);
-            SendBinary(buf);
         }
 
         // =====================================================================
