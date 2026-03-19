@@ -442,6 +442,28 @@ namespace SomniumSpace.Worlds.bently.networking
         }
 
         /// <summary>
+        /// Send a single object's position as an interaction update (used on release).
+        /// </summary>
+        public void SendInteractionUpdate(NetworkObject obj)
+        {
+            byte[] buf = new byte[29]; // 1 + 2 + 26
+            buf[0] = 0x03;
+            WriteU16(buf, 1, 1); // count = 1
+            int o = 3;
+            WriteU16(buf, o, obj.LocalId); o += 2;
+            var pos = obj.transform.position;
+            var rot = obj.transform.eulerAngles;
+            WriteFloat(buf, o, pos.x); o += 4;
+            WriteFloat(buf, o, pos.y); o += 4;
+            WriteFloat(buf, o, pos.z); o += 4;
+            WriteFloat(buf, o, rot.x); o += 4;
+            WriteFloat(buf, o, rot.y); o += 4;
+            WriteFloat(buf, o, rot.z); o += 4;
+            obj.MarkSent();
+            SendBinary(buf);
+        }
+
+        /// <summary>
         /// Send a claim message for an object (called by NetworkObject.Grab()).
         /// </summary>
         public void SendClaim(ushort objectId)

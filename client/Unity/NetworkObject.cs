@@ -40,7 +40,9 @@ namespace SomniumSpace.Worlds.bently.networking
 
         // Auto-claim state (managed by PlayerPushDetector)
         private const float AUTO_RELEASE_DELAY = 1.0f;
+        private const float RECLAIM_COOLDOWN = 0.5f;
         private float _lastContactTime;
+        private float _lastReleaseTime;
         private bool _autoClaimedByPush;
 
         // Components
@@ -105,7 +107,8 @@ namespace SomniumSpace.Worlds.bently.networking
         {
             _lastContactTime = Time.time;
 
-            if (!IsClaimedLocally && !IsClaimedByRemote)
+            if (!IsClaimedLocally && !IsClaimedByRemote &&
+                (Time.time - _lastReleaseTime) > RECLAIM_COOLDOWN)
             {
                 _autoClaimedByPush = true;
                 Grab();
@@ -233,13 +236,26 @@ namespace SomniumSpace.Worlds.bently.networking
             if (NetworkManager.Instance == null || !NetworkManager.Instance.IsConnected) return;
             if (!IsClaimedLocally) return;
 
+            // Send final position BEFORE releasing so master adopts it
+            NetworkManager.Instance.SendInteractionUpdate(this);
+
             IsClaimedLocally = false;
             ClaimedByClient = 0;
+            _lastReleaseTime = Time.time;
 
             if (!NetworkManager.Instance.IsMaster)
             {
-                // Spectator: return to kinematic
-                if (_hasRb) _rb.isKinematic = true;
+                // Spectator: return to kinematic, lock in final position
+                if (_hasRb)
+                {
+                    _rb.velocity = Vector3.zero;
+                    _rb.angularVelocity = Vector3.zero;
+                    _rb.isKinematic = true;
+                }
+                // Set interpolation target to current pos so we don't snap away
+                _fromPos = _toPos = transform.position;
+                _fromRot = _toRot = transform.eulerAngles;
+                _interpT = 1f;
             }
 
             // Tell everyone we released it
@@ -269,8 +285,13 @@ namespace SomniumSpace.Worlds.bently.networking
 
             if (NetworkManager.Instance != null && NetworkManager.Instance.IsMaster)
             {
-                // Master: resume simulating this object
-                if (_hasRb) _rb.isKinematic = false;
+                // Master: resume simulating from where the spectator left it
+                if (_hasRb)
+                {
+                    _rb.isKinematic = false;
+                    _rb.velocity = Vector3.zero;
+                    _rb.angularVelocity = Vector3.zero;
+                }
             }
         }
 

@@ -1,5 +1,5 @@
 use futures_util::{SinkExt, StreamExt};
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -235,7 +235,7 @@ async fn handle_connection(stream: TcpStream, addr: SocketAddr, room: Arc<RwLock
                                 CTRL_CLAIM => {
                                     let mut room = room.write().await;
                                     room.claimed_objects.insert(obj_id, sender_id);
-                                    info!("[Room] Client_{} claimed object {}", sender_id, obj_id);
+                                    debug!("[Room] Client_{} claimed object {}", sender_id, obj_id);
                                     // Broadcast to all (including master)
                                     let msg = Message::Binary(data);
                                     for (&id, c) in &room.clients {
@@ -248,7 +248,7 @@ async fn handle_connection(stream: TcpStream, addr: SocketAddr, room: Arc<RwLock
                                 CTRL_RELEASE => {
                                     let mut room = room.write().await;
                                     room.claimed_objects.remove(&obj_id);
-                                    info!("[Room] Client_{} released object {}", sender_id, obj_id);
+                                    debug!("[Room] Client_{} released object {}", sender_id, obj_id);
                                     // Broadcast to all
                                     let msg = Message::Binary(data);
                                     for (&id, c) in &room.clients {
