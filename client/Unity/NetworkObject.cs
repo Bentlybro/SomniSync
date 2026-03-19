@@ -38,11 +38,13 @@ namespace SomniumSpace.Worlds.bently.networking
         private Vector3 _lastSentPos;
         private Vector3 _lastSentRot;
 
-        // Auto-claim: release after no contact for this duration
+        // Auto-claim: release after no proximity for this duration
         private const float AUTO_RELEASE_DELAY = 1.0f;
-        private int _contactCount;
-        private float _lastContactTime;
-        private bool _autoClaimedByContact;
+        private const float CLAIM_RADIUS = 1.5f;   // How close player needs to be to push
+        private const float RELEASE_RADIUS = 2.5f;  // Release when player is this far
+        private float _lastProximityTime;
+        private bool _autoClaimedByProximity;
+        private static Transform _localPlayer;
 
         // Components
         private Rigidbody _rb;
@@ -78,103 +80,82 @@ namespace SomniumSpace.Worlds.bently.networking
                 transform.eulerAngles = LerpAngles(_fromRot, _toRot, _interpT);
             }
 
-            // Auto-release: if we claimed this via contact and no player contacts remain
-            if (_autoClaimedByContact && IsClaimedLocally && _contactCount <= 0)
+            // Proximity-based auto-claim/release for spectators
+            if (NetworkManager.Instance != null && !NetworkManager.Instance.IsMaster &&
+                NetworkManager.Instance.IsConnected && _hasRb)
             {
-                float elapsed = Time.time - _lastContactTime;
-                // Release quickly if object has settled (low velocity) or after timeout
-                bool settled = _hasRb && _rb.velocity.sqrMagnitude < 0.01f &&
-                               _rb.angularVelocity.sqrMagnitude < 0.01f;
-                if (elapsed > AUTO_RELEASE_DELAY || (settled && elapsed > 0.2f))
+                CheckPlayerProximity();
+            }
+        }
+
+        // =================================================================
+        // Auto-claim via proximity (CharacterController doesn't fire OnCollisionEnter)
+        // =================================================================
+
+        private void CheckPlayerProximity()
+        {
+            // Find local player once and cache
+            if (_localPlayer == null)
+            {
+                _localPlayer = FindLocalPlayerBody();
+                if (_localPlayer == null) return;
+            }
+
+            float dist = Vector3.Distance(transform.position, _localPlayer.position);
+
+            if (!IsClaimedLocally)
+            {
+                // Claim when player is close enough and object isn't owned by someone else
+                if (dist < CLAIM_RADIUS && !IsClaimedByRemote)
                 {
-                    _autoClaimedByContact = false;
-                    Release();
+                    _autoClaimedByProximity = true;
+                    _lastProximityTime = Time.time;
+                    Grab();
+                }
+            }
+            else if (_autoClaimedByProximity)
+            {
+                // Track proximity while claimed
+                if (dist < RELEASE_RADIUS)
+                {
+                    _lastProximityTime = Time.time;
+                }
+                else
+                {
+                    float elapsed = Time.time - _lastProximityTime;
+                    bool settled = _rb.velocity.sqrMagnitude < 0.01f &&
+                                   _rb.angularVelocity.sqrMagnitude < 0.01f;
+                    if (elapsed > AUTO_RELEASE_DELAY || (settled && elapsed > 0.2f))
+                    {
+                        _autoClaimedByProximity = false;
+                        Release();
+                    }
                 }
             }
         }
 
-        // =================================================================
-        // Auto-claim on physics contact (spectators push objects)
-        // =================================================================
-
-        private void OnCollisionEnter(Collision collision)
-        {
-            if (NetworkManager.Instance == null) return;
-            // Only auto-claim for non-master clients when not already claimed by someone else
-            if (NetworkManager.Instance.IsMaster) return;
-            if (IsClaimedByRemote) return;
-
-            // Check if the colliding object is a player (tagged or layer-based)
-            // Somnium player colliders are typically on the player GameObject hierarchy
-            if (!IsPlayerCollider(collision.gameObject)) return;
-
-            _contactCount++;
-            _lastContactTime = Time.time;
-
-            if (!IsClaimedLocally)
-            {
-                _autoClaimedByContact = true;
-                Grab();
-            }
-        }
-
-        private void OnCollisionStay(Collision collision)
-        {
-            if (IsClaimedLocally && _autoClaimedByContact)
-            {
-                _lastContactTime = Time.time;
-            }
-        }
-
-        private void OnCollisionExit(Collision collision)
-        {
-            if (!IsPlayerCollider(collision.gameObject)) return;
-            _contactCount--;
-            if (_contactCount < 0) _contactCount = 0;
-            _lastContactTime = Time.time;
-        }
-
         /// <summary>
-        /// Determines if a collider belongs to a player.
-        /// Somnium player hierarchy:
-        ///   Original Player: [Name] [ID] [Player:X]
-        ///     Player.NonXR.Body(Clone) / Player.XR.Body(Clone)
-        ///       NonXR.Body / XR.Body  ← has Rigidbody + CharacterController
+        /// Find the local player's body transform (NonXR.Body or XR.Body).
+        /// Searches for Somnium's player hierarchy once, caches result.
         /// </summary>
-        private static bool IsPlayerCollider(GameObject go)
+        private static Transform FindLocalPlayerBody()
         {
-            // Walk up hierarchy (max 6 levels) looking for Somnium player indicators
-            Transform t = go.transform;
-            for (int i = 0; i < 6 && t != null; i++)
+            // Look for the Original Player root (local player)
+            foreach (var go in FindObjectsByType<CharacterController>(FindObjectsSortMode.None))
             {
-                string name = t.name;
-
-                // Somnium-specific: NonXR.Body / XR.Body (the actual collider object)
-                if (name == "NonXR.Body" || name == "XR.Body")
-                    return true;
-
-                // Somnium player root: starts with "Original Player:" or "Simulator Player:"
-                if (name.StartsWith("Original Player:") || name.StartsWith("Simulator Player:"))
-                    return true;
-
-                // Somnium body clones
-                if (name.Contains("NonXR.Body") || name.Contains("XR.Body"))
-                    return true;
-
-                // Generic fallback: CharacterController = player
-                if (t.GetComponent<CharacterController>() != null)
-                    return true;
-
-                t = t.parent;
+                Transform t = go.transform;
+                // Check if this is NonXR.Body or XR.Body
+                if (t.name == "NonXR.Body" || t.name == "XR.Body")
+                {
+                    // Verify it's the local "Original Player" (not a Simulator/remote)
+                    Transform root = t.parent;
+                    while (root != null && root.parent != null)
+                        root = root.parent;
+                    if (root != null && root.name.StartsWith("Original Player:"))
+                        return t;
+                }
             }
-
-            // Last resort: if it's NOT a NetworkObject, treat as player
-            // (all synced objects have NetworkObject, players don't)
-            if (go.GetComponent<NetworkObject>() == null &&
-                go.GetComponentInParent<NetworkObject>() == null)
-                return true;
-
-            return false;
+            return null;
         }
 
         /// <summary>
