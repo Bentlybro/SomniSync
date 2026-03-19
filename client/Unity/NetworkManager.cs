@@ -110,10 +110,21 @@ namespace SomniumSpace.Worlds.bently.networking
             }
 
             // Periodic full snapshot to correct drift (master only)
+            // Only send if at least one object has moved since last snapshot
             if (IsMaster && resyncInterval > 0 && Time.time >= _nextResyncTime)
             {
                 _nextResyncTime = Time.time + resyncInterval;
-                SendSnapshot();
+                bool anyMoved = false;
+                foreach (var obj in _objects)
+                {
+                    if (obj.HasMoved(positionThreshold, rotationThreshold))
+                    {
+                        anyMoved = true;
+                        break;
+                    }
+                }
+                if (anyMoved)
+                    SendSnapshot();
             }
         }
 
