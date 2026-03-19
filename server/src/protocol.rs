@@ -13,6 +13,7 @@ pub const MSG_INTERACTION_UPDATE: u8 = 0x03;
 pub const MSG_VARIABLE_UPDATE: u8 = 0x04;
 pub const MSG_EVENT: u8 = 0x06;
 pub const MSG_ANIMATOR: u8 = 0x07;
+pub const MSG_RIGIDBODY: u8 = 0x08;
 
 // --- Control subtypes (inside 0xFF messages) ---
 pub const CTRL_YOU_ARE_MASTER: u8 = 0x01;

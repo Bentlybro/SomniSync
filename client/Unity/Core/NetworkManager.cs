@@ -306,6 +306,10 @@ namespace SomniumSpace.Worlds.bently.networking
                     HandleAnimatorState(data, length);
                     break;
 
+                case 0x08: // Rigidbody velocity from any client
+                    HandleRigidbodyUpdate(data, length);
+                    break;
+
                 case 0xFF: // Control message
                     if (length >= 2)
                         HandleControl(data, length);
@@ -609,6 +613,25 @@ namespace SomniumSpace.Worlds.bently.networking
                 if (netAnim != null)
                 {
                     netAnim.ApplyRemoteState(data, 3);
+                }
+            }
+        }
+
+        // =====================================================================
+        // Rigidbody Updates (0x08) — velocity sync
+        // =====================================================================
+
+        private void HandleRigidbodyUpdate(byte[] data, int length)
+        {
+            if (length < 15) return;
+            ushort objId = (ushort)(data[1] | (data[2] << 8));
+
+            if (_objectMap.TryGetValue(objId, out var obj))
+            {
+                var netRb = obj.GetComponent<NetworkRigidbody>();
+                if (netRb != null)
+                {
+                    netRb.HandleRigidbodyUpdate(data, 3);
                 }
             }
         }

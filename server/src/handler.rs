@@ -130,8 +130,8 @@ async fn handle_binary(room: &Arc<RwLock<Room>>, client_id: u16, data: &[u8]) {
             broadcast_except(&room.clients, client_id, data).await;
         }
 
-        // Interaction, variable, event, animator → broadcast to all others
-        MSG_INTERACTION_UPDATE | MSG_VARIABLE_UPDATE | MSG_EVENT | MSG_ANIMATOR => {
+        // Interaction, variable, event, animator, rigidbody → broadcast to all others
+        MSG_INTERACTION_UPDATE | MSG_VARIABLE_UPDATE | MSG_EVENT | MSG_ANIMATOR | MSG_RIGIDBODY => {
             let room = room.read().await;
             broadcast_except(&room.clients, client_id, data).await;
         }
