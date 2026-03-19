@@ -88,29 +88,19 @@ namespace SomniumSpace.Worlds.bently.networking
             if (_vars != null)
             {
                 if (syncEmissionRate)
-                {
-                    _vars.DefineVariable("_ps_emission", NetworkVariables.VarType.Float, 0f);
-                    _vars.OnValueChanged += OnVarChanged;
-                }
+                    _vars.DefineVariable("_ps_emission", NetworkVariables.VarType.Float);
                 if (syncStartSpeed)
-                {
-                    _vars.DefineVariable("_ps_speed", NetworkVariables.VarType.Float, 0f);
-                    _vars.OnValueChanged += OnVarChanged;
-                }
+                    _vars.DefineVariable("_ps_speed", NetworkVariables.VarType.Float);
                 if (syncStartSize)
-                {
-                    _vars.DefineVariable("_ps_size", NetworkVariables.VarType.Float, 0f);
-                    _vars.OnValueChanged += OnVarChanged;
-                }
+                    _vars.DefineVariable("_ps_size", NetworkVariables.VarType.Float);
                 if (syncStartColor)
                 {
-                    // Store as RGBA ints (0-255)
-                    _vars.DefineVariable("_ps_color_r", NetworkVariables.VarType.Int, 255);
-                    _vars.DefineVariable("_ps_color_g", NetworkVariables.VarType.Int, 255);
-                    _vars.DefineVariable("_ps_color_b", NetworkVariables.VarType.Int, 255);
-                    _vars.DefineVariable("_ps_color_a", NetworkVariables.VarType.Int, 255);
-                    _vars.OnValueChanged += OnVarChanged;
+                    _vars.DefineVariable("_ps_color_r", NetworkVariables.VarType.Int);
+                    _vars.DefineVariable("_ps_color_g", NetworkVariables.VarType.Int);
+                    _vars.DefineVariable("_ps_color_b", NetworkVariables.VarType.Int);
+                    _vars.DefineVariable("_ps_color_a", NetworkVariables.VarType.Int);
                 }
+                _vars.OnValueChanged += OnVarChanged;
             }
 
             // Cache initial state
@@ -205,24 +195,24 @@ namespace SomniumSpace.Worlds.bently.networking
                 _ps.Stop();
         }
 
-        private void OnVarChanged(string name, object value)
+        private void OnVarChanged(string name, NetworkVariables.VarType type)
         {
             if (_netObj.HasAuthority()) return;
-            if (_ps == null) return;
+            if (_ps == null || _vars == null) return;
 
             switch (name)
             {
                 case "_ps_emission":
                     var em = _ps.emission;
-                    em.rateOverTime = (float)value;
+                    em.rateOverTime = _vars.GetFloat("_ps_emission");
                     break;
                 case "_ps_speed":
                     var main = _ps.main;
-                    main.startSpeed = (float)value;
+                    main.startSpeed = _vars.GetFloat("_ps_speed");
                     break;
                 case "_ps_size":
                     var main2 = _ps.main;
-                    main2.startSize = (float)value;
+                    main2.startSize = _vars.GetFloat("_ps_size");
                     break;
                 case "_ps_color_r":
                 case "_ps_color_g":

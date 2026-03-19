@@ -62,9 +62,9 @@ namespace SomniumSpace.Worlds.bently.networking
             if (_vars == null)
                 _vars = gameObject.AddComponent<NetworkVariables>();
 
-            _vars.DefineVariable(VAR_REMAINING, NetworkVariables.VarType.Float, 0f, true);
-            _vars.DefineVariable(VAR_RUNNING, NetworkVariables.VarType.Bool, false, true);
-            _vars.DefineVariable(VAR_DURATION, NetworkVariables.VarType.Float, duration, true);
+            _vars.DefineVariable(VAR_REMAINING, NetworkVariables.VarType.Float);
+            _vars.DefineVariable(VAR_RUNNING, NetworkVariables.VarType.Bool);
+            _vars.DefineVariable(VAR_DURATION, NetworkVariables.VarType.Float);
             _vars.OnValueChanged += OnVarChanged;
 
             if (autoStart && _netObj.HasAuthority())
@@ -127,17 +127,17 @@ namespace SomniumSpace.Worlds.bently.networking
             OnTick?.Invoke(_remaining);
         }
 
-        private void OnVarChanged(string name, object value)
+        private void OnVarChanged(string name, NetworkVariables.VarType type)
         {
             if (_netObj.HasAuthority()) return;
 
             switch (name)
             {
                 case VAR_REMAINING:
-                    _remaining = (float)value;
+                    _remaining = _vars.GetFloat(VAR_REMAINING);
                     break;
                 case VAR_RUNNING:
-                    bool nowRunning = (bool)value;
+                    bool nowRunning = _vars.GetBool(VAR_RUNNING);
                     if (nowRunning && !_running)
                     {
                         _running = true;
@@ -150,7 +150,7 @@ namespace SomniumSpace.Worlds.bently.networking
                     }
                     break;
                 case VAR_DURATION:
-                    duration = (float)value;
+                    duration = _vars.GetFloat(VAR_DURATION);
                     break;
             }
         }

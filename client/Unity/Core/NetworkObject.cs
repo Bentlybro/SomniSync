@@ -23,6 +23,14 @@ namespace SomniumSpace.Worlds.bently.networking
         /// </summary>
         public bool IsClaimedLocally { get; private set; }
 
+        /// <summary>True if this client has authority (master for unowned, or local claimer).</summary>
+        public bool HasAuthority()
+        {
+            if (IsClaimedLocally) return true;
+            if (IsClaimedByRemote) return false;
+            return NetworkManager.Instance != null && NetworkManager.Instance.IsMaster;
+        }
+
         /// <summary>
         /// Client ID that currently owns this object (0 = master/default).
         /// </summary>
