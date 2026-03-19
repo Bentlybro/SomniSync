@@ -334,7 +334,7 @@ async fn main() {
             }
             _ = &mut shutdown => {
                 info!("[Server] Shutting down...");
-                break;
+                std::process::exit(0);
             }
         }
     }
