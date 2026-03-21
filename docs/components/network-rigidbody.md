@@ -63,6 +63,15 @@ When a player grabs and throws:
 5. Position updates from `NetworkObject` correct any drift
 6. Ball settles → auto-releases back to master
 
+## ⚠️ Warning: Don't Use on Bulk Physics Objects
+
+NetworkRigidbody sends 15 bytes per object per sync tick. On a few objects this is nothing. On thousands it will destroy your frame rate:
+
+- 50 objects at 10Hz = 500 updates/sec ✅
+- 4000 objects at 30Hz = 120,000 updates/sec ❌ (this will kill performance)
+
+**Rule:** Only add NetworkRigidbody to objects that **individually matter** — a thrown ball, a vehicle, a wrecking ball. For bulk physics objects (stacked cubes, debris piles), `NetworkObject` alone is enough.
+
 ## Tips
 
 - Lower `syncRate` if bandwidth is tight (5Hz is often enough)

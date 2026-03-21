@@ -72,6 +72,8 @@ Rooms are created on first connect and destroyed when the last client leaves.
 
 **Rule of thumb:** If the object moves fast or gets thrown around, add `NetworkRigidbody`. If it mostly sits still or moves slowly, `NetworkObject` alone is fine.
 
+**⚠️ Don't add NetworkRigidbody to hundreds/thousands of objects.** It's designed for individual special objects (thrown ball, vehicle), not bulk physics. 4000 cubes with NetworkRigidbody = 120,000 velocity updates/sec = 3 FPS.
+
 ---
 
 ## Components
