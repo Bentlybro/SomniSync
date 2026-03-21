@@ -46,6 +46,34 @@ Rooms are created on first connect and destroyed when the last client leaves.
 
 ---
 
+## Which Components Do I Need?
+
+**Every synced object needs `NetworkObject`** — it handles position/rotation sync. Everything else is optional:
+
+| I want to... | Add this component |
+|--------------|-------------------|
+| Sync position/rotation | `NetworkObject` (required) |
+| Smooth fast-moving objects (thrown, explosions) | + `NetworkRigidbody` — syncs velocity so objects coast smoothly between updates |
+| Sync custom data (health, scores, door open/closed) | + `NetworkVariables` — int/float/bool/string per object |
+| Send events/RPCs (explode, damage, trigger) | + `NetworkEvents` — fire-and-forget to all clients |
+| Sync animations | + `NetworkAnimator` — state, parameters, triggers |
+| Sync particle effects | + `NetworkParticle` — play/stop + properties |
+| Add countdown timers | + `NetworkTimer` — authority-driven, synced to all |
+
+### NetworkObject vs NetworkRigidbody — What's the Difference?
+
+**NetworkObject** sends *where the object is* (position + rotation). Receivers teleport/interpolate to that position each tick.
+
+**NetworkRigidbody** sends *how fast the object is moving* (velocity + angular velocity). Receivers apply that velocity so the object coasts naturally between position updates.
+
+**Without NetworkRigidbody:** A thrown ball updates position 60 times/sec. Between updates it sits still, then jumps to the next position. Can look choppy.
+
+**With NetworkRigidbody:** The ball knows its velocity, so between position updates it keeps moving in the right direction at the right speed. Much smoother.
+
+**Rule of thumb:** If the object moves fast or gets thrown around, add `NetworkRigidbody`. If it mostly sits still or moves slowly, `NetworkObject` alone is fine.
+
+---
+
 ## Components
 
 ### NetworkManager
