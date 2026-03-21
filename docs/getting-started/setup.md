@@ -25,7 +25,7 @@ Default: `ws://0.0.0.0:9090` — pass a custom address as the first argument.
 
 1. Copy all files from `client/Unity/` into your Somnium world scripts folder
 2. Add a **NetworkManager** component to any GameObject in your scene
-3. Set the `serverUrl` to your relay server address (default: `wss://simple-sync.bentlybro.com`)
+3. Set the `serverUrl` to your relay server address (default: `ws://localhost:9090`)
 4. Add a **NetworkObject** component to every object you want synced
 5. Set `entityType` on each NetworkObject (e.g. `"cube"`, `"door"`, `"enemy"`)
 6. *(Optional)* Add **NetworkStats** for an F3 debug overlay

@@ -7,7 +7,7 @@ Built for [Somnium Space](https://somniumspace.com) VR but works with any Unity 
 ## Quick Start
 
 1. Add `NetworkManager` to a GameObject in your scene
-2. Set the `Server URL` (e.g. `wss://simple-sync.bentlybro.com`)
+2. Set the `Server URL` (e.g. `ws://localhost:9090`)
 3. Set a `Room ID` (e.g. `my-world`)
 4. Add `NetworkObject` to every object you want synced
 5. Done.
@@ -54,7 +54,7 @@ Rooms are created on first connect and destroyed when the last client leaves.
 
 | Inspector Field | Default | Description |
 |----------------|---------|-------------|
-| `serverUrl` | `wss://simple-sync.bentlybro.com` | WebSocket server URL |
+| `serverUrl` | `ws://localhost:9090` | WebSocket server URL |
 | `roomId` | *(empty)* | Room ID — clients with the same ID share a world |
 | `reconnectDelay` | `3` | Seconds between reconnect attempts |
 | `sendRate` | `60` | Position updates per second |

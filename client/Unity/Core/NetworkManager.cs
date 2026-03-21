@@ -16,7 +16,7 @@ namespace SomniumSpace.Worlds.bently.networking
         public static NetworkManager Instance { get; private set; }
 
         [Header("Connection")]
-        public string serverUrl = "wss://simple-sync.bentlybro.com";
+        public string serverUrl = "ws://localhost:9090";
         [Tooltip("Room ID — clients in the same room see each other. Leave empty for 'default'.")]
         public string roomId = "";
         public float reconnectDelay = 3f;

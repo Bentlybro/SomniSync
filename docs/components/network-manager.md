@@ -6,7 +6,7 @@ The central networking component. One per scene.
 
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
-| `serverUrl` | string | `wss://simple-sync.bentlybro.com` | WebSocket server URL |
+| `serverUrl` | string | `ws://localhost:9090` | WebSocket server URL |
 | `sendRate` | int | 30 | Position updates per second |
 | `positionThreshold` | float | 0.001 | Min position change to send update (meters) |
 | `rotationThreshold` | float | 0.1 | Min rotation change to send update (degrees) |
