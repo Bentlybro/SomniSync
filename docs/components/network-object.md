@@ -7,6 +7,8 @@ Add to any GameObject you want synced across clients. Handles position/rotation 
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
 | `entityType` | string | `""` | Type identifier used for deterministic sorting (e.g. `"cube"`, `"ball"`, `"door"`) |
+| `pushable` | bool | `true` | Allow players to push/move this object by walking into it |
+| `grabbable` | bool | `true` | Allow players to grab this object (for custom grab systems) |
 | `smoothing` | SmoothingMode | `Medium` | Interpolation smoothing for spectators |
 
 ### Smoothing Modes
@@ -54,6 +56,17 @@ All clients sort NetworkObjects by:
 3. Position: x → y → z
 
 This produces identical `LocalId` assignments on every client without any network handshake.
+
+## Interaction Control
+
+Use `pushable` and `grabbable` to control per-object interaction:
+
+| Object Type | Pushable | Grabbable | Example |
+|------------|----------|-----------|---------|
+| Throwable prop | ✅ | ✅ | Ball, bottle, crate |
+| Physics decoration | ❌ | ❌ | Chandelier, hanging rope |
+| Grabbable-only item | ❌ | ✅ | Weapon, key, tool |
+| Push-only obstacle | ✅ | ❌ | Heavy box, boulder |
 
 ## Tips
 
