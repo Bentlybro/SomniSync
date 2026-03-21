@@ -1,4 +1,4 @@
-# BentlyNet
+# SomniSync
 
 High-performance real-time physics networking for Unity. Designed for VR worlds with thousands of objects. Relay-based architecture with binary protocol — tested with **4000+ objects** at 14 bytes per entity.
 

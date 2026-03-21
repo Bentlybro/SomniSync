@@ -23,7 +23,7 @@ async fn main() {
         .await
         .expect("Failed to bind");
 
-    info!("[Server] Somnium Relay v2.2 started on ws://{}/", config.addr);
+    info!("[Server] SomniSync Relay v2.2 started on ws://{}/", config.addr);
     info!("[Server] Multi-room enabled — connect to ws://server/{{room_id}}");
     info!("[Server] Ready for connections...");
 
