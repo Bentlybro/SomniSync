@@ -5,12 +5,13 @@ mod protocol;
 mod room;
 
 use log::info;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::RwLock;
 
 use config::ServerConfig;
-use room::Room;
+use room::RoomMap;
 
 #[tokio::main]
 async fn main() {
@@ -22,11 +23,11 @@ async fn main() {
         .await
         .expect("Failed to bind");
 
-    info!("[Server] Somnium Relay v2.1 started on ws://{}/", config.addr);
-    info!("[Server] Persistence: {}", if config.persistence_enabled { "enabled" } else { "disabled" });
+    info!("[Server] Somnium Relay v2.2 started on ws://{}/", config.addr);
+    info!("[Server] Multi-room enabled — connect to ws://server/{{room_id}}");
     info!("[Server] Ready for connections...");
 
-    let room = Arc::new(RwLock::new(Room::new()));
+    let rooms: RoomMap = Arc::new(RwLock::new(HashMap::new()));
 
     let shutdown = tokio::signal::ctrl_c();
     tokio::pin!(shutdown);
@@ -34,8 +35,8 @@ async fn main() {
     loop {
         tokio::select! {
             Ok((stream, addr)) = listener.accept() => {
-                let room = room.clone();
-                tokio::spawn(handler::handle_connection(stream, addr, room));
+                let rooms = rooms.clone();
+                tokio::spawn(handler::handle_connection(stream, addr, rooms));
             }
             _ = &mut shutdown => {
                 info!("[Server] Shutting down...");

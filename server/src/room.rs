@@ -1,7 +1,11 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use tokio::sync::RwLock;
 
 use crate::client::Client;
+
+/// All rooms keyed by room_id string.
+pub type RoomMap = Arc<RwLock<HashMap<String, Arc<RwLock<Room>>>>>;
 
 /// Room state — tracks all connected clients, master, ownership, and snapshots.
 pub struct Room {

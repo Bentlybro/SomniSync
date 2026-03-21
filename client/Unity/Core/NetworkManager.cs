@@ -17,6 +17,8 @@ namespace SomniumSpace.Worlds.bently.networking
 
         [Header("Connection")]
         public string serverUrl = "wss://simple-sync.bentlybro.com";
+        [Tooltip("Room ID — clients in the same room see each other. Leave empty for 'default'.")]
+        public string roomId = "";
         public float reconnectDelay = 3f;
 
         [Header("Sync")]
@@ -217,11 +219,16 @@ namespace SomniumSpace.Worlds.bently.networking
 
         private IEnumerator Connect()
         {
-            Debug.Log($"[Net] Connecting to {serverUrl}...");
+            // Build URL: serverUrl/roomId (if roomId is set)
+            string url = serverUrl.TrimEnd('/');
+            if (!string.IsNullOrEmpty(roomId))
+                url += "/" + roomId;
+
+            Debug.Log($"[Net] Connecting to {url}...");
             _ws = new ClientWebSocket();
             _cts = new CancellationTokenSource();
 
-            var connectTask = _ws.ConnectAsync(new Uri(serverUrl), _cts.Token);
+            var connectTask = _ws.ConnectAsync(new Uri(url), _cts.Token);
             while (!connectTask.IsCompleted)
                 yield return null;
 
