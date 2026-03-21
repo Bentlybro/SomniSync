@@ -39,6 +39,8 @@ namespace SomniumSpace.Worlds.bently.networking
         private float _syncTimer;
         private Vector3 _lastSentVelocity;
         private Vector3 _lastSentAngularVelocity;
+        private bool _sleeping; // Skip FixedUpdate entirely when at rest
+        private float _sleepTimer;
 
         // Protocol
         private const byte MSG_RIGIDBODY = 0x08;
@@ -64,9 +66,25 @@ namespace SomniumSpace.Worlds.bently.networking
         private void FixedUpdate()
         {
             if (_manager == null || !_manager.IsConnected) return;
+            if (!_netObj.HasAuthority()) return;
 
-            if (_netObj.HasAuthority())
-                SendCheck();
+            // Sleep optimization: skip entirely when object is at rest
+            if (_sleeping)
+            {
+                // Only check for wake-up every 10 FixedUpdates (~5Hz)
+                _sleepTimer += Time.fixedDeltaTime;
+                if (_sleepTimer < 0.2f) return;
+                _sleepTimer = 0f;
+
+                if (_rb.velocity.sqrMagnitude > velocityThreshold * velocityThreshold ||
+                    _rb.angularVelocity.sqrMagnitude > angularVelocityThreshold * angularVelocityThreshold)
+                {
+                    _sleeping = false;
+                }
+                return;
+            }
+
+            SendCheck();
         }
 
         private void SendCheck()
@@ -81,16 +99,30 @@ namespace SomniumSpace.Worlds.bently.networking
             bool velChanged = Vector3.Distance(vel, _lastSentVelocity) > velocityThreshold;
             bool angChanged = Vector3.Distance(angVel, _lastSentAngularVelocity) > angularVelocityThreshold;
 
-            // Also send if velocity was non-zero and is now zero (object stopped)
             bool wasStopped = _lastSentVelocity.sqrMagnitude < 0.001f && _lastSentAngularVelocity.sqrMagnitude < 0.001f;
             bool isStopped = vel.sqrMagnitude < 0.001f && angVel.sqrMagnitude < 0.001f;
 
             if (!velChanged && !angChanged) return;
+
+            // Object just stopped — send final zero velocity then sleep
+            if (isStopped && !wasStopped)
+            {
+                _lastSentVelocity = Vector3.zero;
+                _lastSentAngularVelocity = Vector3.zero;
+                SendVelocity(Vector3.zero, Vector3.zero);
+                _sleeping = true;
+                return;
+            }
+
             if (wasStopped && isStopped) return;
 
             _lastSentVelocity = vel;
             _lastSentAngularVelocity = angVel;
+            SendVelocity(vel, angVel);
+        }
 
+        private void SendVelocity(Vector3 vel, Vector3 angVel)
+        {
             byte[] buf = new byte[MSG_SIZE];
             buf[0] = MSG_RIGIDBODY;
             Protocol.WriteU16(buf, 1, _netObj.LocalId);
@@ -100,7 +132,6 @@ namespace SomniumSpace.Worlds.bently.networking
             Protocol.WriteHalf(buf, 9, angVel.x);
             Protocol.WriteHalf(buf, 11, angVel.y);
             Protocol.WriteHalf(buf, 13, angVel.z);
-
             _manager.SendBinaryPublic(buf);
         }
 
