@@ -12,6 +12,12 @@ namespace SomniumSpace.Worlds.bently.networking
         [Tooltip("Type name used for deterministic sorting (e.g. 'cube', 'ball', 'enemy')")]
         public string entityType = "object";
 
+        [Header("Interaction")]
+        [Tooltip("Allow players to push/move this object by walking into it")]
+        public bool pushable = true;
+        [Tooltip("Allow players to grab this object (for custom grab systems)")]
+        public bool grabbable = true;
+
         [Header("Smoothing")]
         public SmoothingMode smoothing = SmoothingMode.Medium;
 
@@ -113,6 +119,8 @@ namespace SomniumSpace.Worlds.bently.networking
         /// </summary>
         public void OnPlayerPush()
         {
+            if (!pushable) return;
+
             _lastContactTime = Time.time;
 
             if (!IsClaimedLocally && !IsClaimedByRemote &&
@@ -218,6 +226,7 @@ namespace SomniumSpace.Worlds.bently.networking
         /// </summary>
         public void Grab()
         {
+            if (!grabbable) return;
             if (NetworkManager.Instance == null || !NetworkManager.Instance.IsConnected) return;
             if (IsClaimedLocally) return; // Already claimed
 

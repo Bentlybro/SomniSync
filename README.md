@@ -78,6 +78,8 @@ NetworkManager.Instance.ClientId     // ushort
 | Inspector Field | Default | Description |
 |----------------|---------|-------------|
 | `entityType` | `"object"` | Type string for deterministic sorting (e.g. `"cube"`, `"ball"`) |
+| `pushable` | `true` | Allow players to push/move this object by walking into it |
+| `grabbable` | `true` | Allow players to grab this object (for custom grab systems) |
 | `smoothing` | `Medium` | Interpolation mode: `None`, `Low`, `Medium`, `High` |
 
 #### How Ownership Works
