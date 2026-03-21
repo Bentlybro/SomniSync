@@ -24,7 +24,7 @@ async fn main() {
         .expect("Failed to bind");
 
     info!("[Server] SomniSync Relay v2.2 started on ws://{}/", config.addr);
-    info!("[Server] Multi-room enabled — connect to ws://server/{{room_id}}");
+    info!("[Server] Multi-room — connect to ws://server/{{room_id}}");
     info!("[Server] Ready for connections...");
 
     let rooms: RoomMap = Arc::new(RwLock::new(HashMap::new()));

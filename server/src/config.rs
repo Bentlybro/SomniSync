@@ -5,8 +5,6 @@ pub struct ServerConfig {
     /// Listen address
     pub addr: String,
 
-    /// Enable persistence (future: SQLite key-value store)
-    pub persistence_enabled: bool,
 }
 
 impl ServerConfig {
@@ -17,7 +15,6 @@ impl ServerConfig {
 
         Self {
             addr,
-            persistence_enabled: false,
         }
     }
 }
