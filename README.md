@@ -60,21 +60,7 @@ Rooms are created on first connect and destroyed when the last client leaves.
 | Sync particle effects | + `NetworkParticle` — play/stop + properties |
 | Add countdown timers | + `NetworkTimer` — authority-driven, synced to all |
 
-### NetworkObject vs NetworkRigidbody — What's the Difference?
-
-**NetworkObject** sends *where the object is* (position + rotation). Receivers teleport/interpolate to that position each tick.
-
-**NetworkRigidbody** sends *how fast the object is moving* (velocity + angular velocity). Receivers apply that velocity so the object coasts naturally between position updates.
-
-**Without NetworkRigidbody:** A thrown ball updates position 60 times/sec. Between updates it sits still, then jumps to the next position. Can look choppy.
-
-**With NetworkRigidbody:** The ball knows its velocity, so between position updates it keeps moving in the right direction at the right speed. Much smoother.
-
-**Rule of thumb:** If the object moves fast or gets thrown around, add `NetworkRigidbody`. If it mostly sits still or moves slowly, `NetworkObject` alone is fine.
-
-**⚠️ Don't add NetworkRigidbody to hundreds/thousands of objects.** It's designed for individual special objects (thrown ball, vehicle), not bulk physics. 4000 cubes with NetworkRigidbody = 120,000 velocity updates/sec = 3 FPS.
-
----
+For detailed explanations on when to use each component, see the [Which Components Do I Need?](docs/getting-started/which-components.md) guide.
 
 ## Components
 
