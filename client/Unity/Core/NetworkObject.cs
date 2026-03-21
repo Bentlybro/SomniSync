@@ -12,6 +12,10 @@ namespace SomniumSpace.Worlds.bently.networking
         [Tooltip("Type name used for deterministic sorting (e.g. 'cube', 'ball', 'enemy')")]
         public string entityType = "object";
 
+        [Header("Sync")]
+        [Tooltip("Also sync this object's scale (adds 6 bytes per update)")]
+        public bool syncScale = false;
+
         [Header("Interaction")]
         [Tooltip("Allow players to push/move this object by walking into it")]
         public bool pushable = true;
@@ -45,12 +49,14 @@ namespace SomniumSpace.Worlds.bently.networking
         // Snapshot interpolation
         private Vector3 _fromPos, _toPos;
         private Vector3 _fromRot, _toRot;
+        private Vector3 _fromScale, _toScale;
         private float _interpT = 1f;
         private float _interpDuration = 0.016f; // ~60Hz
 
         // Delta tracking (for sending updates)
         private Vector3 _lastSentPos;
         private Vector3 _lastSentRot;
+        private Vector3 _lastSentScale;
 
         // Auto-claim state (managed by PlayerPushDetector)
         private const float AUTO_RELEASE_DELAY = 1.0f;
@@ -91,6 +97,8 @@ namespace SomniumSpace.Worlds.bently.networking
 
                 transform.position = Vector3.Lerp(_fromPos, _toPos, _interpT);
                 transform.eulerAngles = LerpAngles(_fromRot, _toRot, _interpT);
+                if (syncScale)
+                    transform.localScale = Vector3.Lerp(_fromScale, _toScale, _interpT);
             }
 
             // Auto-release: keep claimed while moving, release once settled
@@ -175,7 +183,11 @@ namespace SomniumSpace.Worlds.bently.networking
                 Quaternion.Euler(_lastSentRot),
                 Quaternion.Euler(transform.eulerAngles)
             );
-            return posDist > posThreshold * posThreshold || rotDist > rotThreshold;
+            if (posDist > posThreshold * posThreshold || rotDist > rotThreshold)
+                return true;
+            if (syncScale && (transform.localScale - _lastSentScale).sqrMagnitude > 0.0001f)
+                return true;
+            return false;
         }
 
         /// <summary>
@@ -185,18 +197,21 @@ namespace SomniumSpace.Worlds.bently.networking
         {
             _lastSentPos = transform.position;
             _lastSentRot = transform.eulerAngles;
+            if (syncScale) _lastSentScale = transform.localScale;
         }
 
         /// <summary>
         /// Spectator: apply a position update with interpolation.
         /// </summary>
-        public void ApplyUpdate(Vector3 pos, Vector3 rot)
+        public void ApplyUpdate(Vector3 pos, Vector3 rot, Vector3? scale = null)
         {
             float duration = GetSmoothingDuration();
             if (duration <= 0f)
             {
                 transform.position = pos;
                 transform.eulerAngles = rot;
+                if (syncScale && scale.HasValue)
+                    transform.localScale = scale.Value;
                 return;
             }
 
@@ -204,6 +219,11 @@ namespace SomniumSpace.Worlds.bently.networking
             _fromRot = transform.eulerAngles;
             _toPos = pos;
             _toRot = rot;
+            if (syncScale && scale.HasValue)
+            {
+                _fromScale = transform.localScale;
+                _toScale = scale.Value;
+            }
             _interpT = 0f;
             _interpDuration = duration;
         }
@@ -211,12 +231,17 @@ namespace SomniumSpace.Worlds.bently.networking
         /// <summary>
         /// Spectator: snap to position immediately (used for initial snapshot).
         /// </summary>
-        public void SnapTo(Vector3 pos, Vector3 rot)
+        public void SnapTo(Vector3 pos, Vector3 rot, Vector3? scale = null)
         {
             transform.position = pos;
             transform.eulerAngles = rot;
             _fromPos = _toPos = pos;
             _fromRot = _toRot = rot;
+            if (syncScale && scale.HasValue)
+            {
+                transform.localScale = scale.Value;
+                _fromScale = _toScale = scale.Value;
+            }
             _interpT = 1f;
         }
 

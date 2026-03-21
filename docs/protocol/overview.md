@@ -1,26 +1,79 @@
 # Protocol Overview
 
-All messages are **binary**. No JSON on hot paths.
+All messages are **binary**. No JSON on hot paths. Half-precision floats for positions, quantized u16 for rotation.
 
 ## Message Types
 
 | Byte | Type | Direction | Purpose |
 |------|------|-----------|---------|
-| `0x01` | Position Update | master → server → spectators | Batch position/rotation for all moving objects |
-| `0x02` | Snapshot | master → server → spectators | Full state of all objects (used for late-joiner sync) |
-| `0x03` | Interaction Update | any client → server → others | Position/rotation for claimed objects |
-| `0x04` | Variable Update | any client → server → others | Custom variable changes *(planned)* |
+| `0x01` | Position Update | master → server → spectators | Batch position/rotation for moving objects (14B/entity) |
+| `0x02` | Snapshot | master → server → spectators | Full state of all objects (late-joiner sync) |
+| `0x03` | Interaction Update | any → server → others | Position/rotation for claimed objects |
+| `0x04` | Variable Update | any → server → others | Custom variable changes (NetworkVariables) |
+| `0x05` | Scaled Position | master → server → spectators | Position/rotation/scale for syncScale objects (20B/entity) |
+| `0x06` | Event (RPC) | any → server → others | Fire-and-forget events (NetworkEvents) |
+| `0x07` | Animator State | any → server → others | Animation state/params (NetworkAnimator) |
+| `0x08` | Rigidbody | any → server → others | Velocity + angular velocity (NetworkRigidbody) |
+| `0x09` | Scaled Interaction | any → server → others | Position/rotation/scale for claimed syncScale objects |
 | `0xFF` | Control | server ↔ client | Role assignment, ownership, commands |
 
-## Position/Interaction Format (0x01, 0x02, 0x03)
+## Position Format (0x01, 0x02, 0x03)
 
 ```
-[u8 type][u16 entity_count][per entity: u16 local_id + 3×f32 position + 3×f32 rotation]
+[u8 type][u16 count][per entity: u16 id, half x, half y, half z, u16 rx, u16 ry, u16 rz]
 ```
 
-Per entity: **26 bytes** (2 + 12 + 12)
+Per entity: **14 bytes** (2 id + 6 half-float pos + 6 u16 rot)
 
-Example: 2000 objects = `3 + (2000 × 26)` = **52,003 bytes** per tick
+- Position: half-precision float (16-bit IEEE 754) — range ±65504, ~0.001m precision
+- Rotation: 0–360° quantized to u16 — 0.005° precision
+
+Example: 2000 objects = `3 + (2000 × 14)` = **28,003 bytes** per tick
+
+## Scaled Position Format (0x05, 0x09)
+
+```
+[u8 type][u16 count][per entity: u16 id, half x/y/z, u16 rx/ry/rz, half sx/sy/sz]
+```
+
+Per entity: **20 bytes** (14 base + 6 half-float scale)
+
+Only used for objects with `syncScale = true`. Objects without it use the standard 14-byte format.
+
+## Variable Update (0x04)
+
+```
+[0x04][u16 obj_id][u8 var_count][per var: u8 name_len, name, u8 type, u16 value_len, value]
+```
+
+Types: 0 = int (4B), 1 = float (4B), 2 = bool (1B), 3 = string (variable)
+
+## Event / RPC (0x06)
+
+```
+[0x06][u16 obj_id][u8 target][u8 name_len][name][u8 param_count][per param: u8 type, u16 len, value]
+```
+
+Target: 0 = All, 1 = Authority only, 2 = Proxies only (everyone except authority)
+
+Parameter types: same as variables (int/float/bool/string)
+
+## Animator State (0x07)
+
+```
+[0x07][u16 obj_id][i32 state_hash][f32 normalized_time][u8 dirty_count]
+[per param: u8 name_len, name, u8 type, 4B value]
+```
+
+Param types: 0 = int, 1 = float, 2 = bool, 4 = trigger
+
+## Rigidbody (0x08)
+
+```
+[0x08][u16 obj_id][half vx][half vy][half vz][half avx][half avy][half avz]
+```
+
+**15 bytes** total. All velocities as half-precision floats.
 
 ## Control Messages (0xFF)
 
@@ -28,34 +81,24 @@ Example: 2000 objects = `3 + (2000 × 26)` = **52,003 bytes** per tick
 [0xFF][u8 ctrl_type][payload...]
 ```
 
-| Ctrl Type | Name | Payload | Description |
-|-----------|------|---------|-------------|
-| `0x01` | You Are Master | — | Server tells client it's the master |
-| `0x02` | You Are Spectator | `[u16 client_id]` | Server tells client its ID |
-| `0x03` | Send Snapshot | — | Server requests snapshot from master |
-| `0x04` | Master Changed | `[u16 new_master_id]` | Broadcast: new master promoted |
-| `0x05` | Claim | `[u16 object_id][u16 client_id]` | Object ownership claimed |
-| `0x06` | Release | `[u16 object_id][u16 client_id]` | Object ownership released |
+| Ctrl | Direction | Payload | Purpose |
+|------|-----------|---------|---------|
+| `0x01` | server → client | `u16 client_id` | You are master |
+| `0x02` | server → client | `u16 client_id` | You are spectator |
+| `0x03` | server → client | `u16 target_client` | Please send snapshot |
+| `0x04` | server → client | *(none)* | You are now master (promotion) |
+| `0x05` | client → server → others | `u16 object_id, u16 client_id` | Object claimed |
+| `0x06` | client → server → others | `u16 object_id, u16 client_id` | Object released |
 
-## Server Behavior
+## Bandwidth Summary
 
-The server is a **dumb relay**:
-- Forwards `0x01` and `0x02` from master to all spectators
-- Forwards `0x03` from any client to all other clients
-- Caches latest `0x02` snapshot for late joiners
-- Tracks object claims in a HashMap for cleanup on disconnect
-- Broadcasts `0xFF` control messages for role/ownership changes
+| Objects | Per Tick | At 60Hz |
+|---------|----------|---------|
+| 100 | 1.4 KB | 84 KB/s |
+| 500 | 7 KB | 420 KB/s |
+| 1000 | 14 KB | 840 KB/s |
+| 2000 | 28 KB | 1.6 MB/s |
+| 3000 | 42 KB | 2.5 MB/s |
+| 4000 | 56 KB | 3.3 MB/s |
 
-The server does NOT understand positions, physics, or game logic.
-
-## Bandwidth
-
-| Objects | Per Tick | At 30 Hz | At 60 Hz |
-|---------|----------|----------|----------|
-| 100 | 2.6 KB | 78 KB/s | 156 KB/s |
-| 500 | 13 KB | 390 KB/s | 780 KB/s |
-| 1000 | 26 KB | 780 KB/s | 1.5 MB/s |
-| 2000 | 52 KB | 1.5 MB/s | 3.1 MB/s |
-| 4000 | 104 KB | 3.1 MB/s | 6.2 MB/s |
-
-Note: Only objects that have **moved** are included in `0x01` updates (delta tracking). Snapshot `0x02` includes everything.
+Note: These are worst-case (all objects moving). Delta detection skips stationary objects.

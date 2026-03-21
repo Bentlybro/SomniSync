@@ -33,6 +33,17 @@ namespace SomniumSpace.Worlds.bently.networking
         public bool IsConnected { get; private set; }
         public bool IsMaster { get; private set; }
         public ushort ClientId { get; private set; }
+        public bool IsNetworkReady { get; private set; }
+
+        // Events — subscribe to these for connection lifecycle
+        /// <summary>Fired when networking is ready (connected + role assigned). Safe to use network features.</summary>
+        public event Action OnNetworkReady;
+        /// <summary>Fired when connection is lost.</summary>
+        public event Action OnDisconnected;
+        /// <summary>Fired when this client becomes master (initial or promotion).</summary>
+        public event Action OnBecameMaster;
+        /// <summary>Fired when this client becomes spectator.</summary>
+        public event Action OnBecameSpectator;
 
         // All network objects sorted deterministically — index = local_id
         private List<NetworkObject> _objects = new List<NetworkObject>();
@@ -251,7 +262,9 @@ namespace SomniumSpace.Worlds.bently.networking
 
             IsConnected = false;
             IsMaster = false;
+            IsNetworkReady = false;
             Debug.Log("[Net] Disconnected.");
+            OnDisconnected?.Invoke();
         }
 
         // =====================================================================
@@ -305,6 +318,14 @@ namespace SomniumSpace.Worlds.bently.networking
                     HandleVariableUpdate(data, length);
                     break;
 
+                case 0x05: // Scaled position updates
+                    HandleScaledPositionUpdates(data, length);
+                    break;
+
+                case 0x09: // Scaled interaction updates
+                    HandleScaledInteractionUpdates(data, length);
+                    break;
+
                 case 0x06: // Event (RPC) from any client
                     HandleEvent(data, length);
                     break;
@@ -339,8 +360,9 @@ namespace SomniumSpace.Worlds.bently.networking
                     IsMaster = true;
                     Debug.Log($"[Net] Assigned as MASTER (client_{ClientId})");
                     EnablePhysicsOnAll(true);
-                    // Send initial snapshot so server caches it
                     SendSnapshot();
+                    if (!IsNetworkReady) { IsNetworkReady = true; OnNetworkReady?.Invoke(); }
+                    OnBecameMaster?.Invoke();
                     break;
 
                 case 0x02: // You are spectator
@@ -348,6 +370,8 @@ namespace SomniumSpace.Worlds.bently.networking
                     IsMaster = false;
                     Debug.Log($"[Net] Assigned as SPECTATOR (client_{ClientId})");
                     EnablePhysicsOnAll(false);
+                    if (!IsNetworkReady) { IsNetworkReady = true; OnNetworkReady?.Invoke(); }
+                    OnBecameSpectator?.Invoke();
                     break;
 
                 case 0x03: // Send snapshot (master only)
@@ -361,6 +385,7 @@ namespace SomniumSpace.Worlds.bently.networking
                     Debug.Log($"[Net] Promoted to MASTER");
                     EnablePhysicsOnAll(true);
                     SendSnapshot();
+                    OnBecameMaster?.Invoke();
                     break;
 
                 case 0x05: // Remote client claimed an object
@@ -406,33 +431,52 @@ namespace SomniumSpace.Worlds.bently.networking
             if (_objects.Count == 0) return;
 
             int movedCount = 0;
+            int movedScaledCount = 0;
             foreach (var obj in _objects)
             {
                 if (obj.IsClaimedByRemote) continue;
-                if (obj.HasMoved(positionThreshold, rotationThreshold))
-                    movedCount++;
+                if (!obj.HasMoved(positionThreshold, rotationThreshold)) continue;
+                if (obj.syncScale) movedScaledCount++;
+                else movedCount++;
             }
 
-            if (movedCount == 0) return;
-
-            int size = 3 + movedCount * Protocol.BYTES_PER_ENTITY;
-            byte[] buf = new byte[size];
-            buf[0] = 0x01;
-            WriteU16(buf, 1, (ushort)movedCount);
-
-            int offset = 3;
-            foreach (var obj in _objects)
+            // Send non-scaled objects (0x01)
+            if (movedCount > 0)
             {
-                if (obj.IsClaimedByRemote) continue;
-                if (!obj.HasMoved(positionThreshold, rotationThreshold))
-                    continue;
-
-                offset = WriteEntityCompact(buf, offset, obj.LocalId,
-                    obj.transform.position, obj.transform.eulerAngles);
-                obj.MarkSent();
+                int size = 3 + movedCount * Protocol.BYTES_PER_ENTITY;
+                byte[] buf = new byte[size];
+                buf[0] = 0x01;
+                WriteU16(buf, 1, (ushort)movedCount);
+                int offset = 3;
+                foreach (var obj in _objects)
+                {
+                    if (obj.IsClaimedByRemote || obj.syncScale) continue;
+                    if (!obj.HasMoved(positionThreshold, rotationThreshold)) continue;
+                    offset = WriteEntityCompact(buf, offset, obj.LocalId,
+                        obj.transform.position, obj.transform.eulerAngles);
+                    obj.MarkSent();
+                }
+                SendBinary(buf);
             }
 
-            SendBinary(buf);
+            // Send scaled objects (0x05)
+            if (movedScaledCount > 0)
+            {
+                int size = 3 + movedScaledCount * Protocol.BYTES_PER_ENTITY_SCALED;
+                byte[] buf = new byte[size];
+                buf[0] = Protocol.MSG_POSITION_UPDATE_SCALED;
+                WriteU16(buf, 1, (ushort)movedScaledCount);
+                int offset = 3;
+                foreach (var obj in _objects)
+                {
+                    if (obj.IsClaimedByRemote || !obj.syncScale) continue;
+                    if (!obj.HasMoved(positionThreshold, rotationThreshold)) continue;
+                    offset = Protocol.WriteEntityScaled(buf, offset, obj.LocalId,
+                        obj.transform.position, obj.transform.eulerAngles, obj.transform.localScale);
+                    obj.MarkSent();
+                }
+                SendBinary(buf);
+            }
         }
 
         /// <summary>
@@ -442,33 +486,52 @@ namespace SomniumSpace.Worlds.bently.networking
         private void SendInteractionUpdates()
         {
             int movedCount = 0;
+            int movedScaledCount = 0;
             foreach (var obj in _objects)
             {
                 if (!obj.IsClaimedLocally) continue;
-                if (obj.HasMoved(positionThreshold, rotationThreshold))
-                    movedCount++;
+                if (!obj.HasMoved(positionThreshold, rotationThreshold)) continue;
+                if (obj.syncScale) movedScaledCount++;
+                else movedCount++;
             }
 
-            if (movedCount == 0) return;
-
-            int size = 3 + movedCount * Protocol.BYTES_PER_ENTITY;
-            byte[] buf = new byte[size];
-            buf[0] = 0x03;
-            WriteU16(buf, 1, (ushort)movedCount);
-
-            int offset = 3;
-            foreach (var obj in _objects)
+            // Non-scaled interaction updates (0x03)
+            if (movedCount > 0)
             {
-                if (!obj.IsClaimedLocally) continue;
-                if (!obj.HasMoved(positionThreshold, rotationThreshold))
-                    continue;
-
-                offset = WriteEntityCompact(buf, offset, obj.LocalId,
-                    obj.transform.position, obj.transform.eulerAngles);
-                obj.MarkSent();
+                int size = 3 + movedCount * Protocol.BYTES_PER_ENTITY;
+                byte[] buf = new byte[size];
+                buf[0] = 0x03;
+                WriteU16(buf, 1, (ushort)movedCount);
+                int offset = 3;
+                foreach (var obj in _objects)
+                {
+                    if (!obj.IsClaimedLocally || obj.syncScale) continue;
+                    if (!obj.HasMoved(positionThreshold, rotationThreshold)) continue;
+                    offset = WriteEntityCompact(buf, offset, obj.LocalId,
+                        obj.transform.position, obj.transform.eulerAngles);
+                    obj.MarkSent();
+                }
+                SendBinary(buf);
             }
 
-            SendBinary(buf);
+            // Scaled interaction updates (0x09)
+            if (movedScaledCount > 0)
+            {
+                int size = 3 + movedScaledCount * Protocol.BYTES_PER_ENTITY_SCALED;
+                byte[] buf = new byte[size];
+                buf[0] = 0x09;
+                WriteU16(buf, 1, (ushort)movedScaledCount);
+                int offset = 3;
+                foreach (var obj in _objects)
+                {
+                    if (!obj.IsClaimedLocally || !obj.syncScale) continue;
+                    if (!obj.HasMoved(positionThreshold, rotationThreshold)) continue;
+                    offset = Protocol.WriteEntityScaled(buf, offset, obj.LocalId,
+                        obj.transform.position, obj.transform.eulerAngles, obj.transform.localScale);
+                    obj.MarkSent();
+                }
+                SendBinary(buf);
+            }
         }
 
         /// <summary>
@@ -476,13 +539,26 @@ namespace SomniumSpace.Worlds.bently.networking
         /// </summary>
         public void SendInteractionUpdate(NetworkObject obj)
         {
-            byte[] buf = new byte[3 + Protocol.BYTES_PER_ENTITY];
-            buf[0] = 0x03;
-            WriteU16(buf, 1, 1);
-            WriteEntityCompact(buf, 3, obj.LocalId,
-                obj.transform.position, obj.transform.eulerAngles);
-            obj.MarkSent();
-            SendBinary(buf);
+            if (obj.syncScale)
+            {
+                byte[] buf = new byte[3 + Protocol.BYTES_PER_ENTITY_SCALED];
+                buf[0] = 0x09;
+                WriteU16(buf, 1, 1);
+                Protocol.WriteEntityScaled(buf, 3, obj.LocalId,
+                    obj.transform.position, obj.transform.eulerAngles, obj.transform.localScale);
+                obj.MarkSent();
+                SendBinary(buf);
+            }
+            else
+            {
+                byte[] buf = new byte[3 + Protocol.BYTES_PER_ENTITY];
+                buf[0] = 0x03;
+                WriteU16(buf, 1, 1);
+                WriteEntityCompact(buf, 3, obj.LocalId,
+                    obj.transform.position, obj.transform.eulerAngles);
+                obj.MarkSent();
+                SendBinary(buf);
+            }
         }
 
         /// <summary>
@@ -562,6 +638,58 @@ namespace SomniumSpace.Worlds.bently.networking
                     {
                         obj.ApplyUpdate(pos, rot);
                     }
+                }
+            }
+        }
+
+        // =====================================================================
+        // Scaled Position Updates (0x05) — objects with syncScale enabled
+        // =====================================================================
+
+        private void HandleScaledPositionUpdates(byte[] data, int length)
+        {
+            if (IsMaster || !_sceneReady) return;
+
+            ushort count = BitConverter.ToUInt16(data, 1);
+            int offset = 3;
+
+            for (int i = 0; i < count && offset + Protocol.BYTES_PER_ENTITY_SCALED <= length; i++)
+            {
+                ushort localId;
+                Vector3 pos, rot, scale;
+                offset = Protocol.ReadEntityScaled(data, offset, out localId, out pos, out rot, out scale);
+
+                if (_objectMap.TryGetValue(localId, out var obj))
+                {
+                    if (_snapFramesRemaining > 0)
+                        obj.SnapTo(pos, rot, scale);
+                    else
+                        obj.ApplyUpdate(pos, rot, scale);
+                }
+            }
+        }
+
+        // =====================================================================
+        // Scaled Interaction Updates (0x09)
+        // =====================================================================
+
+        private void HandleScaledInteractionUpdates(byte[] data, int length)
+        {
+            if (!_sceneReady) return;
+
+            ushort count = BitConverter.ToUInt16(data, 1);
+            int offset = 3;
+
+            for (int i = 0; i < count && offset + Protocol.BYTES_PER_ENTITY_SCALED <= length; i++)
+            {
+                ushort localId;
+                Vector3 pos, rot, scale;
+                offset = Protocol.ReadEntityScaled(data, offset, out localId, out pos, out rot, out scale);
+
+                if (_objectMap.TryGetValue(localId, out var obj))
+                {
+                    if (!obj.IsClaimedLocally)
+                        obj.ApplyUpdate(pos, rot, scale);
                 }
             }
         }
@@ -652,21 +780,50 @@ namespace SomniumSpace.Worlds.bently.networking
         {
             if (_objects.Count == 0) return;
 
-            int count = _objects.Count;
-            int size = 3 + count * Protocol.BYTES_PER_ENTITY;
-            byte[] buf = new byte[size];
-            buf[0] = 0x02;
-            WriteU16(buf, 1, (ushort)count);
-
-            int offset = 3;
+            // Split objects into scaled and non-scaled
+            int normalCount = 0;
+            int scaledCount = 0;
             foreach (var obj in _objects)
             {
-                offset = WriteEntityCompact(buf, offset, obj.LocalId,
-                    obj.transform.position, obj.transform.eulerAngles);
+                if (obj.syncScale) scaledCount++;
+                else normalCount++;
             }
 
-            Debug.Log($"[Net] Sending snapshot: {count} objects, {size} bytes");
-            SendBinary(buf);
+            // Send non-scaled snapshot (0x02)
+            if (normalCount > 0)
+            {
+                int size = 3 + normalCount * Protocol.BYTES_PER_ENTITY;
+                byte[] buf = new byte[size];
+                buf[0] = 0x02;
+                WriteU16(buf, 1, (ushort)normalCount);
+                int offset = 3;
+                foreach (var obj in _objects)
+                {
+                    if (obj.syncScale) continue;
+                    offset = WriteEntityCompact(buf, offset, obj.LocalId,
+                        obj.transform.position, obj.transform.eulerAngles);
+                }
+                SendBinary(buf);
+            }
+
+            // Send scaled snapshot (0x05 reused — same handler)
+            if (scaledCount > 0)
+            {
+                int size = 3 + scaledCount * Protocol.BYTES_PER_ENTITY_SCALED;
+                byte[] buf = new byte[size];
+                buf[0] = Protocol.MSG_POSITION_UPDATE_SCALED;
+                WriteU16(buf, 1, (ushort)scaledCount);
+                int offset = 3;
+                foreach (var obj in _objects)
+                {
+                    if (!obj.syncScale) continue;
+                    offset = Protocol.WriteEntityScaled(buf, offset, obj.LocalId,
+                        obj.transform.position, obj.transform.eulerAngles, obj.transform.localScale);
+                }
+                SendBinary(buf);
+            }
+
+            Debug.Log($"[Net] Sending snapshot: {normalCount}+{scaledCount} scaled objects");
         }
 
         private void HandleSnapshot(byte[] data, int length)

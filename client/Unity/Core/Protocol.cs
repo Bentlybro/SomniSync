@@ -17,6 +17,7 @@ namespace SomniumSpace.Worlds.bently.networking
         public const byte MSG_SNAPSHOT = 0x02;
         public const byte MSG_INTERACTION_UPDATE = 0x03;
         public const byte MSG_VARIABLE_UPDATE = 0x04;
+        public const byte MSG_POSITION_UPDATE_SCALED = 0x05;
         public const byte MSG_EVENT = 0x06;
         public const byte MSG_ANIMATOR = 0x07;
         public const byte MSG_CONTROL = 0xFF;
@@ -30,6 +31,8 @@ namespace SomniumSpace.Worlds.bently.networking
 
         /// <summary>Bytes per entity in compact format (half-float pos + u16 rot).</summary>
         public const int BYTES_PER_ENTITY = 14;
+        /// <summary>Bytes per entity with scale (pos + rot + half-float scale).</summary>
+        public const int BYTES_PER_ENTITY_SCALED = 20;
 
         // =====================================================================
         // Basic types
@@ -155,6 +158,30 @@ namespace SomniumSpace.Worlds.bently.networking
             float rz = ReadRotU16(buf, offset); offset += 2;
             pos = new Vector3(px, py, pz);
             rot = new Vector3(rx, ry, rz);
+            return offset;
+        }
+
+        // =====================================================================
+        // Scaled entity encoding (pos + rot + scale = 20 bytes)
+        // [u16 id][half x][half y][half z][u16 rx][u16 ry][u16 rz][half sx][half sy][half sz]
+        // =====================================================================
+
+        public static int WriteEntityScaled(byte[] buf, int offset, ushort id, Vector3 pos, Vector3 rot, Vector3 scale)
+        {
+            offset = WriteEntityCompact(buf, offset, id, pos, rot);
+            WriteHalf(buf, offset, scale.x); offset += 2;
+            WriteHalf(buf, offset, scale.y); offset += 2;
+            WriteHalf(buf, offset, scale.z); offset += 2;
+            return offset;
+        }
+
+        public static int ReadEntityScaled(byte[] buf, int offset, out ushort id, out Vector3 pos, out Vector3 rot, out Vector3 scale)
+        {
+            offset = ReadEntityCompact(buf, offset, out id, out pos, out rot);
+            float sx = ReadHalf(buf, offset); offset += 2;
+            float sy = ReadHalf(buf, offset); offset += 2;
+            float sz = ReadHalf(buf, offset); offset += 2;
+            scale = new Vector3(sx, sy, sz);
             return offset;
         }
     }

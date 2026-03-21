@@ -17,10 +17,18 @@ namespace SomniumSpace.Worlds.bently.networking
     ///   events.Send("explode");
     ///   events.Send("damage", 25);
     /// </summary>
+    /// <summary>Who should receive the event.</summary>
+    public enum EventTarget : byte
+    {
+        All = 0,        // Everyone including sender
+        Authority = 1,  // Only the client with authority over this object
+        Proxies = 2     // Everyone EXCEPT the authority
+    }
+
     public class NetworkEvents : MonoBehaviour
     {
         // Protocol: 0x06 = event message
-        // [0x06][u16 object_id][u8 name_len][name][u8 param_count][per param: u8 type, u16 len, value]
+        // [0x06][u16 object_id][u8 target][u8 name_len][name][u8 param_count][per param: u8 type, u16 len, value]
 
         private NetworkObject _netObj;
         private Dictionary<string, List<Action<object[]>>> _handlers = new Dictionary<string, List<Action<object[]>>>();
@@ -122,10 +130,26 @@ namespace SomniumSpace.Worlds.bently.networking
         }
 
         // =====================================================================
+        // Targeted RPCs
+        // =====================================================================
+
+        /// <summary>Send event only to the client that has authority over this object.</summary>
+        public void SendToAuthority(string eventName, params object[] parameters)
+        {
+            SendEvent(eventName, parameters, target: EventTarget.Authority);
+        }
+
+        /// <summary>Send event to everyone EXCEPT the authority (proxies only).</summary>
+        public void SendToProxies(string eventName, params object[] parameters)
+        {
+            SendEvent(eventName, parameters, target: EventTarget.Proxies);
+        }
+
+        // =====================================================================
         // Serialization
         // =====================================================================
 
-        private void SendEvent(string eventName, object[] parameters)
+        private void SendEvent(string eventName, object[] parameters, EventTarget target = EventTarget.All)
         {
             if (NetworkManager.Instance == null || !NetworkManager.Instance.IsConnected) return;
 
@@ -133,7 +157,7 @@ namespace SomniumSpace.Worlds.bently.networking
             int paramCount = parameters?.Length ?? 0;
 
             // Calculate size
-            int size = 1 + 2 + 1 + nameBytes.Length + 1; // type + obj_id + name_len + name + param_count
+            int size = 1 + 2 + 1 + 1 + nameBytes.Length + 1; // type + obj_id + target + name_len + name + param_count
             List<byte[]> paramData = new List<byte[]>();
 
             for (int i = 0; i < paramCount; i++)
@@ -152,6 +176,7 @@ namespace SomniumSpace.Worlds.bently.networking
             buf[offset++] = 0x06;
             buf[offset++] = (byte)(_netObj.LocalId & 0xFF);
             buf[offset++] = (byte)(_netObj.LocalId >> 8);
+            buf[offset++] = (byte)target;
             buf[offset++] = (byte)nameBytes.Length;
             Array.Copy(nameBytes, 0, buf, offset, nameBytes.Length);
             offset += nameBytes.Length;
@@ -169,14 +194,26 @@ namespace SomniumSpace.Worlds.bently.networking
 
             NetworkManager.Instance.SendBinaryPublic(buf);
 
-            // Also fire locally
-            FireEvent(eventName, parameters ?? new object[0]);
+            // Fire locally if targeting allows it
+            bool isAuthority = _netObj.HasAuthority();
+            bool shouldFireLocally = target == EventTarget.All ||
+                                     (target == EventTarget.Authority && isAuthority) ||
+                                     (target == EventTarget.Proxies && !isAuthority);
+            if (shouldFireLocally)
+                FireEvent(eventName, parameters ?? new object[0]);
         }
 
         /// <summary>Called by NetworkManager when receiving 0x06.</summary>
         public void ApplyRemoteEvent(byte[] data, int startOffset, int length)
         {
             int offset = startOffset;
+            EventTarget target = (EventTarget)data[offset++];
+
+            // Filter by target
+            bool isAuthority = _netObj.HasAuthority();
+            if (target == EventTarget.Authority && !isAuthority) return;
+            if (target == EventTarget.Proxies && isAuthority) return;
+
             int nameLen = data[offset++];
             string eventName = Encoding.UTF8.GetString(data, offset, nameLen);
             offset += nameLen;
