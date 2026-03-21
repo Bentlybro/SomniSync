@@ -1,8 +1,19 @@
-# Example: Interactive Door *(Planned — requires NetworkVariables)*
+# Example: Interactive Door
 
-Sync a door that any player can open/close.
+A door any player can open/close. State persists for late joiners.
 
-## Concept
+## Components
+
+```
+Door
+├── Animator (states: Closed, Open)
+├── NetworkObject (entityType: "door", pushable: false, grabbable: false)
+├── NetworkVariables
+├── NetworkAnimator
+└── Door.cs (below)
+```
+
+## Script
 
 ```csharp
 using UnityEngine;
@@ -11,36 +22,68 @@ using SomniumSpace.Worlds.bently.networking;
 public class Door : MonoBehaviour
 {
     private NetworkVariables _vars;
-    private Animator _animator;
+    private NetworkAnimator _netAnim;
+    private NetworkObject _netObj;
 
     void Start()
     {
         _vars = GetComponent<NetworkVariables>();
-        _animator = GetComponent<Animator>();
+        _netAnim = GetComponent<NetworkAnimator>();
+        _netObj = GetComponent<NetworkObject>();
 
-        // React to changes from any client
+        _vars.DefineVariable("isOpen", VarType.Bool, SyncMode.Immediate, persist: true);
+
         _vars.OnValueChanged += (name, type) =>
         {
             if (name == "isOpen")
-                _animator.SetBool("open", _vars.GetBool("isOpen"));
+                _netAnim.SetBool("open", _vars.GetBool("isOpen"));
         };
     }
 
-    // Called by your interaction system (button press, trigger zone, etc.)
+    // Wire this to a trigger zone, button press, raycast hit, etc.
     public void ToggleDoor()
     {
+        if (!_netObj.HasAuthority()) return;
         bool current = _vars.GetBool("isOpen");
         _vars.SetBool("isOpen", !current);
     }
 }
 ```
 
-## Setup
+## How It Works
 
-1. Door GameObject with `Animator` (open/close animations)
-2. Add `NetworkObject` (entityType: `"door"`)
-3. Add `NetworkVariables` — define a `bool` variable called `isOpen`
-4. Add your `Door` script
-5. Wire up `ToggleDoor()` to whatever triggers it
+1. Player interacts → `ToggleDoor()` fires
+2. `NetworkVariables` syncs `isOpen` to all clients (Immediate mode = instant)
+3. `OnValueChanged` triggers → sets Animator bool
+4. `NetworkAnimator` syncs the animation state
+5. Late joiners receive `isOpen = true` via snapshot (persist: true)
 
-Any player can open the door. All other players see it sync.
+## Trigger Zone Version
+
+Want the door to open when players walk near it?
+
+```csharp
+public class DoorTrigger : MonoBehaviour
+{
+    public Door door;
+    private int _playersInZone = 0;
+
+    void OnTriggerEnter(Collider other)
+    {
+        if (other.CompareTag("Player"))
+        {
+            _playersInZone++;
+            if (_playersInZone == 1) door.ToggleDoor(); // Open
+        }
+    }
+
+    void OnTriggerExit(Collider other)
+    {
+        if (other.CompareTag("Player"))
+        {
+            _playersInZone--;
+            if (_playersInZone == 0) door.ToggleDoor(); // Close
+        }
+    }
+}
+```

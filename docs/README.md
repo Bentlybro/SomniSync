@@ -44,10 +44,14 @@ Every synced object needs `NetworkObject`. Everything else is optional.
 
 ## Examples
 
-| Example | Description | Docs |
-|---------|-------------|------|
-| **Basic World** | Simple scene with synced physics objects | [→ Docs](examples/basic-world.md) |
-| **Interactive Door** | Door with open/close state using NetworkVariables | [→ Docs](examples/interactive-door.md) |
+| Example | What it shows | Docs |
+|---------|--------------|------|
+| **Basic World** | Minimal setup — physics objects + sync | [→ Docs](examples/basic-world.md) |
+| **Interactive Door** | NetworkVariables + NetworkAnimator for persistent state | [→ Docs](examples/interactive-door.md) |
+| **Physics Playground** | Throwables, destructible stacks, bowling — when to use NetworkRigidbody | [→ Docs](examples/physics-playground.md) |
+| **Dungeon Room** | Full example — NPCs, traps, loot, timers, particles, combat | [→ Docs](examples/dungeon-room.md) |
+| **Vehicle** | Driveable vehicle with NetworkRigidbody + enter/exit | [→ Docs](examples/vehicle.md) |
+| **Scoreboard** | Non-physics game state sync with NetworkVariables | [→ Docs](examples/scoreboard.md) |
 
 ## Folder Structure
 
@@ -72,5 +76,9 @@ docs/
 │   └── overview.md                    — binary protocol specification
 └── examples/
     ├── basic-world.md                 — simple synced scene
-    └── interactive-door.md            — door with networked state
+    ├── interactive-door.md            — door with networked state
+    ├── physics-playground.md          — throwables, stacks, bowling
+    ├── dungeon-room.md                — full dungeon with NPCs, traps, loot
+    ├── vehicle.md                     — driveable vehicle
+    └── scoreboard.md                  — game state sync
 ```
