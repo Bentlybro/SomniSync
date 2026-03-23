@@ -6,7 +6,13 @@ use tokio_tungstenite::tungstenite::Message;
 
 use crate::client::{broadcast_except, send, Client};
 use crate::room::RoomMap;
-use crate::protocol::*;
+use crate::protocol::{
+    ctrl_msg, ctrl_msg_u16, CTRL_CLAIM, CTRL_MASTER_CHANGED, CTRL_PLAYER_POSITION,
+    CTRL_RELEASE, CTRL_SEND_SNAPSHOT, CTRL_YOU_ARE_MASTER, CTRL_YOU_ARE_SPECTATOR,
+    MSG_ANIMATOR, MSG_EVENT, MSG_INTERACTION_UPDATE, MSG_POSITION_UPDATE,
+    MSG_POSITION_UPDATE_SCALED, MSG_RIGIDBODY, MSG_SCALED_INTERACTION, MSG_SNAPSHOT,
+    MSG_VARIABLE_UPDATE,
+};
 use crate::room::Room;
 
 /// Handle a single client connection (runs in its own task).
@@ -172,7 +178,8 @@ async fn handle_binary(room: &Arc<RwLock<Room>>, client_id: u16, data: &[u8], ro
             broadcast_except(&room.clients, client_id, data).await;
         }
 
-        MSG_INTERACTION_UPDATE | MSG_VARIABLE_UPDATE | MSG_EVENT | MSG_ANIMATOR | MSG_RIGIDBODY => {
+        MSG_INTERACTION_UPDATE | MSG_VARIABLE_UPDATE | MSG_POSITION_UPDATE_SCALED
+        | MSG_EVENT | MSG_ANIMATOR | MSG_RIGIDBODY | MSG_SCALED_INTERACTION => {
             let room = room.read().await;
             broadcast_except(&room.clients, client_id, data).await;
         }
@@ -192,10 +199,23 @@ async fn handle_binary(room: &Arc<RwLock<Room>>, client_id: u16, data: &[u8], ro
 
 /// Handle control messages (0xFF) — claim/release.
 async fn handle_control(room: &Arc<RwLock<Room>>, client_id: u16, data: &[u8], room_id: &str) {
-    if data.len() < 6 {
+    if data.len() < 2 {
         return;
     }
     let ctrl = data[1];
+
+    // Player position only needs 2 byte header check, not 6
+    if ctrl == CTRL_PLAYER_POSITION {
+        if data.len() >= 10 {
+            let room = room.read().await;
+            broadcast_except(&room.clients, client_id, data).await;
+        }
+        return;
+    }
+
+    if data.len() < 6 {
+        return;
+    }
     let obj_id = u16::from_le_bytes([data[2], data[3]]);
     let sender_id = u16::from_le_bytes([data[4], data[5]]);
 

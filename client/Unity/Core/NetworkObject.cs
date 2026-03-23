@@ -65,6 +65,9 @@ namespace SomniumSpace.Worlds.bently.networking
         private float _lastReleaseTime;
         private bool _autoClaimedByPush;
 
+        // AOI state (managed by NetworkManager)
+        [HideInInspector] public bool IsAOIActive = true;
+
         // Components
         private Rigidbody _rb;
         private bool _hasRb;
@@ -334,6 +337,36 @@ namespace SomniumSpace.Worlds.bently.networking
                     _rb.linearVelocity = Vector3.zero;
                     _rb.angularVelocity = Vector3.zero;
                 }
+            }
+        }
+
+        /// <summary>
+        /// Called by NetworkManager AOI system. Freezes physics and excludes from updates.
+        /// </summary>
+        public void AOIDeactivate()
+        {
+            if (!IsAOIActive) return;
+            IsAOIActive = false;
+            if (_hasRb && !_rb.isKinematic)
+            {
+                _rb.linearVelocity = Vector3.zero;
+                _rb.angularVelocity = Vector3.zero;
+                _rb.isKinematic = true;
+            }
+        }
+
+        /// <summary>
+        /// Called by NetworkManager AOI system. Re-enables physics simulation.
+        /// </summary>
+        public void AOIActivate()
+        {
+            if (IsAOIActive) return;
+            IsAOIActive = true;
+            // Only re-enable physics if we're master and object isn't remotely claimed
+            if (NetworkManager.Instance != null && NetworkManager.Instance.IsMaster && !IsClaimedByRemote)
+            {
+                if (_hasRb)
+                    _rb.isKinematic = false;
             }
         }
 

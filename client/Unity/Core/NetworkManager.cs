@@ -68,11 +68,33 @@ namespace SomniumSpace.Worlds.bently.networking
         public float resyncInterval = 5f;
         private float _nextResyncTime;
 
+        // Area of Interest (AOI) — master only simulates objects near players
+        [Header("Area of Interest")]
+        [Tooltip("Enable AOI — objects far from all players are frozen (master only)")]
+        public bool enableAOI = true;
+        [Tooltip("Radius around each player where objects stay active (meters)")]
+        public float aoiRadius = 50f;
+        [Tooltip("How often to recalculate AOI (times per second)")]
+        public float aoiCheckRate = 2f;
+        [Tooltip("Extra radius before deactivating (prevents flicker at boundary)")]
+        public float aoiHysteresis = 5f;
+
+        // AOI state
+        private float _nextAOICheckTime;
+        private Dictionary<ushort, Vector3> _playerPositions = new Dictionary<ushort, Vector3>();
+        private Dictionary<ushort, float> _playerLastSeen = new Dictionary<ushort, float>();
+        private Transform _localPlayerTransform;
+        private float _nextPlayerPosSendTime;
+        private const float PLAYER_POS_SEND_RATE = 5f; // 5Hz
+        private const float PLAYER_TIMEOUT = 5f; // Remove player after 5s of no updates
+
         // Stats (public for NetworkStats overlay)
         public static int MessagesSent;
         public static int MessagesReceived;
         public static int BytesSent;
         public static int BytesReceived;
+        public static int ActiveAOIObjects;
+        public static int TotalObjects;
 
         private void Awake()
         {
@@ -123,13 +145,14 @@ namespace SomniumSpace.Worlds.bently.networking
             }
 
             // Periodic full snapshot to correct drift (master only)
-            // Only send if at least one object has moved since last snapshot
+            // Only send if at least one active object has moved since last snapshot
             if (IsMaster && resyncInterval > 0 && Time.time >= _nextResyncTime)
             {
                 _nextResyncTime = Time.time + resyncInterval;
                 bool anyMoved = false;
                 foreach (var obj in _objects)
                 {
+                    if (!obj.IsAOIActive) continue;
                     if (obj.HasMoved(positionThreshold, rotationThreshold))
                     {
                         anyMoved = true;
@@ -138,6 +161,20 @@ namespace SomniumSpace.Worlds.bently.networking
                 }
                 if (anyMoved)
                     SendSnapshot();
+            }
+
+            // AOI: master recalculates active objects periodically
+            if (IsMaster && enableAOI && Time.time >= _nextAOICheckTime)
+            {
+                _nextAOICheckTime = Time.time + (1f / aoiCheckRate);
+                UpdateAOI();
+            }
+
+            // Spectators send their position to master for AOI
+            if (!IsMaster && enableAOI && Time.time >= _nextPlayerPosSendTime)
+            {
+                _nextPlayerPosSendTime = Time.time + (1f / PLAYER_POS_SEND_RATE);
+                SendPlayerPosition();
             }
         }
 
@@ -410,6 +447,18 @@ namespace SomniumSpace.Worlds.bently.networking
                         }
                     }
                     break;
+
+                case 0x07: // Player position (for AOI)
+                    if (length >= 10)
+                    {
+                        ushort posClientId = BitConverter.ToUInt16(data, 2);
+                        float px = Protocol.ReadHalf(data, 4);
+                        float py = Protocol.ReadHalf(data, 6);
+                        float pz = Protocol.ReadHalf(data, 8);
+                        _playerPositions[posClientId] = new Vector3(px, py, pz);
+                        _playerLastSeen[posClientId] = Time.time;
+                    }
+                    break;
             }
         }
 
@@ -417,8 +466,131 @@ namespace SomniumSpace.Worlds.bently.networking
         {
             foreach (var obj in _objects)
             {
+                if (enable)
+                    obj.IsAOIActive = true; // Reset AOI on master assignment
                 obj.SetPhysics(enable);
             }
+        }
+
+        // =====================================================================
+        // Area of Interest (AOI) — master only
+        // =====================================================================
+
+        private void UpdateAOI()
+        {
+            // Clean up stale players (disconnected without notice)
+            List<ushort> stale = null;
+            foreach (var kvp in _playerLastSeen)
+            {
+                if (Time.time - kvp.Value > PLAYER_TIMEOUT)
+                {
+                    if (stale == null) stale = new List<ushort>();
+                    stale.Add(kvp.Key);
+                }
+            }
+            if (stale != null)
+            {
+                foreach (var id in stale)
+                {
+                    _playerPositions.Remove(id);
+                    _playerLastSeen.Remove(id);
+                }
+            }
+
+            // Collect all player positions: own + remote spectators
+            List<Vector3> playerPositions = new List<Vector3>();
+
+            // Master's own position
+            if (_localPlayerTransform == null)
+                _localPlayerTransform = FindLocalPlayerTransform();
+            if (_localPlayerTransform != null)
+                playerPositions.Add(_localPlayerTransform.position);
+
+            // Remote player positions
+            foreach (var kvp in _playerPositions)
+                playerPositions.Add(kvp.Value);
+
+            if (playerPositions.Count == 0) return;
+
+            float activateRadiusSq = aoiRadius * aoiRadius;
+            float deactivateRadiusSq = (aoiRadius + aoiHysteresis) * (aoiRadius + aoiHysteresis);
+            int activeCount = 0;
+
+            foreach (var obj in _objects)
+            {
+                // Never deactivate remotely claimed objects
+                if (obj.IsClaimedByRemote)
+                {
+                    obj.AOIActivate();
+                    activeCount++;
+                    continue;
+                }
+
+                Vector3 objPos = obj.transform.position;
+                float closestDistSq = float.MaxValue;
+
+                for (int i = 0; i < playerPositions.Count; i++)
+                {
+                    float distSq = (objPos - playerPositions[i]).sqrMagnitude;
+                    if (distSq < closestDistSq)
+                        closestDistSq = distSq;
+                }
+
+                if (obj.IsAOIActive)
+                {
+                    // Currently active — use wider deactivate radius (hysteresis)
+                    if (closestDistSq > deactivateRadiusSq)
+                        obj.AOIDeactivate();
+                    else
+                        activeCount++;
+                }
+                else
+                {
+                    // Currently inactive — use tighter activate radius
+                    if (closestDistSq <= activateRadiusSq)
+                    {
+                        obj.AOIActivate();
+                        activeCount++;
+                    }
+                }
+            }
+
+            ActiveAOIObjects = activeCount;
+            TotalObjects = _objects.Count;
+        }
+
+        private void SendPlayerPosition()
+        {
+            if (_localPlayerTransform == null)
+                _localPlayerTransform = FindLocalPlayerTransform();
+            if (_localPlayerTransform == null) return;
+
+            Vector3 pos = _localPlayerTransform.position;
+            // [0xFF][0x07][u16 client_id][half x][half y][half z]
+            byte[] buf = new byte[10];
+            buf[0] = 0xFF;
+            buf[1] = Protocol.CTRL_PLAYER_POSITION;
+            Protocol.WriteU16(buf, 2, ClientId);
+            Protocol.WriteHalf(buf, 4, pos.x);
+            Protocol.WriteHalf(buf, 6, pos.y);
+            Protocol.WriteHalf(buf, 8, pos.z);
+            SendBinary(buf);
+        }
+
+        private Transform FindLocalPlayerTransform()
+        {
+            foreach (var cc in FindObjectsByType<CharacterController>(FindObjectsSortMode.None))
+            {
+                string name = cc.gameObject.name;
+                if (name != "NonXR.Body" && name != "XR.Body") continue;
+
+                Transform root = cc.transform;
+                while (root.parent != null) root = root.parent;
+                if (!root.name.StartsWith("Original Player:")) continue;
+
+                return cc.transform;
+            }
+            return null;
         }
 
         // =====================================================================
@@ -435,6 +607,7 @@ namespace SomniumSpace.Worlds.bently.networking
             foreach (var obj in _objects)
             {
                 if (obj.IsClaimedByRemote) continue;
+                if (!obj.IsAOIActive) continue; // AOI: skip frozen objects
                 if (!obj.HasMoved(positionThreshold, rotationThreshold)) continue;
                 if (obj.syncScale) movedScaledCount++;
                 else movedCount++;
@@ -451,6 +624,7 @@ namespace SomniumSpace.Worlds.bently.networking
                 foreach (var obj in _objects)
                 {
                     if (obj.IsClaimedByRemote || obj.syncScale) continue;
+                    if (!obj.IsAOIActive) continue;
                     if (!obj.HasMoved(positionThreshold, rotationThreshold)) continue;
                     offset = WriteEntityCompact(buf, offset, obj.LocalId,
                         obj.transform.position, obj.transform.eulerAngles);
@@ -470,6 +644,7 @@ namespace SomniumSpace.Worlds.bently.networking
                 foreach (var obj in _objects)
                 {
                     if (obj.IsClaimedByRemote || !obj.syncScale) continue;
+                    if (!obj.IsAOIActive) continue;
                     if (!obj.HasMoved(positionThreshold, rotationThreshold)) continue;
                     offset = Protocol.WriteEntityScaled(buf, offset, obj.LocalId,
                         obj.transform.position, obj.transform.eulerAngles, obj.transform.localScale);
@@ -781,6 +956,7 @@ namespace SomniumSpace.Worlds.bently.networking
             if (_objects.Count == 0) return;
 
             // Split objects into scaled and non-scaled
+            // Snapshots include ALL objects (not AOI-filtered) so late joiners get full state
             int normalCount = 0;
             int scaledCount = 0;
             foreach (var obj in _objects)

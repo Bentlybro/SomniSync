@@ -14,6 +14,8 @@ pub const MSG_VARIABLE_UPDATE: u8 = 0x04;
 pub const MSG_EVENT: u8 = 0x06;
 pub const MSG_ANIMATOR: u8 = 0x07;
 pub const MSG_RIGIDBODY: u8 = 0x08;
+pub const MSG_POSITION_UPDATE_SCALED: u8 = 0x05;
+pub const MSG_SCALED_INTERACTION: u8 = 0x09;
 
 // --- Control subtypes (inside 0xFF messages) ---
 pub const CTRL_YOU_ARE_MASTER: u8 = 0x01;
@@ -22,6 +24,7 @@ pub const CTRL_SEND_SNAPSHOT: u8 = 0x03;
 pub const CTRL_MASTER_CHANGED: u8 = 0x04;
 pub const CTRL_CLAIM: u8 = 0x05;
 pub const CTRL_RELEASE: u8 = 0x06;
+pub const CTRL_PLAYER_POSITION: u8 = 0x07;
 
 /// Build a control message: [0xFF][ctrl_type][payload...]
 pub fn ctrl_msg(ctrl_type: u8, payload: &[u8]) -> Vec<u8> {

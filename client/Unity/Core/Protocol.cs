@@ -28,6 +28,7 @@ namespace SomniumSpace.Worlds.bently.networking
         public const byte CTRL_MASTER_CHANGED = 0x04;
         public const byte CTRL_CLAIM = 0x05;
         public const byte CTRL_RELEASE = 0x06;
+        public const byte CTRL_PLAYER_POSITION = 0x07;
 
         /// <summary>Bytes per entity in compact format (half-float pos + u16 rot).</summary>
         public const int BYTES_PER_ENTITY = 14;

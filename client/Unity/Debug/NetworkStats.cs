@@ -56,12 +56,18 @@ namespace SomniumSpace.Worlds.bently.networking
                 nm.IsMaster ? $"MASTER (client_{nm.ClientId})" :
                 $"SPECTATOR (client_{nm.ClientId})";
 
+            string aoiText = "";
+            if (nm != null && nm.IsMaster && nm.enableAOI)
+                aoiText = $"\nAOI: {NetworkManager.ActiveAOIObjects}/{NetworkManager.TotalObjects} active";
+
             string text = $"FPS: {_fps:F0}\n" +
                           $"Status: {status}\n" +
                           $"Send: {_msgsSec} msg/s ({FormatBytes(_bytesSentSec)}/s)\n" +
-                          $"Recv: {_recvSec} msg/s ({FormatBytes(_bytesRecvSec)}/s)";
+                          $"Recv: {_recvSec} msg/s ({FormatBytes(_bytesRecvSec)}/s)" +
+                          aoiText;
 
-            GUI.Box(new Rect(10, 10, 300, 100), text, _style);
+            float height = nm != null && nm.IsMaster && nm.enableAOI ? 120f : 100f;
+            GUI.Box(new Rect(10, 10, 300, height), text, _style);
         }
 
         private static string FormatBytes(int bytes)
