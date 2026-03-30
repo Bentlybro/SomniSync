@@ -103,4 +103,4 @@ Minimal resource usage — handles hundreds of connections on a cheap VPS or hom
 
 ## License
 
-MIT
+All rights reserved. This software is proprietary and confidential. Unauthorized copying, distribution, or use of this code is strictly prohibited. Access is granted to approved collaborators only.
