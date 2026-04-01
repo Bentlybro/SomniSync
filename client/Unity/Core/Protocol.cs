@@ -1,4 +1,5 @@
 using System;
+using System.Runtime.InteropServices;
 using UnityEngine;
 
 namespace SomniumSpace.Worlds.bently.networking
@@ -9,6 +10,23 @@ namespace SomniumSpace.Worlds.bently.networking
     /// </summary>
     public static class Protocol
     {
+        // =====================================================================
+        // Allocation-free float↔int reinterpret cast (Mono-compatible)
+        // =====================================================================
+
+        /// <summary>
+        /// Overlapping union used to reinterpret float bits as int and vice-versa
+        /// without calling BitConverter.GetBytes() (which allocates a byte[4] each call).
+        /// Uses StructLayout.Explicit so both fields share offset 0 — the CLR/Mono ABI
+        /// guarantees this is a safe bitwise reinterpret, not a numeric conversion.
+        /// </summary>
+        [StructLayout(LayoutKind.Explicit)]
+        private struct FloatInt
+        {
+            [FieldOffset(0)] public float F;
+            [FieldOffset(0)] public int   I;
+        }
+
         // =====================================================================
         // Protocol constants
         // =====================================================================
@@ -76,7 +94,7 @@ namespace SomniumSpace.Worlds.bently.networking
 
         public static void WriteHalf(byte[] buf, int offset, float value)
         {
-            int bits = BitConverter.ToInt32(BitConverter.GetBytes(value), 0);
+            int bits = new FloatInt { F = value }.I;
             int sign = (bits >> 16) & 0x8000;
             int exp = ((bits >> 23) & 0xFF) - 127 + 15;
             int mantissa = bits & 0x007FFFFF;
@@ -118,7 +136,7 @@ namespace SomniumSpace.Worlds.bently.networking
             else
                 fbits = (sign << 31) | ((exp + 127 - 15) << 23) | (mantissa << 13);
 
-            return BitConverter.ToSingle(BitConverter.GetBytes(fbits), 0);
+            return new FloatInt { I = fbits }.F;
         }
 
         // =====================================================================
