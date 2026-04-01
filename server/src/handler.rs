@@ -278,27 +278,53 @@ async fn handle_control(room: &Arc<RwLock<Room>>, client_id: u16, data: &[u8], r
     }
 }
 
-/// Handle client disconnect — cleanup and promote new master if needed.
+/// Handle client disconnect — cleanup, release claims, and promote new master if needed.
 async fn handle_disconnect(room: &Arc<RwLock<Room>>, client_id: u16, room_id: &str) {
-    let new_master = {
+    let (new_master, released_objects) = {
         let mut room = room.write().await;
-        let new_master = room.remove_client(client_id);
+        let (new_master, released) = room.remove_client(client_id);
         info!(
             "[Room:{}] Client_{} disconnected ({} remaining)",
             room_id, client_id, room.client_count()
         );
-        new_master
+        (new_master, released)
     };
 
-    if let Some(new_master_id) = new_master {
+    // Single read-lock pass for claim releases + master promotion.
+    // We must broadcast CTRL_RELEASE for every object the disconnecting client had claimed.
+    // Without this, remaining clients keep IsClaimedByRemote = true permanently and the
+    // master never resumes physics simulation on those objects.
+    if !released_objects.is_empty() || new_master.is_some() {
         let room = room.read().await;
-        if let Some(new_master_client) = room.clients.get(&new_master_id) {
-            info!("[Room:{}] Promoting client_{} to master", room_id, new_master_id);
-            send(
-                new_master_client,
-                ctrl_msg(CTRL_MASTER_CHANGED, &new_master_id.to_le_bytes()),
-            )
-            .await;
+
+        for obj_id in &released_objects {
+            let payload = [
+                (obj_id & 0xFF) as u8,
+                (obj_id >> 8) as u8,
+                (client_id & 0xFF) as u8,
+                (client_id >> 8) as u8,
+            ];
+            let msg = ctrl_msg(CTRL_RELEASE, &payload);
+            for c in room.clients.values() {
+                send(c, msg.clone()).await;
+            }
+        }
+        if !released_objects.is_empty() {
+            debug!(
+                "[Room:{}] Broadcast CTRL_RELEASE for {} object(s) from disconnected client_{}",
+                room_id, released_objects.len(), client_id
+            );
+        }
+
+        if let Some(new_master_id) = new_master {
+            if let Some(new_master_client) = room.clients.get(&new_master_id) {
+                info!("[Room:{}] Promoting client_{} to master", room_id, new_master_id);
+                send(
+                    new_master_client,
+                    ctrl_msg(CTRL_MASTER_CHANGED, &new_master_id.to_le_bytes()),
+                )
+                .await;
+            }
         }
     }
 }

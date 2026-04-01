@@ -47,23 +47,36 @@ impl Room {
         (id, is_master)
     }
 
-    /// Remove a client. Returns the new master id if promotion happened.
-    pub fn remove_client(&mut self, id: u16) -> Option<u16> {
+    /// Remove a client. Returns (new_master_id, released_object_ids).
+    /// new_master_id is Some if the removed client was master and a successor was promoted.
+    /// released_object_ids lists every object that was claimed by the removed client so the
+    /// caller can broadcast CTRL_RELEASE to remaining peers.
+    pub fn remove_client(&mut self, id: u16) -> (Option<u16>, Vec<u16>) {
         self.clients.remove(&id);
-        // Release all objects claimed by this client
+
+        // Collect claimed objects BEFORE clearing them — caller needs the list to notify peers.
+        let released: Vec<u16> = self.claimed_objects.iter()
+            .filter(|(_, &owner)| owner == id)
+            .map(|(obj_id, _)| *obj_id)
+            .collect();
         self.claimed_objects.retain(|_, owner| *owner != id);
 
-        if self.master_id == Some(id) {
+        let new_master = if self.master_id == Some(id) {
             self.master_id = None;
             self.latest_snapshot = None;
             self.latest_scaled_snapshot = None;
             // Promote next client
             if let Some(&new_master) = self.clients.keys().next() {
                 self.master_id = Some(new_master);
-                return Some(new_master);
+                Some(new_master)
+            } else {
+                None
             }
-        }
-        None
+        } else {
+            None
+        };
+
+        (new_master, released)
     }
 
     /// Number of connected clients.
