@@ -219,17 +219,26 @@ async fn handle_control(room: &Arc<RwLock<Room>>, client_id: u16, data: &[u8], r
     let obj_id = u16::from_le_bytes([data[2], data[3]]);
     let sender_id = u16::from_le_bytes([data[4], data[5]]);
 
+    // Validate sender_id matches the actual client — prevent claim spoofing
+    if sender_id != client_id {
+        warn!(
+            "[Room:{}] Rejected spoofed control message: client_{} sent sender_id={}",
+            room_id, client_id, sender_id
+        );
+        return;
+    }
+
     match ctrl {
         CTRL_CLAIM => {
             let mut room = room.write().await;
-            room.claimed_objects.insert(obj_id, sender_id);
-            debug!("[Room:{}] Client_{} claimed object {}", room_id, sender_id, obj_id);
+            room.claimed_objects.insert(obj_id, client_id);
+            debug!("[Room:{}] Client_{} claimed object {}", room_id, client_id, obj_id);
             broadcast_except(&room.clients, client_id, data).await;
         }
         CTRL_RELEASE => {
             let mut room = room.write().await;
             room.claimed_objects.remove(&obj_id);
-            debug!("[Room:{}] Client_{} released object {}", room_id, sender_id, obj_id);
+            debug!("[Room:{}] Client_{} released object {}", room_id, client_id, obj_id);
             broadcast_except(&room.clients, client_id, data).await;
         }
         _ => {}
