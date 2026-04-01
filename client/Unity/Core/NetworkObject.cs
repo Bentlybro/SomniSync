@@ -104,7 +104,9 @@ namespace SomniumSpace.Worlds.bently.networking
                 if (_interpT > 1f) _interpT = 1f;
 
                 transform.position = Vector3.Lerp(_fromPos, _toPos, _interpT);
-                transform.eulerAngles = LerpAngles(_fromRot, _toRot, _interpT);
+                transform.eulerAngles = Quaternion.Slerp(
+                    Quaternion.Euler(_fromRot), Quaternion.Euler(_toRot), _interpT
+                ).eulerAngles;
                 if (syncScale)
                     transform.localScale = Vector3.Lerp(_fromScale, _toScale, _interpT);
             }
@@ -425,13 +427,5 @@ namespace SomniumSpace.Worlds.bently.networking
             }
         }
 
-        private static Vector3 LerpAngles(Vector3 from, Vector3 to, float t)
-        {
-            return new Vector3(
-                Mathf.LerpAngle(from.x, to.x, t),
-                Mathf.LerpAngle(from.y, to.y, t),
-                Mathf.LerpAngle(from.z, to.z, t)
-            );
-        }
     }
 }
