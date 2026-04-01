@@ -1,5 +1,6 @@
 using System;
 using System.Collections;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Net.WebSockets;
 using System.Threading;
@@ -57,6 +58,9 @@ namespace SomniumSpace.Worlds.bently.networking
         private float _sendInterval;
         private float _nextSendTime;
         private bool _pushDetectorAttached;
+
+        // Send queue — ensures only one SendAsync is in-flight at a time
+        private readonly ConcurrentQueue<byte[]> _sendQueue = new ConcurrentQueue<byte[]>();
 
         // After snapshot, snap first N updates instead of interpolating
         private int _snapFramesRemaining;
@@ -290,8 +294,9 @@ namespace SomniumSpace.Worlds.bently.networking
             IsConnected = true;
             Debug.Log("[Net] Connected!");
 
-            // Start receive loop as coroutine
+            // Start receive and send loops as coroutines
             StartCoroutine(ReceiveLoop());
+            StartCoroutine(SendLoop());
 
             // Wait until disconnected
             while (IsConnected && _ws.State == WebSocketState.Open)
@@ -1077,10 +1082,39 @@ namespace SomniumSpace.Worlds.bently.networking
         private void SendBinary(byte[] data)
         {
             if (_ws == null || _ws.State != WebSocketState.Open) return;
-            var seg = new ArraySegment<byte>(data);
-            _ws.SendAsync(seg, WebSocketMessageType.Binary, true, _cts.Token);
             MessagesSent++;
             BytesSent += data.Length;
+            _sendQueue.Enqueue(data);
+        }
+
+        /// <summary>
+        /// Coroutine that drains the send queue one message at a time,
+        /// awaiting each SendAsync before starting the next. This prevents
+        /// concurrent SendAsync calls which cause silent message loss.
+        /// </summary>
+        private IEnumerator SendLoop()
+        {
+            while (IsConnected && _ws.State == WebSocketState.Open)
+            {
+                if (_sendQueue.TryDequeue(out byte[] data))
+                {
+                    var seg = new ArraySegment<byte>(data);
+                    var sendTask = _ws.SendAsync(seg, WebSocketMessageType.Binary, true, _cts.Token);
+                    while (!sendTask.IsCompleted)
+                        yield return null;
+
+                    if (sendTask.IsFaulted)
+                    {
+                        Debug.LogWarning($"[Net] SendAsync failed: {sendTask.Exception?.InnerException?.Message}");
+                        IsConnected = false;
+                        yield break;
+                    }
+                }
+                else
+                {
+                    yield return null;
+                }
+            }
         }
 
         /// <summary>Public send for components like NetworkVariables.</summary>
