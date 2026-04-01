@@ -1237,15 +1237,23 @@ namespace SomniumSpace.Worlds.bently.networking
         }
 
         /// <summary>
-        /// Coroutine that drains the send queue one message at a time,
-        /// awaiting each SendAsync before starting the next. This prevents
-        /// concurrent SendAsync calls which cause silent message loss.
+        /// Coroutine that drains the entire send queue each frame before yielding.
+        /// Sends are still serialised (one in-flight SendAsync at a time) to prevent
+        /// concurrent-write corruption, but all queued messages for a given frame are
+        /// flushed back-to-back without waiting for the next Update tick.
+        ///
+        /// The previous single-dequeue-per-frame approach meant that a busy combat tick
+        /// (positions + interactions + variables + resync = 4-5 messages) took 4-5 frames
+        /// to fully transmit — adding 65-80ms of artificial send latency at 60Hz.
         /// </summary>
         private IEnumerator SendLoop()
         {
             while (IsConnected && _ws.State == WebSocketState.Open)
             {
-                if (_sendQueue.TryDequeue(out byte[] data))
+                // Drain all queued messages before yielding to the next frame.
+                // Each SendAsync still yields internally while in-flight to avoid blocking
+                // the main thread; we just don't take an extra frame between messages.
+                while (_sendQueue.TryDequeue(out byte[] data))
                 {
                     var seg = new ArraySegment<byte>(data);
                     var sendTask = _ws.SendAsync(seg, WebSocketMessageType.Binary, true, _cts.Token);
@@ -1259,10 +1267,9 @@ namespace SomniumSpace.Worlds.bently.networking
                         yield break;
                     }
                 }
-                else
-                {
-                    yield return null;
-                }
+
+                // Queue empty — yield once so other coroutines and the main thread can run
+                yield return null;
             }
         }
 
