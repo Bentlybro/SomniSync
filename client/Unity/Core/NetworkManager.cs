@@ -252,6 +252,74 @@ namespace SomniumSpace.Worlds.bently.networking
             }
         }
 
+        /// <summary>
+        /// Register a runtime-spawned object. Assigns next available LocalId
+        /// and broadcasts a spawn control message so other clients can match it.
+        /// </summary>
+        public void RegisterObject(NetworkObject obj)
+        {
+            ushort localId = (ushort)_objects.Count;
+            obj.LocalId = localId;
+            _objects.Add(obj);
+            _objectMap[localId] = obj;
+
+            if (IsConnected)
+                SendSpawnMessage(obj);
+        }
+
+        /// <summary>
+        /// Unregister a despawned object and broadcast despawn to other clients.
+        /// </summary>
+        public void UnregisterObject(NetworkObject obj)
+        {
+            if (_objectMap.ContainsKey(obj.LocalId))
+            {
+                _objectMap.Remove(obj.LocalId);
+                _objects.Remove(obj);
+
+                if (IsConnected)
+                    SendDespawnMessage(obj);
+            }
+        }
+
+        /// <summary>
+        /// Broadcast spawn: [0xFF][0x08][u16 localId][u8 nameLen][entityType][half x][half y][half z]
+        /// </summary>
+        private void SendSpawnMessage(NetworkObject obj)
+        {
+            byte[] nameBytes = System.Text.Encoding.UTF8.GetBytes(obj.entityType ?? "object");
+            byte[] buf = new byte[2 + 2 + 1 + nameBytes.Length + 6];
+            buf[0] = Protocol.MSG_CONTROL;
+            buf[1] = Protocol.CTRL_SPAWN;
+            Protocol.WriteU16(buf, 2, obj.LocalId);
+            buf[4] = (byte)nameBytes.Length;
+            Array.Copy(nameBytes, 0, buf, 5, nameBytes.Length);
+            int off = 5 + nameBytes.Length;
+            Protocol.WriteHalf(buf, off, obj.transform.position.x);
+            Protocol.WriteHalf(buf, off + 2, obj.transform.position.y);
+            Protocol.WriteHalf(buf, off + 4, obj.transform.position.z);
+            SendBinary(buf);
+        }
+
+        /// <summary>
+        /// Broadcast despawn: [0xFF][0x09][u16 localId][u8 nameLen][entityType][half x][half y][half z]
+        /// </summary>
+        private void SendDespawnMessage(NetworkObject obj)
+        {
+            byte[] nameBytes = System.Text.Encoding.UTF8.GetBytes(obj.entityType ?? "object");
+            byte[] buf = new byte[2 + 2 + 1 + nameBytes.Length + 6];
+            buf[0] = Protocol.MSG_CONTROL;
+            buf[1] = Protocol.CTRL_DESPAWN;
+            Protocol.WriteU16(buf, 2, obj.LocalId);
+            buf[4] = (byte)nameBytes.Length;
+            Array.Copy(nameBytes, 0, buf, 5, nameBytes.Length);
+            int off = 5 + nameBytes.Length;
+            Protocol.WriteHalf(buf, off, obj.transform.position.x);
+            Protocol.WriteHalf(buf, off + 2, obj.transform.position.y);
+            Protocol.WriteHalf(buf, off + 4, obj.transform.position.z);
+            SendBinary(buf);
+        }
+
         // =====================================================================
         // Connection
         // =====================================================================
@@ -504,6 +572,36 @@ namespace SomniumSpace.Worlds.bently.networking
                         float pz = Protocol.ReadHalf(data, 8);
                         _playerPositions[posClientId] = new Vector3(px, py, pz);
                         _playerLastSeen[posClientId] = Time.time;
+                    }
+                    break;
+
+                case Protocol.CTRL_SPAWN: // Remote spawn — find matching inactive object
+                    if (length >= 5)
+                    {
+                        ushort spawnId = BitConverter.ToUInt16(data, 2);
+                        int nameLen = data[4];
+                        if (length >= 5 + nameLen + 6)
+                        {
+                            string entityType = System.Text.Encoding.UTF8.GetString(data, 5, nameLen);
+                            int posOff = 5 + nameLen;
+                            float sx = Protocol.ReadHalf(data, posOff);
+                            float sy = Protocol.ReadHalf(data, posOff + 2);
+                            float sz = Protocol.ReadHalf(data, posOff + 4);
+                            Debug.Log($"[Net] Remote spawn: id={spawnId} type={entityType} pos=({sx},{sy},{sz})");
+                        }
+                    }
+                    break;
+
+                case Protocol.CTRL_DESPAWN: // Remote despawn
+                    if (length >= 4)
+                    {
+                        ushort despawnId = BitConverter.ToUInt16(data, 2);
+                        if (_objectMap.TryGetValue(despawnId, out var despawnObj))
+                        {
+                            _objectMap.Remove(despawnId);
+                            _objects.Remove(despawnObj);
+                            Debug.Log($"[Net] Remote despawn: id={despawnId}");
+                        }
                     }
                     break;
             }

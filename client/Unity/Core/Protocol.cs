@@ -29,6 +29,8 @@ namespace SomniumSpace.Worlds.bently.networking
         public const byte CTRL_CLAIM = 0x05;
         public const byte CTRL_RELEASE = 0x06;
         public const byte CTRL_PLAYER_POSITION = 0x07;
+        public const byte CTRL_SPAWN = 0x08;
+        public const byte CTRL_DESPAWN = 0x09;
 
         /// <summary>Bytes per entity in compact format (half-float pos + u16 rot).</summary>
         public const int BYTES_PER_ENTITY = 14;

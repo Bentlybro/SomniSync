@@ -25,6 +25,8 @@ pub const CTRL_MASTER_CHANGED: u8 = 0x04;
 pub const CTRL_CLAIM: u8 = 0x05;
 pub const CTRL_RELEASE: u8 = 0x06;
 pub const CTRL_PLAYER_POSITION: u8 = 0x07;
+pub const CTRL_SPAWN: u8 = 0x08;
+pub const CTRL_DESPAWN: u8 = 0x09;
 
 /// Build a control message: [0xFF][ctrl_type][payload...]
 pub fn ctrl_msg(ctrl_type: u8, payload: &[u8]) -> Vec<u8> {

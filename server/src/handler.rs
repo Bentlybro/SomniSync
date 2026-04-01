@@ -7,11 +7,11 @@ use tokio_tungstenite::tungstenite::Message;
 use crate::client::{broadcast_except, send, Client};
 use crate::room::RoomMap;
 use crate::protocol::{
-    ctrl_msg, ctrl_msg_u16, CTRL_CLAIM, CTRL_MASTER_CHANGED, CTRL_PLAYER_POSITION,
-    CTRL_RELEASE, CTRL_SEND_SNAPSHOT, CTRL_YOU_ARE_MASTER, CTRL_YOU_ARE_SPECTATOR,
-    MSG_ANIMATOR, MSG_EVENT, MSG_INTERACTION_UPDATE, MSG_POSITION_UPDATE,
-    MSG_POSITION_UPDATE_SCALED, MSG_RIGIDBODY, MSG_SCALED_INTERACTION, MSG_SNAPSHOT,
-    MSG_VARIABLE_UPDATE,
+    ctrl_msg, ctrl_msg_u16, CTRL_CLAIM, CTRL_DESPAWN, CTRL_MASTER_CHANGED,
+    CTRL_PLAYER_POSITION, CTRL_RELEASE, CTRL_SEND_SNAPSHOT, CTRL_SPAWN,
+    CTRL_YOU_ARE_MASTER, CTRL_YOU_ARE_SPECTATOR, MSG_ANIMATOR, MSG_EVENT,
+    MSG_INTERACTION_UPDATE, MSG_POSITION_UPDATE, MSG_POSITION_UPDATE_SCALED,
+    MSG_RIGIDBODY, MSG_SCALED_INTERACTION, MSG_SNAPSHOT, MSG_VARIABLE_UPDATE,
 };
 use crate::room::Room;
 
@@ -227,6 +227,20 @@ async fn handle_control(room: &Arc<RwLock<Room>>, client_id: u16, data: &[u8], r
     if ctrl == CTRL_PLAYER_POSITION {
         if data.len() >= 10 {
             let room = room.read().await;
+            broadcast_except(&room.clients, client_id, data).await;
+        }
+        return;
+    }
+
+    // Spawn/despawn have variable-length payload (entityType + position), not obj_id + sender_id
+    if ctrl == CTRL_SPAWN || ctrl == CTRL_DESPAWN {
+        if data.len() >= 3 {
+            let room = room.read().await;
+            debug!(
+                "[Room:{}] Client_{} {} object",
+                room_id, client_id,
+                if ctrl == CTRL_SPAWN { "spawned" } else { "despawned" }
+            );
             broadcast_except(&room.clients, client_id, data).await;
         }
         return;
