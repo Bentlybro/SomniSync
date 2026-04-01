@@ -1144,7 +1144,28 @@ namespace SomniumSpace.Worlds.bently.networking
                 SendBinary(buf);
             }
 
-            Debug.Log($"[Net] Sending snapshot: {normalCount}+{scaledCount} scaled objects");
+            // Send NetworkVariables state for late joiners
+            int varSnapCount = 0;
+            foreach (var obj in _objects)
+            {
+                var netVars = obj.GetComponent<NetworkVariables>();
+                if (netVars == null) continue;
+
+                byte[] varData = netVars.SerializeForSnapshot();
+                if (varData == null) continue;
+
+                // Wrap in 0x04 format: [0x04][u16 obj_id][snapshot payload]
+                // SerializeForSnapshot returns [u8 count][per var...] which matches
+                // the var_count + vars portion of the 0x04 format
+                byte[] buf = new byte[3 + varData.Length];
+                buf[0] = Protocol.MSG_VARIABLE_UPDATE;
+                Protocol.WriteU16(buf, 1, obj.LocalId);
+                Array.Copy(varData, 0, buf, 3, varData.Length);
+                SendBinary(buf);
+                varSnapCount++;
+            }
+
+            Debug.Log($"[Net] Sending snapshot: {normalCount}+{scaledCount} scaled objects, {varSnapCount} variable states");
         }
 
         private void HandleSnapshot(byte[] data, int length)
