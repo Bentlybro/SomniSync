@@ -53,7 +53,7 @@ namespace SomniumSpace.Worlds.bently.networking
         // WebSocket
         private ClientWebSocket _ws;
         private CancellationTokenSource _cts;
-        private readonly byte[] _recvBuffer = new byte[65536];
+        private readonly byte[] _recvBuffer = new byte[262144]; // 256KB — supports 4000+ scaled objects
         private float _sendInterval;
         private float _nextSendTime;
         private bool _pushDetectorAttached;
@@ -310,6 +310,10 @@ namespace SomniumSpace.Worlds.bently.networking
 
         private IEnumerator ReceiveLoop()
         {
+            // Accumulator for fragmented WebSocket messages
+            byte[] fragmentBuffer = null;
+            int fragmentOffset = 0;
+
             while (IsConnected && _ws.State == WebSocketState.Open)
             {
                 var seg = new ArraySegment<byte>(_recvBuffer);
@@ -324,11 +328,42 @@ namespace SomniumSpace.Worlds.bently.networking
                 }
 
                 var result = recvTask.Result;
-                if (result.MessageType == WebSocketMessageType.Binary && result.Count > 0)
+                if (result.MessageType != WebSocketMessageType.Binary || result.Count == 0)
+                    continue;
+
+                if (result.EndOfMessage && fragmentBuffer == null)
                 {
+                    // Common fast path: single-frame message
                     MessagesReceived++;
                     BytesReceived += result.Count;
                     ProcessBinary(_recvBuffer, result.Count);
+                }
+                else
+                {
+                    // Fragmented message — accumulate until EndOfMessage
+                    if (fragmentBuffer == null)
+                    {
+                        fragmentBuffer = new byte[_recvBuffer.Length * 2];
+                        fragmentOffset = 0;
+                    }
+                    // Grow if needed
+                    if (fragmentOffset + result.Count > fragmentBuffer.Length)
+                    {
+                        byte[] bigger = new byte[fragmentBuffer.Length * 2];
+                        Buffer.BlockCopy(fragmentBuffer, 0, bigger, 0, fragmentOffset);
+                        fragmentBuffer = bigger;
+                    }
+                    Buffer.BlockCopy(_recvBuffer, 0, fragmentBuffer, fragmentOffset, result.Count);
+                    fragmentOffset += result.Count;
+
+                    if (result.EndOfMessage)
+                    {
+                        MessagesReceived++;
+                        BytesReceived += fragmentOffset;
+                        ProcessBinary(fragmentBuffer, fragmentOffset);
+                        fragmentBuffer = null;
+                        fragmentOffset = 0;
+                    }
                 }
             }
         }
