@@ -469,6 +469,10 @@ namespace SomniumSpace.Worlds.bently.networking
                         HandleScaledPositionUpdates(data, length);
                         break;
 
+                    case Protocol.MSG_SNAPSHOT_SCALED:
+                        HandleScaledSnapshot(data, length);
+                        break;
+
                     case Protocol.MSG_SCALED_INTERACTION:
                         HandleScaledInteractionUpdates(data, length);
                         break;
@@ -1127,12 +1131,13 @@ namespace SomniumSpace.Worlds.bently.networking
                 SendBinary(buf);
             }
 
-            // Send scaled snapshot (0x05 reused — same handler)
+            // Send scaled snapshot (0x0A) — distinct from 0x05 incremental updates so the
+            // server knows to cache this as the late-joiner state rather than a partial update.
             if (scaledCount > 0)
             {
                 int size = 3 + scaledCount * Protocol.BYTES_PER_ENTITY_SCALED;
                 byte[] buf = new byte[size];
-                buf[0] = Protocol.MSG_POSITION_UPDATE_SCALED;
+                buf[0] = Protocol.MSG_SNAPSHOT_SCALED;
                 WriteU16(buf, 1, (ushort)scaledCount);
                 int offset = 3;
                 foreach (var obj in _objects)
@@ -1192,6 +1197,31 @@ namespace SomniumSpace.Worlds.bently.networking
             // Snap next few position updates too (catch up to current state fast)
             _snapFramesRemaining = SNAP_FRAMES_AFTER_SNAPSHOT;
             Debug.Log($"[Net] Snapshot applied: {applied}/{count} objects");
+        }
+
+        private void HandleScaledSnapshot(byte[] data, int length)
+        {
+            if (IsMaster || !_sceneReady) return;
+
+            ushort count = BitConverter.ToUInt16(data, 1);
+            int offset = 3;
+            int applied = 0;
+
+            for (int i = 0; i < count && offset + Protocol.BYTES_PER_ENTITY_SCALED <= length; i++)
+            {
+                ushort localId;
+                Vector3 pos, rot, scale;
+                offset = Protocol.ReadEntityScaled(data, offset, out localId, out pos, out rot, out scale);
+
+                if (_objectMap.TryGetValue(localId, out var obj))
+                {
+                    obj.SnapTo(pos, rot, scale);
+                    applied++;
+                }
+            }
+
+            _snapFramesRemaining = SNAP_FRAMES_AFTER_SNAPSHOT;
+            Debug.Log($"[Net] Scaled snapshot applied: {applied}/{count} objects");
         }
 
         // =====================================================================

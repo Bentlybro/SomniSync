@@ -3,19 +3,29 @@
 /// Entity format (compact): 14 bytes per entity
 ///   [u16 local_id][half x][half y][half z][u16 rx][u16 ry][u16 rz]
 ///
-/// Position messages (0x01, 0x02, 0x03):
-///   [u8 type][u16 count][N × 14B entity]
+/// Position messages (0x01, 0x02, 0x03, 0x05, 0x0A):
+///   [u8 type][u16 count][N × 14B entity]  (scaled variants use 20B per entity)
+///
+/// Snapshot vs incremental update distinction:
+///   0x02 = full snapshot (all objects) — server caches for late joiners
+///   0x0A = full scaled snapshot (all scaled objects) — server caches for late joiners
+///   0x01 = incremental update (moved objects only) — not cached
+///   0x05 = incremental scaled update (moved scaled objects only) — not cached
 
 // --- Message types ---
 pub const MSG_POSITION_UPDATE: u8 = 0x01;
 pub const MSG_SNAPSHOT: u8 = 0x02;
 pub const MSG_INTERACTION_UPDATE: u8 = 0x03;
 pub const MSG_VARIABLE_UPDATE: u8 = 0x04;
+pub const MSG_POSITION_UPDATE_SCALED: u8 = 0x05;
 pub const MSG_EVENT: u8 = 0x06;
 pub const MSG_ANIMATOR: u8 = 0x07;
 pub const MSG_RIGIDBODY: u8 = 0x08;
-pub const MSG_POSITION_UPDATE_SCALED: u8 = 0x05;
 pub const MSG_SCALED_INTERACTION: u8 = 0x09;
+/// Full snapshot of all scaled objects — counterpart to MSG_SNAPSHOT (0x02).
+/// Server caches this for late-joiner sync. Distinct from MSG_POSITION_UPDATE_SCALED
+/// (0x05) which is an incremental update of only moved scaled objects.
+pub const MSG_SNAPSHOT_SCALED: u8 = 0x0A;
 
 // --- Control subtypes (inside 0xFF messages) ---
 pub const CTRL_YOU_ARE_MASTER: u8 = 0x01;

@@ -22,6 +22,12 @@ namespace SomniumSpace.Worlds.bently.networking
         public const byte MSG_ANIMATOR = 0x07;
         public const byte MSG_RIGIDBODY = 0x08;
         public const byte MSG_SCALED_INTERACTION = 0x09;
+        /// <summary>
+        /// Full snapshot of all scaled objects — sent by master alongside MSG_SNAPSHOT.
+        /// Server caches this for late joiners. Distinct from MSG_POSITION_UPDATE_SCALED
+        /// (0x05) which is an incremental update containing only moved scaled objects.
+        /// </summary>
+        public const byte MSG_SNAPSHOT_SCALED = 0x0A;
         public const byte MSG_CONTROL = 0xFF;
 
         public const byte CTRL_YOU_ARE_MASTER = 0x01;

@@ -11,7 +11,8 @@ use crate::protocol::{
     CTRL_PLAYER_POSITION, CTRL_RELEASE, CTRL_SEND_SNAPSHOT, CTRL_SPAWN,
     CTRL_YOU_ARE_MASTER, CTRL_YOU_ARE_SPECTATOR, MSG_ANIMATOR, MSG_EVENT,
     MSG_INTERACTION_UPDATE, MSG_POSITION_UPDATE, MSG_POSITION_UPDATE_SCALED,
-    MSG_RIGIDBODY, MSG_SCALED_INTERACTION, MSG_SNAPSHOT, MSG_VARIABLE_UPDATE,
+    MSG_RIGIDBODY, MSG_SCALED_INTERACTION, MSG_SNAPSHOT, MSG_SNAPSHOT_SCALED,
+    MSG_VARIABLE_UPDATE,
 };
 use crate::room::Room;
 
@@ -186,13 +187,22 @@ async fn handle_binary(room: &Arc<RwLock<Room>>, client_id: u16, data: &[u8], ro
         }
 
         MSG_POSITION_UPDATE_SCALED => {
+            // Incremental update — broadcast only. Only moved scaled objects are included
+            // so this must NOT be cached as the late-joiner snapshot (use MSG_SNAPSHOT_SCALED).
+            let room = room.read().await;
+            broadcast_except(&room.clients, client_id, data).await;
+        }
+
+        MSG_SNAPSHOT_SCALED => {
+            // Full scaled snapshot — cache for late joiners. Master only.
             let mut room = room.write().await;
             if room.master_id != Some(client_id) {
-                // Non-master scaled updates just broadcast
-                broadcast_except(&room.clients, client_id, data).await;
                 return;
             }
-            // Cache scaled snapshot from master for late joiners
+            info!(
+                "[Room:{}] Received scaled snapshot from master ({} bytes), caching",
+                room_id, data.len()
+            );
             room.latest_scaled_snapshot = Some(data.to_vec());
             broadcast_except(&room.clients, client_id, data).await;
         }
