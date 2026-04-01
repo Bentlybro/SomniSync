@@ -58,6 +58,11 @@ namespace SomniumSpace.Worlds.bently.networking
         private Vector3 _lastSentRot;
         private Vector3 _lastSentScale;
 
+        // HasMoved frame cache — prevents redundant Quaternion.Angle() calls when
+        // SendPositionUpdates() iterates objects twice per tick (count pass + write pass).
+        private int _hasMovedFrame = -1;
+        private bool _hasMovedResult;
+
         // Auto-claim state (managed by PlayerPushDetector)
         private const float AUTO_RELEASE_DELAY = 1.0f;
         private const float RECLAIM_COOLDOWN = 0.5f;
@@ -178,8 +183,21 @@ namespace SomniumSpace.Worlds.bently.networking
 
         /// <summary>
         /// Has this object moved enough to be included in the next update?
+        /// Result is cached per-frame: SendPositionUpdates iterates objects twice
+        /// (count pass then write pass) so we avoid redundant Quaternion.Angle calls.
+        /// Cache is invalidated by MarkSent() when the tracking baseline changes.
         /// </summary>
         public bool HasMoved(float posThreshold, float rotThreshold)
+        {
+            if (_hasMovedFrame == Time.frameCount)
+                return _hasMovedResult;
+
+            _hasMovedFrame = Time.frameCount;
+            _hasMovedResult = ComputeHasMoved(posThreshold, rotThreshold);
+            return _hasMovedResult;
+        }
+
+        private bool ComputeHasMoved(float posThreshold, float rotThreshold)
         {
             float posDist = (transform.position - _lastSentPos).sqrMagnitude;
             float rotDist = Quaternion.Angle(
@@ -194,13 +212,15 @@ namespace SomniumSpace.Worlds.bently.networking
         }
 
         /// <summary>
-        /// Mark position as sent (reset delta tracking).
+        /// Mark position as sent (reset delta tracking). Also invalidates the HasMoved
+        /// frame cache so the write pass doesn't re-include this object in the same tick.
         /// </summary>
         public void MarkSent()
         {
             _lastSentPos = transform.position;
             _lastSentRot = transform.eulerAngles;
             if (syncScale) _lastSentScale = transform.localScale;
+            _hasMovedFrame = -1; // Invalidate: tracking baseline just changed
         }
 
         /// <summary>
