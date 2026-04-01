@@ -6,13 +6,15 @@ namespace SomniumSpace.Worlds.bently.networking
     /// <summary>
     /// Syncs Rigidbody velocity and angular velocity across clients.
     /// Attach to any NetworkObject with a Rigidbody.
-    /// 
-    /// When the authority (master or claimed owner) detects velocity changes,
-    /// it sends updates. Receivers apply velocity for smooth extrapolation
-    /// between position updates — objects coast naturally instead of stuttering.
-    /// 
+    ///
+    /// Authority (master or claimed owner): detects velocity changes and sends updates.
+    /// Spectators: receive velocity and manually extrapolate transform position/rotation
+    /// between position updates. The rigidbody stays kinematic on spectators — no physics
+    /// simulation — but the object visually coasts between network ticks instead of
+    /// freezing in place.
+    ///
     /// Great for: thrown objects, vehicles, physics puzzles, explosions.
-    /// 
+    ///
     /// Protocol 0x08: [0x08][u16 obj_id][half vx][half vy][half vz][half avx][half avy][half avz]
     /// = 15 bytes per update
     /// </summary>
@@ -41,6 +43,10 @@ namespace SomniumSpace.Worlds.bently.networking
         private Vector3 _lastSentAngularVelocity;
         private bool _sleeping; // Skip FixedUpdate entirely when at rest
         private float _sleepTimer;
+
+        // Spectator extrapolation — received velocity applied manually via transform
+        private Vector3 _extrapolationVelocity;
+        private Vector3 _extrapolationAngularVelocity;
 
         // Protocol
         private const byte MSG_RIGIDBODY = 0x08;
@@ -135,10 +141,29 @@ namespace SomniumSpace.Worlds.bently.networking
             _manager.SendBinaryPublic(buf);
         }
 
+        /// <summary>
+        /// Spectator extrapolation: coast the transform by the last received velocity between
+        /// position updates. Only runs when NetworkObject is not actively interpolating so the
+        /// two systems don't fight each other.
+        /// </summary>
+        private void Update()
+        {
+            if (!applyReceivedVelocity) return;
+            if (_manager == null || !_manager.IsConnected) return;
+            if (_netObj.HasAuthority()) return;
+            if (_netObj.IsInterpolating) return; // NetworkObject handles movement during lerp
+
+            if (_extrapolationVelocity.sqrMagnitude > 0.0001f)
+                transform.position += _extrapolationVelocity * Time.deltaTime;
+
+            if (_extrapolationAngularVelocity.sqrMagnitude > 0.0001f)
+                transform.eulerAngles += _extrapolationAngularVelocity * Mathf.Rad2Deg * Time.deltaTime;
+        }
+
         /// <summary>Called by NetworkManager when a 0x08 message arrives.</summary>
         public void HandleRigidbodyUpdate(byte[] data, int offset)
         {
-            if (!applyReceivedVelocity || _rb == null) return;
+            if (!applyReceivedVelocity) return;
             if (_netObj.HasAuthority()) return; // Don't apply to our own
 
             float vx = Protocol.ReadHalf(data, offset); offset += 2;
@@ -148,11 +173,10 @@ namespace SomniumSpace.Worlds.bently.networking
             float avy = Protocol.ReadHalf(data, offset); offset += 2;
             float avz = Protocol.ReadHalf(data, offset);
 
-            // Only apply if rigidbody is kinematic (spectator mode)
-            if (_rb.isKinematic) return;
-
-            _rb.velocity = new Vector3(vx, vy, vz);
-            _rb.angularVelocity = new Vector3(avx, avy, avz);
+            // Store for extrapolation in Update(). The rigidbody stays kinematic on spectators
+            // so we drive motion through the transform directly rather than rb.velocity.
+            _extrapolationVelocity = new Vector3(vx, vy, vz);
+            _extrapolationAngularVelocity = new Vector3(avx, avy, avz);
         }
     }
 }

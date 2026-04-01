@@ -371,6 +371,12 @@ namespace SomniumSpace.Worlds.bently.networking
         }
 
         /// <summary>
+        /// True while this object is interpolating toward a received network position.
+        /// NetworkRigidbody uses this to avoid adding extrapolation on top of an active lerp.
+        /// </summary>
+        public bool IsInterpolating => _interpT < 1f;
+
+        /// <summary>
         /// Is this object currently claimed by a non-master client?
         /// Master uses this to skip it in position updates.
         /// </summary>
