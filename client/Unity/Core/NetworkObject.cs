@@ -269,6 +269,21 @@ namespace SomniumSpace.Worlds.bently.networking
                 return;
             }
 
+            // Smooth correction: if the current lerp is nearly complete (>60%) AND the new
+            // target is close to the old one (object moving predictably), just slide the
+            // target without resetting _interpT. Resetting would stall the lerp back to 0
+            // every 16ms on tight packet bursts, making objects appear to stutter in place.
+            const float SMOOTH_CORRECTION_THRESHOLD = 0.3f;
+            if (_interpT > 0.6f && (pos - _toPos).sqrMagnitude <= SMOOTH_CORRECTION_THRESHOLD * SMOOTH_CORRECTION_THRESHOLD)
+            {
+                _toPos = pos;
+                _toRot = rot;
+                if (syncScale && scale.HasValue)
+                    _toScale = scale.Value;
+                // _interpT continues naturally — no restart
+                return;
+            }
+
             _fromPos = transform.position;
             _fromRot = transform.eulerAngles;
             _toPos = pos;
