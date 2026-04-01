@@ -141,6 +141,13 @@ async fn send_cached_snapshot(room: &Arc<RwLock<Room>>, client: &Client, client_
         );
         send(client, snapshot.clone()).await;
     }
+    if let Some(ref scaled_snapshot) = room.latest_scaled_snapshot {
+        info!(
+            "[Room:{}] Sending cached scaled snapshot to client_{} ({} bytes)",
+            room_id, client_id, scaled_snapshot.len()
+        );
+        send(client, scaled_snapshot.clone()).await;
+    }
     if let Some(master_id) = room.master_id {
         if let Some(master) = room.clients.get(&master_id) {
             info!(
@@ -178,7 +185,19 @@ async fn handle_binary(room: &Arc<RwLock<Room>>, client_id: u16, data: &[u8], ro
             broadcast_except(&room.clients, client_id, data).await;
         }
 
-        MSG_INTERACTION_UPDATE | MSG_VARIABLE_UPDATE | MSG_POSITION_UPDATE_SCALED
+        MSG_POSITION_UPDATE_SCALED => {
+            let mut room = room.write().await;
+            if room.master_id != Some(client_id) {
+                // Non-master scaled updates just broadcast
+                broadcast_except(&room.clients, client_id, data).await;
+                return;
+            }
+            // Cache scaled snapshot from master for late joiners
+            room.latest_scaled_snapshot = Some(data.to_vec());
+            broadcast_except(&room.clients, client_id, data).await;
+        }
+
+        MSG_INTERACTION_UPDATE | MSG_VARIABLE_UPDATE
         | MSG_EVENT | MSG_ANIMATOR | MSG_RIGIDBODY | MSG_SCALED_INTERACTION => {
             let room = room.read().await;
             broadcast_except(&room.clients, client_id, data).await;

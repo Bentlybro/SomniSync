@@ -16,6 +16,9 @@ pub struct Room {
     /// Cached latest snapshot from master (for late-joiner instant sync)
     pub latest_snapshot: Option<Vec<u8>>,
 
+    /// Cached latest scaled snapshot from master (for late-joiner instant sync)
+    pub latest_scaled_snapshot: Option<Vec<u8>>,
+
     /// Object ownership: object_local_id → client_id (only for claimed objects)
     pub claimed_objects: HashMap<u16, u16>,
 }
@@ -27,6 +30,7 @@ impl Room {
             master_id: None,
             next_id: 1,
             latest_snapshot: None,
+            latest_scaled_snapshot: None,
             claimed_objects: HashMap::new(),
         }
     }
@@ -52,6 +56,7 @@ impl Room {
         if self.master_id == Some(id) {
             self.master_id = None;
             self.latest_snapshot = None;
+            self.latest_scaled_snapshot = None;
             // Promote next client
             if let Some(&new_master) = self.clients.keys().next() {
                 self.master_id = Some(new_master);
