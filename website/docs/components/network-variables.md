@@ -12,7 +12,7 @@ Define variables visually — name, type, default value, sync mode, and persiste
 | `type` | `Int`, `Float`, `Bool`, or `String` |
 | `defaultValue` | Starting value (as string, parsed on init) |
 | `syncMode` | `OnChange` (batched, default) or `Immediate` (instant) |
-| `persistForLateJoiners` | Include in snapshot so late joiners get current state |
+| `persistForLateJoiners` | Send current value to late joiners on connect (default: true) |
 
 ## Code API
 
@@ -63,9 +63,19 @@ Variables can only be set by the client that **owns** the object:
 
 ## Late Joiner Sync
 
-Variables with `persistForLateJoiners = true` (default) are included in the snapshot sent to new clients. They'll see the current state, not defaults.
+When a new client connects, the master sends a full snapshot that includes the current values of all persistent NetworkVariables. Variables with `persistForLateJoiners = true` (the default) are included — late joiners see live state, not defaults.
 
-Set `persistForLateJoiners = false` for ephemeral data (e.g., "player is typing" indicators).
+Set `persistForLateJoiners = false` for ephemeral data that doesn't need to survive a reconnect (e.g., "player is typing" indicators, transient effects).
+
+The `persist` parameter in `DefineVariable()` maps to this same flag:
+
+```csharp
+// This variable WILL be sent to late joiners (default)
+vars.DefineVariable("health", NetworkVariables.VarType.Int, persist: true);
+
+// This variable will NOT be sent to late joiners
+vars.DefineVariable("isTyping", NetworkVariables.VarType.Bool, persist: false);
+```
 
 ## Protocol
 

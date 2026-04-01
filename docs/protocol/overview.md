@@ -4,18 +4,18 @@ All messages are **binary**. No JSON on hot paths. Half-precision floats for pos
 
 ## Message Types
 
-| Byte | Type | Direction | Purpose |
-|------|------|-----------|---------|
-| `0x01` | Position Update | master → server → spectators | Batch position/rotation for moving objects (14B/entity) |
-| `0x02` | Snapshot | master → server → spectators | Full state of all objects (late-joiner sync) |
-| `0x03` | Interaction Update | any → server → others | Position/rotation for claimed objects |
-| `0x04` | Variable Update | any → server → others | Custom variable changes (NetworkVariables) |
-| `0x05` | Scaled Position | master → server → spectators | Position/rotation/scale for syncScale objects (20B/entity) |
-| `0x06` | Event (RPC) | any → server → others | Fire-and-forget events (NetworkEvents) |
-| `0x07` | Animator State | any → server → others | Animation state/params (NetworkAnimator) |
-| `0x08` | Rigidbody | any → server → others | Velocity + angular velocity (NetworkRigidbody) |
-| `0x09` | Scaled Interaction | any → server → others | Position/rotation/scale for claimed syncScale objects |
-| `0xFF` | Control | server ↔ client | Role assignment, ownership, commands |
+| Byte | Constant | Direction | Purpose |
+|------|----------|-----------|---------|
+| `0x01` | `MSG_POSITION` | master → server → spectators | Batch position/rotation for moving objects (14B/entity) |
+| `0x02` | `MSG_SNAPSHOT` | master → server → spectators | Full state of all objects (late-joiner sync) |
+| `0x03` | `MSG_INTERACTION_UPDATE` | any → server → others | Position/rotation for claimed objects |
+| `0x04` | `MSG_VARIABLE_UPDATE` | any → server → others | Custom variable changes (NetworkVariables) |
+| `0x05` | `MSG_SCALED_POSITION` | master → server → spectators | Position/rotation/scale for syncScale objects (20B/entity) |
+| `0x06` | `MSG_EVENT` | any → server → others | Fire-and-forget events (NetworkEvents) |
+| `0x07` | `MSG_ANIMATOR` | any → server → others | Animation state/params (NetworkAnimator) |
+| `0x08` | `MSG_RIGIDBODY` | any → server → others | Velocity + angular velocity (NetworkRigidbody) |
+| `0x09` | `MSG_SCALED_INTERACTION` | any → server → others | Position/rotation/scale for claimed syncScale objects |
+| `0xFF` | `MSG_CONTROL` | server ↔ client | Role assignment, ownership, spawn/despawn commands |
 
 ## Position Format (0x01, 0x02, 0x03)
 
@@ -89,6 +89,8 @@ Param types: 0 = int, 1 = float, 2 = bool, 4 = trigger
 | `0x04` | server → client | *(none)* | You are now master (promotion) |
 | `0x05` | client → server → others | `u16 object_id, u16 client_id` | Object claimed |
 | `0x06` | client → server → others | `u16 object_id, u16 client_id` | Object released |
+| `0x08` | master → server → spectators | `u16 object_id, u8 entity_type_len, entity_type` | Spawn object (CTRL_SPAWN) |
+| `0x09` | master → server → spectators | `u16 object_id` | Despawn object (CTRL_DESPAWN) |
 
 ## Bandwidth Summary
 

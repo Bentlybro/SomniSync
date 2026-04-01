@@ -33,6 +33,24 @@ Default: `ws://0.0.0.0:9090` — pass a custom address as the first argument.
 
 That's it. `PlayerPushDetector` is attached to the local player automatically at runtime.
 
+### Runtime-Spawned Objects
+
+For objects instantiated at runtime (not present in the scene at startup), register them with NetworkManager after instantiation:
+
+```csharp
+GameObject go = Instantiate(myPrefab);
+NetworkManager.Instance.RegisterObject(go.GetComponent<NetworkObject>());
+```
+
+And unregister before destroying:
+
+```csharp
+NetworkManager.Instance.UnregisterObject(netObj);
+Destroy(go);
+```
+
+The master broadcasts spawn/despawn control messages automatically when you call these methods.
+
 ### How Roles Work
 
 - **First client** to connect becomes the **master** (runs physics, authoritative)

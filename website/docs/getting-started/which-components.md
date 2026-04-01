@@ -13,6 +13,7 @@ Every synced object needs **NetworkObject** — it's the foundation that handles
 | Sync Unity Animator state and parameters | `NetworkAnimator` | Optional |
 | Sync ParticleSystem play/stop and properties | `NetworkParticle` | Optional |
 | Add networked countdown timers | `NetworkTimer` | Optional |
+| Spawn/despawn objects at runtime across all clients | `NetworkManager.RegisterObject` / `UnregisterObject` | Optional |
 
 ## Common Setups
 
@@ -46,6 +47,11 @@ Every synced object needs **NetworkObject** — it's the foundation that handles
 ### Physics puzzle piece
 - `NetworkObject` — syncs position
 - `NetworkRigidbody` — syncs velocity for smooth physics
+
+### Runtime-spawned object (e.g. a dropped item, spawned enemy)
+- `NetworkObject` — syncs position
+- `NetworkManager.RegisterObject(netObj)` — tells all clients to instantiate it
+- `NetworkVariables` *(optional)* — syncs state like health or item type
 
 ## NetworkObject vs NetworkRigidbody — When Do I Need Both?
 
