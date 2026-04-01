@@ -53,6 +53,12 @@ namespace SomniumSpace.Worlds.bently.networking
         private float _interpT = 1f;
         private float _interpDuration = 0.016f; // ~60Hz
 
+        // Dead reckoning — continue at implied velocity after lerp completes so the object
+        // coasts smoothly instead of freezing while waiting for the next packet.
+        private Vector3 _impliedVelocity;
+        private float _lastUpdateTime = -1f;     // -1 = no update received yet
+        private const float DEAD_RECKONING_MAX_TIME = 0.15f; // cap at 150ms to limit error
+
         // Delta tracking (for sending updates)
         private Vector3 _lastSentPos;
         private Vector3 _lastSentRot;
@@ -97,18 +103,30 @@ namespace SomniumSpace.Worlds.bently.networking
 
         private void Update()
         {
-            // Spectator interpolation (only when not claimed locally)
-            if (_interpT < 1f && !IsClaimedLocally)
+            if (!IsClaimedLocally)
             {
-                _interpT += Time.deltaTime / _interpDuration;
-                if (_interpT > 1f) _interpT = 1f;
+                if (_interpT < 1f)
+                {
+                    // Active lerp toward the latest received position
+                    _interpT += Time.deltaTime / _interpDuration;
+                    if (_interpT > 1f) _interpT = 1f;
 
-                transform.position = Vector3.Lerp(_fromPos, _toPos, _interpT);
-                transform.eulerAngles = Quaternion.Slerp(
-                    Quaternion.Euler(_fromRot), Quaternion.Euler(_toRot), _interpT
-                ).eulerAngles;
-                if (syncScale)
-                    transform.localScale = Vector3.Lerp(_fromScale, _toScale, _interpT);
+                    transform.position = Vector3.Lerp(_fromPos, _toPos, _interpT);
+                    transform.eulerAngles = Quaternion.Slerp(
+                        Quaternion.Euler(_fromRot), Quaternion.Euler(_toRot), _interpT
+                    ).eulerAngles;
+                    if (syncScale)
+                        transform.localScale = Vector3.Lerp(_fromScale, _toScale, _interpT);
+                }
+                else if (_lastUpdateTime >= 0f)
+                {
+                    // Lerp finished — dead reckoning: continue at implied velocity so the
+                    // object coasts until the next packet instead of freezing in place.
+                    // Capped at DEAD_RECKONING_MAX_TIME to limit error if updates stop entirely.
+                    float timeSinceUpdate = Time.time - _lastUpdateTime;
+                    if (timeSinceUpdate <= DEAD_RECKONING_MAX_TIME && _impliedVelocity.sqrMagnitude > 0.0001f)
+                        transform.position = _toPos + _impliedVelocity * timeSinceUpdate;
+                }
             }
 
             // Auto-release: keep claimed while moving, release once settled
@@ -230,6 +248,16 @@ namespace SomniumSpace.Worlds.bently.networking
         /// </summary>
         public void ApplyUpdate(Vector3 pos, Vector3 rot, Vector3? scale = null)
         {
+            // Compute implied velocity BEFORE overwriting _toPos — velocity is the delta
+            // between the previous target and the new one over the elapsed time between updates.
+            // Used by dead reckoning in Update() to coast between packets.
+            float dt = Time.time - _lastUpdateTime;
+            if (_lastUpdateTime >= 0f && dt > 0.001f && dt < 0.5f)
+                _impliedVelocity = (pos - _toPos) / dt;
+            else
+                _impliedVelocity = Vector3.zero;
+            _lastUpdateTime = Time.time;
+
             float duration = GetSmoothingDuration();
             if (duration <= 0f)
             {
@@ -237,6 +265,7 @@ namespace SomniumSpace.Worlds.bently.networking
                 transform.eulerAngles = rot;
                 if (syncScale && scale.HasValue)
                     transform.localScale = scale.Value;
+                _toPos = pos; // keep _toPos in sync for dead reckoning baseline
                 return;
             }
 
@@ -268,6 +297,10 @@ namespace SomniumSpace.Worlds.bently.networking
                 _fromScale = _toScale = scale.Value;
             }
             _interpT = 1f;
+            // A snap is a teleport — zero out implied velocity so dead reckoning doesn't
+            // launch the object in the direction of the discontinuity.
+            _impliedVelocity = Vector3.zero;
+            _lastUpdateTime = Time.time;
         }
 
         /// <summary>
