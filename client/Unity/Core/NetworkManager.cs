@@ -370,50 +370,57 @@ namespace SomniumSpace.Worlds.bently.networking
 
         private void ProcessBinary(byte[] data, int length)
         {
-            byte msgType = data[0];
-
-            switch (msgType)
+            try
             {
-                case 0x01: // Position updates (from master)
-                    HandlePositionUpdates(data, length);
-                    break;
+                byte msgType = data[0];
 
-                case 0x02: // Snapshot
-                    HandleSnapshot(data, length);
-                    break;
+                switch (msgType)
+                {
+                    case 0x01: // Position updates (from master)
+                        HandlePositionUpdates(data, length);
+                        break;
 
-                case 0x03: // Interaction updates (from any client)
-                    HandleInteractionUpdates(data, length);
-                    break;
+                    case 0x02: // Snapshot
+                        HandleSnapshot(data, length);
+                        break;
 
-                case 0x04: // Variable updates (from any client)
-                    HandleVariableUpdate(data, length);
-                    break;
+                    case 0x03: // Interaction updates (from any client)
+                        HandleInteractionUpdates(data, length);
+                        break;
 
-                case 0x05: // Scaled position updates
-                    HandleScaledPositionUpdates(data, length);
-                    break;
+                    case 0x04: // Variable updates (from any client)
+                        HandleVariableUpdate(data, length);
+                        break;
 
-                case 0x09: // Scaled interaction updates
-                    HandleScaledInteractionUpdates(data, length);
-                    break;
+                    case 0x05: // Scaled position updates
+                        HandleScaledPositionUpdates(data, length);
+                        break;
 
-                case 0x06: // Event (RPC) from any client
-                    HandleEvent(data, length);
-                    break;
+                    case 0x09: // Scaled interaction updates
+                        HandleScaledInteractionUpdates(data, length);
+                        break;
 
-                case 0x07: // Animator state from any client
-                    HandleAnimatorState(data, length);
-                    break;
+                    case 0x06: // Event (RPC) from any client
+                        HandleEvent(data, length);
+                        break;
 
-                case 0x08: // Rigidbody velocity from any client
-                    HandleRigidbodyUpdate(data, length);
-                    break;
+                    case 0x07: // Animator state from any client
+                        HandleAnimatorState(data, length);
+                        break;
 
-                case 0xFF: // Control message
-                    if (length >= 2)
-                        HandleControl(data, length);
-                    break;
+                    case 0x08: // Rigidbody velocity from any client
+                        HandleRigidbodyUpdate(data, length);
+                        break;
+
+                    case 0xFF: // Control message
+                        if (length >= 2)
+                            HandleControl(data, length);
+                        break;
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"[Net] ProcessBinary error (type=0x{data[0]:X2}, len={length}): {ex.Message}");
             }
         }
 
