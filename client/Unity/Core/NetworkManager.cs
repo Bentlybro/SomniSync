@@ -449,43 +449,43 @@ namespace SomniumSpace.Worlds.bently.networking
 
                 switch (msgType)
                 {
-                    case 0x01: // Position updates (from master)
+                    case Protocol.MSG_POSITION_UPDATE:
                         HandlePositionUpdates(data, length);
                         break;
 
-                    case 0x02: // Snapshot
+                    case Protocol.MSG_SNAPSHOT:
                         HandleSnapshot(data, length);
                         break;
 
-                    case 0x03: // Interaction updates (from any client)
+                    case Protocol.MSG_INTERACTION_UPDATE:
                         HandleInteractionUpdates(data, length);
                         break;
 
-                    case 0x04: // Variable updates (from any client)
+                    case Protocol.MSG_VARIABLE_UPDATE:
                         HandleVariableUpdate(data, length);
                         break;
 
-                    case 0x05: // Scaled position updates
+                    case Protocol.MSG_POSITION_UPDATE_SCALED:
                         HandleScaledPositionUpdates(data, length);
                         break;
 
-                    case 0x09: // Scaled interaction updates
+                    case Protocol.MSG_SCALED_INTERACTION:
                         HandleScaledInteractionUpdates(data, length);
                         break;
 
-                    case 0x06: // Event (RPC) from any client
+                    case Protocol.MSG_EVENT:
                         HandleEvent(data, length);
                         break;
 
-                    case 0x07: // Animator state from any client
+                    case Protocol.MSG_ANIMATOR:
                         HandleAnimatorState(data, length);
                         break;
 
-                    case 0x08: // Rigidbody velocity from any client
+                    case Protocol.MSG_RIGIDBODY:
                         HandleRigidbodyUpdate(data, length);
                         break;
 
-                    case 0xFF: // Control message
+                    case Protocol.MSG_CONTROL:
                         if (length >= 2)
                             HandleControl(data, length);
                         break;
@@ -507,7 +507,7 @@ namespace SomniumSpace.Worlds.bently.networking
 
             switch (ctrl)
             {
-                case 0x01: // You are master
+                case Protocol.CTRL_YOU_ARE_MASTER:
                     ClientId = BitConverter.ToUInt16(data, 2);
                     IsMaster = true;
                     Debug.Log($"[Net] Assigned as MASTER (client_{ClientId})");
@@ -517,7 +517,7 @@ namespace SomniumSpace.Worlds.bently.networking
                     OnBecameMaster?.Invoke();
                     break;
 
-                case 0x02: // You are spectator
+                case Protocol.CTRL_YOU_ARE_SPECTATOR:
                     ClientId = BitConverter.ToUInt16(data, 2);
                     IsMaster = false;
                     Debug.Log($"[Net] Assigned as SPECTATOR (client_{ClientId})");
@@ -526,13 +526,13 @@ namespace SomniumSpace.Worlds.bently.networking
                     OnBecameSpectator?.Invoke();
                     break;
 
-                case 0x03: // Send snapshot (master only)
+                case Protocol.CTRL_SEND_SNAPSHOT:
                     ushort targetClient = BitConverter.ToUInt16(data, 2);
                     Debug.Log($"[Net] Snapshot requested for client_{targetClient}");
                     SendSnapshot();
                     break;
 
-                case 0x04: // Master changed (you're the new master)
+                case Protocol.CTRL_MASTER_CHANGED:
                     IsMaster = true;
                     Debug.Log($"[Net] Promoted to MASTER");
                     EnablePhysicsOnAll(true);
@@ -540,7 +540,7 @@ namespace SomniumSpace.Worlds.bently.networking
                     OnBecameMaster?.Invoke();
                     break;
 
-                case 0x05: // Remote client claimed an object
+                case Protocol.CTRL_CLAIM:
                     if (length >= 6)
                     {
                         ushort claimObjId = BitConverter.ToUInt16(data, 2);
@@ -552,7 +552,7 @@ namespace SomniumSpace.Worlds.bently.networking
                     }
                     break;
 
-                case 0x06: // Remote client released an object
+                case Protocol.CTRL_RELEASE:
                     if (length >= 6)
                     {
                         ushort releaseObjId = BitConverter.ToUInt16(data, 2);
@@ -563,7 +563,7 @@ namespace SomniumSpace.Worlds.bently.networking
                     }
                     break;
 
-                case 0x07: // Player position (for AOI)
+                case Protocol.CTRL_PLAYER_POSITION:
                     if (length >= 10)
                     {
                         ushort posClientId = BitConverter.ToUInt16(data, 2);
@@ -711,9 +711,9 @@ namespace SomniumSpace.Worlds.bently.networking
             if (_localPlayerTransform == null) return;
 
             Vector3 pos = _localPlayerTransform.position;
-            // [0xFF][0x07][u16 client_id][half x][half y][half z]
+            // [CTRL][PLAYER_POSITION][u16 client_id][half x][half y][half z]
             byte[] buf = new byte[10];
-            buf[0] = 0xFF;
+            buf[0] = Protocol.MSG_CONTROL;
             buf[1] = Protocol.CTRL_PLAYER_POSITION;
             Protocol.WriteU16(buf, 2, ClientId);
             Protocol.WriteHalf(buf, 4, pos.x);
@@ -763,7 +763,7 @@ namespace SomniumSpace.Worlds.bently.networking
             {
                 int size = 3 + movedCount * Protocol.BYTES_PER_ENTITY;
                 byte[] buf = new byte[size];
-                buf[0] = 0x01;
+                buf[0] = Protocol.MSG_POSITION_UPDATE;
                 WriteU16(buf, 1, (ushort)movedCount);
                 int offset = 3;
                 foreach (var obj in _objects)
@@ -820,7 +820,7 @@ namespace SomniumSpace.Worlds.bently.networking
             {
                 int size = 3 + movedCount * Protocol.BYTES_PER_ENTITY;
                 byte[] buf = new byte[size];
-                buf[0] = 0x03;
+                buf[0] = Protocol.MSG_INTERACTION_UPDATE;
                 WriteU16(buf, 1, (ushort)movedCount);
                 int offset = 3;
                 foreach (var obj in _objects)
@@ -839,7 +839,7 @@ namespace SomniumSpace.Worlds.bently.networking
             {
                 int size = 3 + movedScaledCount * Protocol.BYTES_PER_ENTITY_SCALED;
                 byte[] buf = new byte[size];
-                buf[0] = 0x09;
+                buf[0] = Protocol.MSG_SCALED_INTERACTION;
                 WriteU16(buf, 1, (ushort)movedScaledCount);
                 int offset = 3;
                 foreach (var obj in _objects)
@@ -862,7 +862,7 @@ namespace SomniumSpace.Worlds.bently.networking
             if (obj.syncScale)
             {
                 byte[] buf = new byte[3 + Protocol.BYTES_PER_ENTITY_SCALED];
-                buf[0] = 0x09;
+                buf[0] = Protocol.MSG_SCALED_INTERACTION;
                 WriteU16(buf, 1, 1);
                 Protocol.WriteEntityScaled(buf, 3, obj.LocalId,
                     obj.transform.position, obj.transform.eulerAngles, obj.transform.localScale);
@@ -872,7 +872,7 @@ namespace SomniumSpace.Worlds.bently.networking
             else
             {
                 byte[] buf = new byte[3 + Protocol.BYTES_PER_ENTITY];
-                buf[0] = 0x03;
+                buf[0] = Protocol.MSG_INTERACTION_UPDATE;
                 WriteU16(buf, 1, 1);
                 WriteEntityCompact(buf, 3, obj.LocalId,
                     obj.transform.position, obj.transform.eulerAngles);
@@ -886,10 +886,10 @@ namespace SomniumSpace.Worlds.bently.networking
         /// </summary>
         public void SendClaim(ushort objectId)
         {
-            // [0xFF][0x05][u16 object_id][u16 client_id]
+            // [0xFF][CTRL_CLAIM][u16 object_id][u16 client_id]
             byte[] buf = new byte[6];
-            buf[0] = 0xFF;
-            buf[1] = 0x05;
+            buf[0] = Protocol.MSG_CONTROL;
+            buf[1] = Protocol.CTRL_CLAIM;
             WriteU16(buf, 2, objectId);
             WriteU16(buf, 4, ClientId);
             SendBinary(buf);
@@ -900,10 +900,10 @@ namespace SomniumSpace.Worlds.bently.networking
         /// </summary>
         public void SendRelease(ushort objectId)
         {
-            // [0xFF][0x06][u16 object_id][u16 client_id]
+            // [0xFF][CTRL_RELEASE][u16 object_id][u16 client_id]
             byte[] buf = new byte[6];
-            buf[0] = 0xFF;
-            buf[1] = 0x06;
+            buf[0] = Protocol.MSG_CONTROL;
+            buf[1] = Protocol.CTRL_RELEASE;
             WriteU16(buf, 2, objectId);
             WriteU16(buf, 4, ClientId);
             SendBinary(buf);
@@ -1115,7 +1115,7 @@ namespace SomniumSpace.Worlds.bently.networking
             {
                 int size = 3 + normalCount * Protocol.BYTES_PER_ENTITY;
                 byte[] buf = new byte[size];
-                buf[0] = 0x02;
+                buf[0] = Protocol.MSG_SNAPSHOT;
                 WriteU16(buf, 1, (ushort)normalCount);
                 int offset = 3;
                 foreach (var obj in _objects)
