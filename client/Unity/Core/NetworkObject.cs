@@ -407,13 +407,21 @@ namespace SomniumSpace.Worlds.bently.networking
 
         private float GetSmoothingDuration()
         {
+            // Base unit = one send interval. Durations relative to tick rate so the lerp
+            // always finishes close to when the NEXT packet arrives regardless of sendRate.
+            // Fixed values (50ms, 100ms) were longer than the 16ms send interval at 60Hz,
+            // causing perpetual-chase where objects never reached their target position.
+            float tick = NetworkManager.Instance != null
+                ? 1f / NetworkManager.Instance.sendRate
+                : 0.016f; // fallback if called before NetworkManager is ready
+
             switch (smoothing)
             {
-                case SmoothingMode.None: return 0f;
-                case SmoothingMode.Low: return 0.033f;     // ~30Hz
-                case SmoothingMode.Medium: return 0.05f;   // 50ms
-                case SmoothingMode.High: return 0.1f;      // 100ms
-                default: return 0.05f;
+                case SmoothingMode.None:   return 0f;
+                case SmoothingMode.Low:    return tick * 0.5f;  // finishes mid-tick (minimal latency)
+                case SmoothingMode.Medium: return tick;          // exactly one send interval
+                case SmoothingMode.High:   return tick * 1.5f;  // 1.5 ticks (smoothest, most latency)
+                default:                   return tick;
             }
         }
 
