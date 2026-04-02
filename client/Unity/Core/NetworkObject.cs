@@ -125,7 +125,11 @@ namespace SomniumSpace.Worlds.bently.networking
                     // Capped at DEAD_RECKONING_MAX_TIME to limit error if updates stop entirely.
                     float timeSinceUpdate = Time.time - _lastUpdateTime;
                     if (timeSinceUpdate <= DEAD_RECKONING_MAX_TIME && _impliedVelocity.sqrMagnitude > 0.0001f)
-                        transform.position = _toPos + _impliedVelocity * timeSinceUpdate;
+                    {
+                        // Decay extrapolation over time to prevent overshoot
+                        float decay = 1f - Mathf.Clamp01(timeSinceUpdate / DEAD_RECKONING_MAX_TIME);
+                        transform.position = _toPos + _impliedVelocity * timeSinceUpdate * decay;
+                    }
                 }
             }
 
@@ -273,8 +277,8 @@ namespace SomniumSpace.Worlds.bently.networking
             // target is close to the old one (object moving predictably), just slide the
             // target without resetting _interpT. Resetting would stall the lerp back to 0
             // every 16ms on tight packet bursts, making objects appear to stutter in place.
-            const float SMOOTH_CORRECTION_THRESHOLD = 0.3f;
-            if (_interpT > 0.6f && (pos - _toPos).sqrMagnitude <= SMOOTH_CORRECTION_THRESHOLD * SMOOTH_CORRECTION_THRESHOLD)
+            const float SMOOTH_CORRECTION_THRESHOLD = 0.15f;
+            if (_interpT > 0.85f && (pos - _toPos).sqrMagnitude <= SMOOTH_CORRECTION_THRESHOLD * SMOOTH_CORRECTION_THRESHOLD)
             {
                 _toPos = pos;
                 _toRot = rot;
@@ -468,10 +472,10 @@ namespace SomniumSpace.Worlds.bently.networking
             switch (smoothing)
             {
                 case SmoothingMode.None:   return 0f;
-                case SmoothingMode.Low:    return tick * 0.5f;  // finishes mid-tick (minimal latency)
-                case SmoothingMode.Medium: return tick;          // exactly one send interval
-                case SmoothingMode.High:   return tick * 1.5f;  // 1.5 ticks (smoothest, most latency)
-                default:                   return tick;
+                case SmoothingMode.Low:    return tick;           // one tick (responsive)
+                case SmoothingMode.Medium: return tick * 2f;      // two ticks (~33ms at 60Hz, smooth default)
+                case SmoothingMode.High:   return tick * 3f;      // three ticks (~50ms at 60Hz, smoothest)
+                default:                   return tick * 2f;
             }
         }
 
