@@ -53,12 +53,6 @@ namespace SomniumSpace.Worlds.bently.networking
         private float _interpT = 1f;
         private float _interpDuration = 0.016f; // ~60Hz
 
-        // Dead reckoning — continue at implied velocity after lerp completes so the object
-        // coasts smoothly instead of freezing while waiting for the next packet.
-        private Vector3 _impliedVelocity;
-        private float _lastUpdateTime = -1f;     // -1 = no update received yet
-        private const float DEAD_RECKONING_MAX_TIME = 0.15f; // cap at 150ms to limit error
-
         // Delta tracking (for sending updates)
         private Vector3 _lastSentPos;
         private Vector3 _lastSentRot;
@@ -103,34 +97,16 @@ namespace SomniumSpace.Worlds.bently.networking
 
         private void Update()
         {
-            if (!IsClaimedLocally)
+            // Spectator interpolation (only when not claimed locally)
+            if (_interpT < 1f && !IsClaimedLocally)
             {
-                if (_interpT < 1f)
-                {
-                    // Active lerp toward the latest received position
-                    _interpT += Time.deltaTime / _interpDuration;
-                    if (_interpT > 1f) _interpT = 1f;
+                _interpT += Time.deltaTime / _interpDuration;
+                if (_interpT > 1f) _interpT = 1f;
 
-                    transform.position = Vector3.Lerp(_fromPos, _toPos, _interpT);
-                    transform.eulerAngles = Quaternion.Slerp(
-                        Quaternion.Euler(_fromRot), Quaternion.Euler(_toRot), _interpT
-                    ).eulerAngles;
-                    if (syncScale)
-                        transform.localScale = Vector3.Lerp(_fromScale, _toScale, _interpT);
-                }
-                else if (_lastUpdateTime >= 0f)
-                {
-                    // Lerp finished — dead reckoning: continue at implied velocity so the
-                    // object coasts until the next packet instead of freezing in place.
-                    // Capped at DEAD_RECKONING_MAX_TIME to limit error if updates stop entirely.
-                    float timeSinceUpdate = Time.time - _lastUpdateTime;
-                    if (timeSinceUpdate <= DEAD_RECKONING_MAX_TIME && _impliedVelocity.sqrMagnitude > 0.0001f)
-                    {
-                        // Decay extrapolation over time to prevent overshoot
-                        float decay = 1f - Mathf.Clamp01(timeSinceUpdate / DEAD_RECKONING_MAX_TIME);
-                        transform.position = _toPos + _impliedVelocity * timeSinceUpdate * decay;
-                    }
-                }
+                transform.position = Vector3.Lerp(_fromPos, _toPos, _interpT);
+                transform.eulerAngles = LerpAngles(_fromRot, _toRot, _interpT);
+                if (syncScale)
+                    transform.localScale = Vector3.Lerp(_fromScale, _toScale, _interpT);
             }
 
             // Auto-release: keep claimed while moving, release once settled
@@ -252,16 +228,6 @@ namespace SomniumSpace.Worlds.bently.networking
         /// </summary>
         public void ApplyUpdate(Vector3 pos, Vector3 rot, Vector3? scale = null)
         {
-            // Compute implied velocity BEFORE overwriting _toPos — velocity is the delta
-            // between the previous target and the new one over the elapsed time between updates.
-            // Used by dead reckoning in Update() to coast between packets.
-            float dt = Time.time - _lastUpdateTime;
-            if (_lastUpdateTime >= 0f && dt > 0.001f && dt < 0.5f)
-                _impliedVelocity = (pos - _toPos) / dt;
-            else
-                _impliedVelocity = Vector3.zero;
-            _lastUpdateTime = Time.time;
-
             float duration = GetSmoothingDuration();
             if (duration <= 0f)
             {
@@ -269,22 +235,6 @@ namespace SomniumSpace.Worlds.bently.networking
                 transform.eulerAngles = rot;
                 if (syncScale && scale.HasValue)
                     transform.localScale = scale.Value;
-                _toPos = pos; // keep _toPos in sync for dead reckoning baseline
-                return;
-            }
-
-            // Smooth correction: if the current lerp is nearly complete (>60%) AND the new
-            // target is close to the old one (object moving predictably), just slide the
-            // target without resetting _interpT. Resetting would stall the lerp back to 0
-            // every 16ms on tight packet bursts, making objects appear to stutter in place.
-            const float SMOOTH_CORRECTION_THRESHOLD = 0.15f;
-            if (_interpT > 0.85f && (pos - _toPos).sqrMagnitude <= SMOOTH_CORRECTION_THRESHOLD * SMOOTH_CORRECTION_THRESHOLD)
-            {
-                _toPos = pos;
-                _toRot = rot;
-                if (syncScale && scale.HasValue)
-                    _toScale = scale.Value;
-                // _interpT continues naturally — no restart
                 return;
             }
 
@@ -316,10 +266,6 @@ namespace SomniumSpace.Worlds.bently.networking
                 _fromScale = _toScale = scale.Value;
             }
             _interpT = 1f;
-            // A snap is a teleport — zero out implied velocity so dead reckoning doesn't
-            // launch the object in the direction of the discontinuity.
-            _impliedVelocity = Vector3.zero;
-            _lastUpdateTime = Time.time;
         }
 
         /// <summary>
@@ -461,23 +407,23 @@ namespace SomniumSpace.Worlds.bently.networking
 
         private float GetSmoothingDuration()
         {
-            // Base unit = one send interval. Durations relative to tick rate so the lerp
-            // always finishes close to when the NEXT packet arrives regardless of sendRate.
-            // Fixed values (50ms, 100ms) were longer than the 16ms send interval at 60Hz,
-            // causing perpetual-chase where objects never reached their target position.
-            float tick = NetworkManager.Instance != null
-                ? 1f / NetworkManager.Instance.sendRate
-                : 0.016f; // fallback if called before NetworkManager is ready
-
             switch (smoothing)
             {
-                case SmoothingMode.None:   return 0f;
-                case SmoothingMode.Low:    return tick;           // one tick (responsive)
-                case SmoothingMode.Medium: return tick * 2f;      // two ticks (~33ms at 60Hz, smooth default)
-                case SmoothingMode.High:   return tick * 3f;      // three ticks (~50ms at 60Hz, smoothest)
-                default:                   return tick * 2f;
+                case SmoothingMode.None: return 0f;
+                case SmoothingMode.Low: return 0.033f;     // ~30Hz
+                case SmoothingMode.Medium: return 0.05f;   // 50ms
+                case SmoothingMode.High: return 0.1f;      // 100ms
+                default: return 0.05f;
             }
         }
 
+        private static Vector3 LerpAngles(Vector3 from, Vector3 to, float t)
+        {
+            return new Vector3(
+                Mathf.LerpAngle(from.x, to.x, t),
+                Mathf.LerpAngle(from.y, to.y, t),
+                Mathf.LerpAngle(from.z, to.z, t)
+            );
+        }
     }
 }
