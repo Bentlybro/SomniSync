@@ -7,11 +7,11 @@ use tokio_tungstenite::tungstenite::Message;
 use crate::client::{broadcast_except, send, Client};
 use crate::room::RoomMap;
 use crate::protocol::{
-    ctrl_msg, ctrl_msg_u16, CTRL_CLAIM, CTRL_MASTER_CHANGED, CTRL_PLAYER_POSITION,
-    CTRL_RELEASE, CTRL_SEND_SNAPSHOT, CTRL_YOU_ARE_MASTER, CTRL_YOU_ARE_SPECTATOR,
-    MSG_ANIMATOR, MSG_EVENT, MSG_INTERACTION_UPDATE, MSG_POSITION_UPDATE,
-    MSG_POSITION_UPDATE_SCALED, MSG_RIGIDBODY, MSG_SCALED_INTERACTION, MSG_SNAPSHOT,
-    MSG_VARIABLE_UPDATE,
+    ctrl_msg, ctrl_msg_u16, CTRL_AUTHORITY_ASSIGN, CTRL_CLAIM, CTRL_MASTER_CHANGED,
+    CTRL_PLAYER_POSITION, CTRL_RELEASE, CTRL_SEND_SNAPSHOT, CTRL_YOU_ARE_MASTER,
+    CTRL_YOU_ARE_SPECTATOR, MSG_ANIMATOR, MSG_EVENT, MSG_INTERACTION_UPDATE,
+    MSG_POSITION_UPDATE, MSG_POSITION_UPDATE_SCALED, MSG_POSITION_VELOCITY, MSG_RIGIDBODY,
+    MSG_SCALED_INTERACTION, MSG_SNAPSHOT, MSG_SNAPSHOT_SCALED, MSG_VARIABLE_UPDATE,
 };
 use crate::room::Room;
 
@@ -178,8 +178,15 @@ async fn handle_binary(room: &Arc<RwLock<Room>>, client_id: u16, data: &[u8], ro
             broadcast_except(&room.clients, client_id, data).await;
         }
 
+        // 0x0B — authority position + velocity, any client can send, broadcast to all others
+        MSG_POSITION_VELOCITY => {
+            let room = room.read().await;
+            broadcast_except(&room.clients, client_id, data).await;
+        }
+
         MSG_INTERACTION_UPDATE | MSG_VARIABLE_UPDATE | MSG_POSITION_UPDATE_SCALED
-        | MSG_EVENT | MSG_ANIMATOR | MSG_RIGIDBODY | MSG_SCALED_INTERACTION => {
+        | MSG_SNAPSHOT_SCALED | MSG_EVENT | MSG_ANIMATOR | MSG_RIGIDBODY
+        | MSG_SCALED_INTERACTION => {
             let room = room.read().await;
             broadcast_except(&room.clients, client_id, data).await;
         }
@@ -204,9 +211,18 @@ async fn handle_control(room: &Arc<RwLock<Room>>, client_id: u16, data: &[u8], r
     }
     let ctrl = data[1];
 
-    // Player position only needs 2 byte header check, not 6
+    // Player position — broadcast as-is
     if ctrl == CTRL_PLAYER_POSITION {
         if data.len() >= 10 {
+            let room = room.read().await;
+            broadcast_except(&room.clients, client_id, data).await;
+        }
+        return;
+    }
+
+    // Authority assignment — broadcast as-is (format differs from claim/release)
+    if ctrl == CTRL_AUTHORITY_ASSIGN {
+        if data.len() >= 6 {
             let room = room.read().await;
             broadcast_except(&room.clients, client_id, data).await;
         }
@@ -216,7 +232,7 @@ async fn handle_control(room: &Arc<RwLock<Room>>, client_id: u16, data: &[u8], r
     if data.len() < 6 {
         return;
     }
-    let obj_id = u16::from_le_bytes([data[2], data[3]]);
+    let obj_id    = u16::from_le_bytes([data[2], data[3]]);
     let sender_id = u16::from_le_bytes([data[4], data[5]]);
 
     match ctrl {

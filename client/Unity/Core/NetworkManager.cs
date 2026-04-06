@@ -88,9 +88,14 @@ namespace SomniumSpace.Worlds.bently.networking
         private Dictionary<ushort, Vector3> _playerPositions = new Dictionary<ushort, Vector3>();
         private Dictionary<ushort, float> _playerLastSeen = new Dictionary<ushort, float>();
         private Transform _localPlayerTransform;
+        private bool _aoiTransformWarningLogged;
         private float _nextPlayerPosSendTime;
         private const float PLAYER_POS_SEND_RATE = 5f; // 5Hz
         private const float PLAYER_TIMEOUT = 5f; // Remove player after 5s of no updates
+
+        // Sequence numbers — track per-sender to discard stale 0x0B packets
+        private Dictionary<ushort, ushort> _receivedSequences = new Dictionary<ushort, ushort>();
+        private ushort _sendSequence;
 
         // Stats (public for NetworkStats overlay)
         public static int MessagesSent;
@@ -130,20 +135,16 @@ namespace SomniumSpace.Worlds.bently.networking
 
             if (!IsConnected) return;
 
-            // Attach push detector to local player (once)
-            if (!_pushDetectorAttached && !IsMaster)
-            {
+            // Attach push detector to local player (once) — all clients can push/grab
+            if (!_pushDetectorAttached)
                 AttachPushDetector();
-            }
 
             // Send position updates at configured rate
             if (Time.time >= _nextSendTime)
             {
                 _nextSendTime = Time.time + _sendInterval;
-
-                if (IsMaster)
-                    SendPositionUpdates();
-
+                // Any client sends updates for objects they have StateAuthority over
+                SendAuthorityPositionUpdates();
                 // Any client sends interaction updates for objects they've claimed
                 SendInteractionUpdates();
             }
@@ -167,11 +168,12 @@ namespace SomniumSpace.Worlds.bently.networking
                     SendSnapshot();
             }
 
-            // AOI: master recalculates active objects periodically
+            // AOI + authority: master recalculates periodically
             if (IsMaster && enableAOI && Time.time >= _nextAOICheckTime)
             {
                 _nextAOICheckTime = Time.time + (1f / aoiCheckRate);
                 UpdateAOI();
+                RecalculateAuthority();
             }
 
             // Spectators send their position to master for AOI
@@ -395,6 +397,10 @@ namespace SomniumSpace.Worlds.bently.networking
                     HandleRigidbodyUpdate(data, length);
                     break;
 
+                case 0x0B: // Position + velocity from any authority client (dead reckoning)
+                    HandlePositionVelocityUpdates(data, length);
+                    break;
+
                 case 0xFF: // Control message
                     if (length >= 2)
                         HandleControl(data, length);
@@ -416,7 +422,7 @@ namespace SomniumSpace.Worlds.bently.networking
                     ClientId = BitConverter.ToUInt16(data, 2);
                     IsMaster = true;
                     Debug.Log($"[Net] Assigned as MASTER (client_{ClientId})");
-                    EnablePhysicsOnAll(true);
+                    AssignAllAuthorityToSelf(); // starts with authority for everything
                     SendSnapshot();
                     if (!IsNetworkReady) { IsNetworkReady = true; OnNetworkReady?.Invoke(); }
                     OnBecameMaster?.Invoke();
@@ -426,7 +432,7 @@ namespace SomniumSpace.Worlds.bently.networking
                     ClientId = BitConverter.ToUInt16(data, 2);
                     IsMaster = false;
                     Debug.Log($"[Net] Assigned as SPECTATOR (client_{ClientId})");
-                    EnablePhysicsOnAll(false);
+                    // No authority yet — master will distribute via CTRL_AUTHORITY_ASSIGN
                     if (!IsNetworkReady) { IsNetworkReady = true; OnNetworkReady?.Invoke(); }
                     OnBecameSpectator?.Invoke();
                     break;
@@ -440,9 +446,25 @@ namespace SomniumSpace.Worlds.bently.networking
                 case 0x04: // Master changed (you're the new master)
                     IsMaster = true;
                     Debug.Log($"[Net] Promoted to MASTER");
-                    EnablePhysicsOnAll(true);
+                    AssignAllAuthorityToSelf();
                     SendSnapshot();
                     OnBecameMaster?.Invoke();
+                    break;
+
+                case 0x0A: // Authority assignment: [u16 clientId][u16 count][u16... objectIds]
+                    if (length >= 7)
+                    {
+                        ushort assignedClient = Protocol.ReadU16(data, 2);
+                        ushort assignCount    = Protocol.ReadU16(data, 4);
+                        int aOffset = 6;
+                        for (int i = 0; i < assignCount && aOffset + 2 <= length; i++)
+                        {
+                            ushort objId = Protocol.ReadU16(data, aOffset); aOffset += 2;
+                            if (_objectMap.TryGetValue(objId, out var assignObj))
+                                assignObj.SetStateAuthority(assignedClient);
+                        }
+                        Debug.Log($"[Net] Authority: client_{assignedClient} now owns {assignCount} objects");
+                    }
                     break;
 
                 case 0x05: // Remote client claimed an object
@@ -482,13 +504,16 @@ namespace SomniumSpace.Worlds.bently.networking
             }
         }
 
-        private void EnablePhysicsOnAll(bool enable)
+        /// <summary>
+        /// Assign StateAuthority for all objects to this client (called on becoming master).
+        /// This enables physics on all objects and marks us as authority for sending updates.
+        /// </summary>
+        private void AssignAllAuthorityToSelf()
         {
             foreach (var obj in _objects)
             {
-                if (enable)
-                    obj.IsAOIActive = true; // Reset AOI on master assignment
-                obj.SetPhysics(enable);
+                obj.IsAOIActive = true;
+                obj.SetStateAuthority(ClientId);
             }
         }
 
@@ -531,10 +556,7 @@ namespace SomniumSpace.Worlds.bently.networking
                 playerPositions.Add(kvp.Value);
 
             if (playerPositions.Count == 0)
-            {
-                Debug.LogWarning("[Net] AOI: no player positions found — all objects remain active. Assign 'Local Player Transform Override' on NetworkManager.");
                 return;
-            }
 
             float activateRadiusSq = aoiRadius * aoiRadius;
             float deactivateRadiusSq = (aoiRadius + aoiHysteresis) * (aoiRadius + aoiHysteresis);
@@ -620,20 +642,29 @@ namespace SomniumSpace.Worlds.bently.networking
                 return cc.transform;
             }
 
-            // 3. Fall back to main camera
+            // 3. Fall back to main camera (tagged MainCamera)
             if (Camera.main != null)
                 return Camera.main.transform;
 
-            Debug.LogWarning("[Net] AOI: could not find local player transform. Assign 'Local Player Transform Override' on NetworkManager or AOI will not deactivate out-of-range objects.");
+            // 4. Fall back to any active camera in the scene
+            var anyCam = FindObjectsByType<Camera>(FindObjectsSortMode.None);
+            if (anyCam.Length > 0)
+                return anyCam[0].transform;
+
+            if (!_aoiTransformWarningLogged)
+            {
+                _aoiTransformWarningLogged = true;
+                Debug.LogWarning("[Net] AOI: could not find local player transform. Assign 'Local Player Transform Override' on NetworkManager, or tag your camera as MainCamera.");
+            }
             return null;
         }
 
         // =====================================================================
-        // Position Updates (0x01) — master sends, spectators receive
+        // Authority position updates (0x0B) — any client sends for its owned objects
+        // Format: [0x0B][u16 senderClientId][u16 sequence][u16 count][20B entities...]
         // =====================================================================
-        // Compact format: [0x01][u16 count][per entity: u16 id + 6B half-pos + 6B u16-rot = 14B]
 
-        private void SendPositionUpdates()
+        private void SendAuthorityPositionUpdates()
         {
             if (_objects.Count == 0) return;
 
@@ -641,34 +672,38 @@ namespace SomniumSpace.Worlds.bently.networking
             int movedScaledCount = 0;
             foreach (var obj in _objects)
             {
+                if (!obj.HasStateAuthority) continue;
+                if (!obj.IsAOIActive) continue;
                 if (obj.IsClaimedByRemote) continue;
-                if (!obj.IsAOIActive) continue; // AOI: skip frozen objects
                 if (!obj.HasMoved(positionThreshold, rotationThreshold)) continue;
                 if (obj.syncScale) movedScaledCount++;
                 else movedCount++;
             }
 
-            // Send non-scaled objects (0x01)
+            // 0x0B — non-scaled with velocity for dead reckoning
             if (movedCount > 0)
             {
-                int size = 3 + movedCount * Protocol.BYTES_PER_ENTITY;
+                _sendSequence++;
+                int size = 7 + movedCount * Protocol.BYTES_PER_ENTITY_VELOCITY;
                 byte[] buf = new byte[size];
-                buf[0] = 0x01;
-                WriteU16(buf, 1, (ushort)movedCount);
-                int offset = 3;
+                buf[0] = Protocol.MSG_POSITION_VELOCITY;
+                Protocol.WriteU16(buf, 1, ClientId);
+                Protocol.WriteU16(buf, 3, _sendSequence);
+                Protocol.WriteU16(buf, 5, (ushort)movedCount);
+                int offset = 7;
                 foreach (var obj in _objects)
                 {
-                    if (obj.IsClaimedByRemote || obj.syncScale) continue;
-                    if (!obj.IsAOIActive) continue;
+                    if (!obj.HasStateAuthority || obj.syncScale) continue;
+                    if (!obj.IsAOIActive || obj.IsClaimedByRemote) continue;
                     if (!obj.HasMoved(positionThreshold, rotationThreshold)) continue;
-                    offset = WriteEntityCompact(buf, offset, obj.LocalId,
-                        obj.transform.position, obj.transform.eulerAngles);
+                    offset = Protocol.WriteEntityVelocity(buf, offset, obj.LocalId,
+                        obj.transform.position, obj.transform.eulerAngles, obj.GetCurrentVelocity());
                     obj.MarkSent();
                 }
                 SendBinary(buf);
             }
 
-            // Send scaled objects (0x05)
+            // 0x05 — scaled objects (velocity not needed; scale-synced objects are usually slow)
             if (movedScaledCount > 0)
             {
                 int size = 3 + movedScaledCount * Protocol.BYTES_PER_ENTITY_SCALED;
@@ -678,8 +713,8 @@ namespace SomniumSpace.Worlds.bently.networking
                 int offset = 3;
                 foreach (var obj in _objects)
                 {
-                    if (obj.IsClaimedByRemote || !obj.syncScale) continue;
-                    if (!obj.IsAOIActive) continue;
+                    if (!obj.HasStateAuthority || !obj.syncScale) continue;
+                    if (!obj.IsAOIActive || obj.IsClaimedByRemote) continue;
                     if (!obj.HasMoved(positionThreshold, rotationThreshold)) continue;
                     offset = Protocol.WriteEntityScaled(buf, offset, obj.LocalId,
                         obj.transform.position, obj.transform.eulerAngles, obj.transform.localScale);
@@ -687,6 +722,67 @@ namespace SomniumSpace.Worlds.bently.networking
                 }
                 SendBinary(buf);
             }
+        }
+
+        // =====================================================================
+        // Zone-based authority redistribution (master only, runs at AOI rate)
+        // =====================================================================
+
+        private void RecalculateAuthority()
+        {
+            if (!IsMaster) return;
+
+            // Build list of all player positions
+            var players = new System.Collections.Generic.List<(ushort clientId, Vector3 pos)>();
+            if (_localPlayerTransform != null)
+                players.Add((ClientId, _localPlayerTransform.position));
+            foreach (var kvp in _playerPositions)
+                players.Add((kvp.Key, kvp.Value));
+
+            // Nothing to distribute if only one player
+            if (players.Count <= 1) return;
+
+            // For each active object, find nearest player and check if authority should change
+            var newAssignments = new Dictionary<ushort, List<ushort>>(); // clientId → objIds
+
+            foreach (var obj in _objects)
+            {
+                if (obj.IsClaimedByRemote) continue; // never reassign a grabbed object
+                if (!obj.IsAOIActive) continue;       // frozen objects stay with current authority
+
+                ushort nearestClient = ClientId;
+                float  nearestDistSq = float.MaxValue;
+
+                foreach (var (cid, pos) in players)
+                {
+                    float distSq = (obj.transform.position - pos).sqrMagnitude;
+                    if (distSq < nearestDistSq) { nearestDistSq = distSq; nearestClient = cid; }
+                }
+
+                if (obj.StateAuthorityId != nearestClient)
+                {
+                    if (!newAssignments.ContainsKey(nearestClient))
+                        newAssignments[nearestClient] = new List<ushort>();
+                    newAssignments[nearestClient].Add(obj.LocalId);
+                }
+            }
+
+            foreach (var kvp in newAssignments)
+                SendAuthorityAssignment(kvp.Key, kvp.Value);
+        }
+
+        private void SendAuthorityAssignment(ushort clientId, List<ushort> objectIds)
+        {
+            // [0xFF][0x0A][u16 clientId][u16 count][u16... objectIds]
+            int size = 6 + objectIds.Count * 2;
+            byte[] buf = new byte[size];
+            buf[0] = 0xFF;
+            buf[1] = Protocol.CTRL_AUTHORITY_ASSIGN;
+            Protocol.WriteU16(buf, 2, clientId);
+            Protocol.WriteU16(buf, 4, (ushort)objectIds.Count);
+            int offset = 6;
+            foreach (var objId in objectIds) { Protocol.WriteU16(buf, offset, objId); offset += 2; }
+            SendBinary(buf);
         }
 
         /// <summary>
@@ -799,9 +895,57 @@ namespace SomniumSpace.Worlds.bently.networking
             SendBinary(buf);
         }
 
+        // =====================================================================
+        // Position + velocity updates (0x0B) — dead reckoning
+        // Format: [0x0B][u16 senderClientId][u16 sequence][u16 count][20B entities...]
+        // =====================================================================
+
+        private void HandlePositionVelocityUpdates(byte[] data, int length)
+        {
+            if (!_sceneReady || length < 7) return;
+
+            ushort senderClientId = Protocol.ReadU16(data, 1);
+            ushort sequence       = Protocol.ReadU16(data, 3);
+
+            // Discard stale/duplicate packets using per-sender sequence numbers
+            if (_receivedSequences.TryGetValue(senderClientId, out ushort lastSeq))
+            {
+                ushort diff = unchecked((ushort)(sequence - lastSeq));
+                if (diff == 0 || diff > 32768) return; // duplicate or arrived out-of-order
+            }
+            _receivedSequences[senderClientId] = sequence;
+
+            ushort count = Protocol.ReadU16(data, 5);
+            int offset = 7;
+
+            for (int i = 0; i < count && offset + Protocol.BYTES_PER_ENTITY_VELOCITY <= length; i++)
+            {
+                ushort localId;
+                Vector3 pos, rot, vel;
+                offset = Protocol.ReadEntityVelocity(data, offset, out localId, out pos, out rot, out vel);
+
+                if (_objectMap.TryGetValue(localId, out var obj))
+                {
+                    if (obj.HasStateAuthority) continue; // we simulate this, skip
+                    if (obj.IsClaimedLocally)  continue; // we're holding it, skip
+                    if (_snapFramesRemaining > 0)
+                        obj.SnapTo(pos, rot);
+                    else
+                        obj.ApplyUpdate(pos, rot, vel);
+                }
+            }
+
+            if (_snapFramesRemaining > 0)
+                _snapFramesRemaining--;
+        }
+
+        // =====================================================================
+        // Legacy position updates (0x01) — kept for backwards compatibility
+        // =====================================================================
+
         private void HandlePositionUpdates(byte[] data, int length)
         {
-            if (IsMaster || !_sceneReady) return;
+            if (!_sceneReady) return;
 
             ushort count = BitConverter.ToUInt16(data, 1);
             int offset = 3;
@@ -814,6 +958,8 @@ namespace SomniumSpace.Worlds.bently.networking
 
                 if (_objectMap.TryGetValue(localId, out var obj))
                 {
+                    if (obj.HasStateAuthority) continue; // we simulate this
+                    if (obj.IsClaimedLocally)  continue;
                     if (_snapFramesRemaining > 0)
                         obj.SnapTo(pos, rot);
                     else
@@ -858,7 +1004,7 @@ namespace SomniumSpace.Worlds.bently.networking
 
         private void HandleScaledPositionUpdates(byte[] data, int length)
         {
-            if (IsMaster || !_sceneReady) return;
+            if (!_sceneReady) return;
 
             ushort count = BitConverter.ToUInt16(data, 1);
             int offset = 3;
@@ -871,6 +1017,8 @@ namespace SomniumSpace.Worlds.bently.networking
 
                 if (_objectMap.TryGetValue(localId, out var obj))
                 {
+                    if (obj.HasStateAuthority) continue;
+                    if (obj.IsClaimedLocally)  continue;
                     if (_snapFramesRemaining > 0)
                         obj.SnapTo(pos, rot, scale);
                     else
@@ -1039,7 +1187,7 @@ namespace SomniumSpace.Worlds.bently.networking
 
         private void HandleSnapshot(byte[] data, int length)
         {
-            if (IsMaster || !_sceneReady) return;
+            if (!_sceneReady) return;
 
             ushort count = BitConverter.ToUInt16(data, 1);
             int offset = 3;
@@ -1053,12 +1201,13 @@ namespace SomniumSpace.Worlds.bently.networking
 
                 if (_objectMap.TryGetValue(localId, out var obj))
                 {
+                    // Don't override objects we have authority for — our simulation is more accurate
+                    if (obj.HasStateAuthority) continue;
                     obj.SnapTo(pos, rot);
                     applied++;
                 }
             }
 
-            // Snap next few position updates too (catch up to current state fast)
             _snapFramesRemaining = SNAP_FRAMES_AFTER_SNAPSHOT;
             Debug.Log($"[Net] Snapshot applied: {applied}/{count} objects");
         }

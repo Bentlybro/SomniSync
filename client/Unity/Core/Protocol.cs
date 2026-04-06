@@ -10,30 +10,51 @@ namespace SomniumSpace.Worlds.bently.networking
     public static class Protocol
     {
         // =====================================================================
-        // Protocol constants
+        // Message types
         // =====================================================================
 
-        public const byte MSG_POSITION_UPDATE = 0x01;
-        public const byte MSG_SNAPSHOT = 0x02;
-        public const byte MSG_INTERACTION_UPDATE = 0x03;
-        public const byte MSG_VARIABLE_UPDATE = 0x04;
-        public const byte MSG_POSITION_UPDATE_SCALED = 0x05;
-        public const byte MSG_EVENT = 0x06;
-        public const byte MSG_ANIMATOR = 0x07;
-        public const byte MSG_CONTROL = 0xFF;
+        public const byte MSG_POSITION_UPDATE         = 0x01; // legacy master-only batch (kept for compat)
+        public const byte MSG_SNAPSHOT                = 0x02; // full world state (master → all)
+        public const byte MSG_INTERACTION_UPDATE      = 0x03; // claimed-object updates (any client)
+        public const byte MSG_VARIABLE_UPDATE         = 0x04; // NetworkVariables
+        public const byte MSG_POSITION_UPDATE_SCALED  = 0x05; // scaled objects batch
+        public const byte MSG_EVENT                   = 0x06; // fire-and-forget RPCs
+        public const byte MSG_ANIMATOR                = 0x07; // animator state
+        public const byte MSG_RIGIDBODY               = 0x08; // velocity sync
+        public const byte MSG_SCALED_INTERACTION      = 0x09; // claimed scaled-object updates
+        public const byte MSG_SNAPSHOT_SCALED         = 0x0A; // full scaled-object snapshot
+        public const byte MSG_POSITION_VELOCITY       = 0x0B; // authority position + velocity (dead reckoning)
+        public const byte MSG_CONTROL                 = 0xFF;
 
-        public const byte CTRL_YOU_ARE_MASTER = 0x01;
+        // =====================================================================
+        // Control subtypes  (second byte inside 0xFF messages)
+        // =====================================================================
+
+        public const byte CTRL_YOU_ARE_MASTER    = 0x01;
         public const byte CTRL_YOU_ARE_SPECTATOR = 0x02;
-        public const byte CTRL_SEND_SNAPSHOT = 0x03;
-        public const byte CTRL_MASTER_CHANGED = 0x04;
-        public const byte CTRL_CLAIM = 0x05;
-        public const byte CTRL_RELEASE = 0x06;
-        public const byte CTRL_PLAYER_POSITION = 0x07;
+        public const byte CTRL_SEND_SNAPSHOT     = 0x03;
+        public const byte CTRL_MASTER_CHANGED    = 0x04;
+        public const byte CTRL_CLAIM             = 0x05;
+        public const byte CTRL_RELEASE           = 0x06;
+        public const byte CTRL_PLAYER_POSITION   = 0x07;
+        /// <summary>
+        /// Master → all: assign StateAuthority for a set of objects to one client.
+        /// Format: [0xFF][0x0A][u16 clientId][u16 count][u16... objectIds]
+        /// </summary>
+        public const byte CTRL_AUTHORITY_ASSIGN  = 0x0A;
 
-        /// <summary>Bytes per entity in compact format (half-float pos + u16 rot).</summary>
+        // =====================================================================
+        // Size constants
+        // =====================================================================
+
+        /// <summary>14 bytes: [u16 id][half x/y/z][u16 rx/ry/rz]</summary>
         public const int BYTES_PER_ENTITY = 14;
-        /// <summary>Bytes per entity with scale (pos + rot + half-float scale).</summary>
+
+        /// <summary>20 bytes: compact + [half sx/sy/sz]</summary>
         public const int BYTES_PER_ENTITY_SCALED = 20;
+
+        /// <summary>20 bytes: compact + [half vx/vy/vz] for dead reckoning.</summary>
+        public const int BYTES_PER_ENTITY_VELOCITY = 20;
 
         // =====================================================================
         // Basic types
@@ -41,19 +62,17 @@ namespace SomniumSpace.Worlds.bently.networking
 
         public static void WriteU16(byte[] buf, int offset, ushort value)
         {
-            buf[offset] = (byte)(value & 0xFF);
+            buf[offset]     = (byte)(value & 0xFF);
             buf[offset + 1] = (byte)(value >> 8);
         }
 
         public static ushort ReadU16(byte[] buf, int offset)
-        {
-            return (ushort)(buf[offset] | (buf[offset + 1] << 8));
-        }
+            => (ushort)(buf[offset] | (buf[offset + 1] << 8));
 
         public static void WriteFloat(byte[] buf, int offset, float value)
         {
             byte[] bytes = BitConverter.GetBytes(value);
-            buf[offset] = bytes[0];
+            buf[offset]     = bytes[0];
             buf[offset + 1] = bytes[1];
             buf[offset + 2] = bytes[2];
             buf[offset + 3] = bytes[3];
@@ -61,14 +80,14 @@ namespace SomniumSpace.Worlds.bently.networking
 
         // =====================================================================
         // Half-precision float (IEEE 754 float16)
-        // Range: ±65504, precision ~0.001 at small values
+        // Range ±65504, precision ~0.001 at small values
         // =====================================================================
 
         public static void WriteHalf(byte[] buf, int offset, float value)
         {
-            int bits = BitConverter.ToInt32(BitConverter.GetBytes(value), 0);
-            int sign = (bits >> 16) & 0x8000;
-            int exp = ((bits >> 23) & 0xFF) - 127 + 15;
+            int bits     = BitConverter.ToInt32(BitConverter.GetBytes(value), 0);
+            int sign     = (bits >> 16) & 0x8000;
+            int exp      = ((bits >> 23) & 0xFF) - 127 + 15;
             int mantissa = bits & 0x007FFFFF;
 
             ushort half;
@@ -79,16 +98,16 @@ namespace SomniumSpace.Worlds.bently.networking
             else
                 half = (ushort)(sign | (exp << 10) | (mantissa >> 13));
 
-            buf[offset] = (byte)(half & 0xFF);
+            buf[offset]     = (byte)(half & 0xFF);
             buf[offset + 1] = (byte)(half >> 8);
         }
 
         public static float ReadHalf(byte[] buf, int offset)
         {
-            ushort half = (ushort)(buf[offset] | (buf[offset + 1] << 8));
-            int sign = (half >> 15) & 1;
-            int exp = (half >> 10) & 0x1F;
-            int mantissa = half & 0x3FF;
+            ushort half     = (ushort)(buf[offset] | (buf[offset + 1] << 8));
+            int    sign     = (half >> 15) & 1;
+            int    exp      = (half >> 10) & 0x1F;
+            int    mantissa = half & 0x3FF;
 
             int fbits;
             if (exp == 0)
@@ -112,8 +131,7 @@ namespace SomniumSpace.Worlds.bently.networking
         }
 
         // =====================================================================
-        // Quantized rotation (0-360° → uint16 0-65535)
-        // Precision: 360/65535 ≈ 0.005°
+        // Quantized rotation  0-360° → u16 0-65535, precision ≈ 0.005°
         // =====================================================================
 
         public static void WriteRotU16(byte[] buf, int offset, float degrees)
@@ -121,7 +139,7 @@ namespace SomniumSpace.Worlds.bently.networking
             degrees = degrees % 360f;
             if (degrees < 0) degrees += 360f;
             ushort val = (ushort)(degrees * (65535f / 360f));
-            buf[offset] = (byte)(val & 0xFF);
+            buf[offset]     = (byte)(val & 0xFF);
             buf[offset + 1] = (byte)(val >> 8);
         }
 
@@ -132,16 +150,15 @@ namespace SomniumSpace.Worlds.bently.networking
         }
 
         // =====================================================================
-        // Compact entity encoding
-        // [u16 id][half x][half y][half z][u16 rx][u16 ry][u16 rz] = 14 bytes
+        // Compact entity   [u16 id][half x/y/z][u16 rx/ry/rz] = 14 bytes
         // =====================================================================
 
         public static int WriteEntityCompact(byte[] buf, int offset, ushort id, Vector3 pos, Vector3 rot)
         {
-            WriteU16(buf, offset, id); offset += 2;
-            WriteHalf(buf, offset, pos.x); offset += 2;
-            WriteHalf(buf, offset, pos.y); offset += 2;
-            WriteHalf(buf, offset, pos.z); offset += 2;
+            WriteU16(buf, offset, id);       offset += 2;
+            WriteHalf(buf, offset, pos.x);   offset += 2;
+            WriteHalf(buf, offset, pos.y);   offset += 2;
+            WriteHalf(buf, offset, pos.z);   offset += 2;
             WriteRotU16(buf, offset, rot.x); offset += 2;
             WriteRotU16(buf, offset, rot.y); offset += 2;
             WriteRotU16(buf, offset, rot.z); offset += 2;
@@ -151,9 +168,9 @@ namespace SomniumSpace.Worlds.bently.networking
         public static int ReadEntityCompact(byte[] buf, int offset, out ushort id, out Vector3 pos, out Vector3 rot)
         {
             id = ReadU16(buf, offset); offset += 2;
-            float px = ReadHalf(buf, offset); offset += 2;
-            float py = ReadHalf(buf, offset); offset += 2;
-            float pz = ReadHalf(buf, offset); offset += 2;
+            float px = ReadHalf(buf, offset);   offset += 2;
+            float py = ReadHalf(buf, offset);   offset += 2;
+            float pz = ReadHalf(buf, offset);   offset += 2;
             float rx = ReadRotU16(buf, offset); offset += 2;
             float ry = ReadRotU16(buf, offset); offset += 2;
             float rz = ReadRotU16(buf, offset); offset += 2;
@@ -163,8 +180,7 @@ namespace SomniumSpace.Worlds.bently.networking
         }
 
         // =====================================================================
-        // Scaled entity encoding (pos + rot + scale = 20 bytes)
-        // [u16 id][half x][half y][half z][u16 rx][u16 ry][u16 rz][half sx][half sy][half sz]
+        // Scaled entity   compact + [half sx/sy/sz] = 20 bytes
         // =====================================================================
 
         public static int WriteEntityScaled(byte[] buf, int offset, ushort id, Vector3 pos, Vector3 rot, Vector3 scale)
@@ -183,6 +199,30 @@ namespace SomniumSpace.Worlds.bently.networking
             float sy = ReadHalf(buf, offset); offset += 2;
             float sz = ReadHalf(buf, offset); offset += 2;
             scale = new Vector3(sx, sy, sz);
+            return offset;
+        }
+
+        // =====================================================================
+        // Velocity entity   compact + [half vx/vy/vz] = 20 bytes
+        // Used by MSG_POSITION_VELOCITY (0x0B) for dead reckoning.
+        // =====================================================================
+
+        public static int WriteEntityVelocity(byte[] buf, int offset, ushort id, Vector3 pos, Vector3 rot, Vector3 vel)
+        {
+            offset = WriteEntityCompact(buf, offset, id, pos, rot);
+            WriteHalf(buf, offset, vel.x); offset += 2;
+            WriteHalf(buf, offset, vel.y); offset += 2;
+            WriteHalf(buf, offset, vel.z); offset += 2;
+            return offset;
+        }
+
+        public static int ReadEntityVelocity(byte[] buf, int offset, out ushort id, out Vector3 pos, out Vector3 rot, out Vector3 vel)
+        {
+            offset = ReadEntityCompact(buf, offset, out id, out pos, out rot);
+            float vx = ReadHalf(buf, offset); offset += 2;
+            float vy = ReadHalf(buf, offset); offset += 2;
+            float vz = ReadHalf(buf, offset); offset += 2;
+            vel = new Vector3(vx, vy, vz);
             return offset;
         }
     }
