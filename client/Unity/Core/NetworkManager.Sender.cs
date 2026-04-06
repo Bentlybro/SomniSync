@@ -12,7 +12,9 @@ namespace SomniumSpace.Worlds.bently.networking
         // Format: [0x0B][u16 senderClientId][u16 sequence][u16 count][20B entities...]
         // =====================================================================
 
-        private void SendAuthorityPositionUpdates()
+        // rigidbodies=true  → only send physics objects (at 20Hz)
+        // rigidbodies=false → only send non-physics objects (at 60Hz)
+        private void SendAuthorityPositionUpdates(bool rigidbodies)
         {
             if (_objects.Count == 0) return;
 
@@ -23,6 +25,8 @@ namespace SomniumSpace.Worlds.bently.networking
                 if (!obj.HasStateAuthority) continue;
                 if (!obj.IsAOIActive) continue;
                 if (obj.IsClaimedByRemote) continue;
+                if (obj.IsRigidbody != rigidbodies) continue;
+                if (obj.IsSleeping) continue;
                 if (!obj.HasMoved(positionThreshold, rotationThreshold)) continue;
                 if (obj.syncScale) movedScaledCount++;
                 else movedCount++;
@@ -43,6 +47,8 @@ namespace SomniumSpace.Worlds.bently.networking
                 {
                     if (!obj.HasStateAuthority || obj.syncScale) continue;
                     if (!obj.IsAOIActive || obj.IsClaimedByRemote) continue;
+                    if (obj.IsRigidbody != rigidbodies) continue;
+                    if (obj.IsSleeping) continue;
                     if (!obj.HasMoved(positionThreshold, rotationThreshold)) continue;
                     offset = Protocol.WriteEntityVelocity(buf, offset, obj.LocalId,
                         obj.transform.position, obj.transform.eulerAngles, obj.GetCurrentVelocity());
@@ -63,6 +69,8 @@ namespace SomniumSpace.Worlds.bently.networking
                 {
                     if (!obj.HasStateAuthority || !obj.syncScale) continue;
                     if (!obj.IsAOIActive || obj.IsClaimedByRemote) continue;
+                    if (obj.IsRigidbody != rigidbodies) continue;
+                    if (obj.IsSleeping) continue;
                     if (!obj.HasMoved(positionThreshold, rotationThreshold)) continue;
                     offset = Protocol.WriteEntityScaled(buf, offset, obj.LocalId,
                         obj.transform.position, obj.transform.eulerAngles, obj.transform.localScale);

@@ -243,6 +243,15 @@ namespace SomniumSpace.Worlds.bently.networking
         public Vector3 GetCurrentVelocity()
             => (_hasRb && !_rb.isKinematic) ? _rb.linearVelocity : Vector3.zero;
 
+        /// <summary>True if this object has a Rigidbody (used to split send rates).</summary>
+        public bool IsRigidbody => _hasRb;
+
+        /// <summary>
+        /// True if the rigidbody has come to rest and needs no update.
+        /// Non-rigidbody objects are never considered sleeping.
+        /// </summary>
+        public bool IsSleeping => _hasRb && !_rb.isKinematic && _rb.IsSleeping();
+
         // =====================================================================
         // AOI (managed by NetworkManager)
         // =====================================================================

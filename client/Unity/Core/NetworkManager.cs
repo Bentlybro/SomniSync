@@ -27,8 +27,10 @@ namespace SomniumSpace.Worlds.bently.networking
         public float reconnectDelay = 3f;
 
         [Header("Sync")]
-        [Tooltip("How many times per second to send position updates")]
+        [Tooltip("How many times per second to send position updates (transforms, grabbed objects)")]
         public int sendRate = 60;
+        [Tooltip("How many times per second to send rigidbody updates (dead reckoning fills the gaps)")]
+        public int rigidbodySendRate = 20;
         [Tooltip("Minimum movement (meters) before an object is included in an update")]
         public float positionThreshold = 0.01f;
         [Tooltip("Minimum rotation (degrees) before an object is included in an update")]
@@ -61,7 +63,9 @@ namespace SomniumSpace.Worlds.bently.networking
         private readonly byte[] _recvBuffer = new byte[65536];
         private readonly ConcurrentQueue<byte[]> _sendQueue = new ConcurrentQueue<byte[]>();
         private float _sendInterval;
+        private float _rbSendInterval;
         private float _nextSendTime;
+        private float _nextRbSendTime;
         private bool _pushDetectorAttached;
 
         // After snapshot, snap first N updates instead of interpolating
@@ -124,7 +128,8 @@ namespace SomniumSpace.Worlds.bently.networking
         {
             if (Instance != null) { Destroy(gameObject); return; }
             Instance = this;
-            _sendInterval = 1f / sendRate;
+            _sendInterval   = 1f / sendRate;
+            _rbSendInterval = 1f / rigidbodySendRate;
         }
 
         private void Start()
@@ -154,14 +159,19 @@ namespace SomniumSpace.Worlds.bently.networking
             if (!_pushDetectorAttached)
                 AttachPushDetector();
 
-            // Send position updates at configured rate
+            // Send position updates at configured rate (60Hz for transforms/grabbed)
             if (Time.time >= _nextSendTime)
             {
                 _nextSendTime = Time.time + _sendInterval;
-                // Any client sends updates for objects they have StateAuthority over
-                SendAuthorityPositionUpdates();
-                // Any client sends interaction updates for objects they've claimed
+                SendAuthorityPositionUpdates(rigidbodies: false);
                 SendInteractionUpdates();
+            }
+
+            // Send rigidbody updates at lower rate (20Hz — dead reckoning fills gaps)
+            if (Time.time >= _nextRbSendTime)
+            {
+                _nextRbSendTime = Time.time + _rbSendInterval;
+                SendAuthorityPositionUpdates(rigidbodies: true);
             }
 
             // Periodic full snapshot to correct drift (master only)
