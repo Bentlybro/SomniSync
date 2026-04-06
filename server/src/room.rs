@@ -18,6 +18,9 @@ pub struct Room {
 
     /// Object ownership: object_local_id → client_id (only for claimed objects)
     pub claimed_objects: HashMap<u16, u16>,
+
+    /// Stable player identity: client_id → Somnium player UUID (or fallback UUID)
+    pub player_ids: HashMap<u16, String>,
 }
 
 impl Room {
@@ -28,6 +31,7 @@ impl Room {
             next_id: 1,
             latest_snapshot: None,
             claimed_objects: HashMap::new(),
+            player_ids: HashMap::new(),
         }
     }
 
@@ -46,13 +50,12 @@ impl Room {
     /// Remove a client. Returns the new master id if promotion happened.
     pub fn remove_client(&mut self, id: u16) -> Option<u16> {
         self.clients.remove(&id);
-        // Release all objects claimed by this client
         self.claimed_objects.retain(|_, owner| *owner != id);
+        self.player_ids.remove(&id);
 
         if self.master_id == Some(id) {
             self.master_id = None;
             self.latest_snapshot = None;
-            // Promote next client
             if let Some(&new_master) = self.clients.keys().next() {
                 self.master_id = Some(new_master);
                 return Some(new_master);

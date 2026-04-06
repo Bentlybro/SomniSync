@@ -127,7 +127,14 @@ namespace SomniumSpace.Worlds.bently.networking
             if (localPlayerTransformOverride != null)
                 return localPlayerTransformOverride;
 
-            // 2. Somnium Space specific: find local player body
+            // 2. Static provider hook (set by SomniumBridgeIntegration or world maker)
+            if (LocalPlayerTransformProvider != null)
+            {
+                var t = LocalPlayerTransformProvider();
+                if (t != null) return t;
+            }
+
+            // 3. Somnium Space specific: find local player body
             foreach (var cc in FindObjectsByType<CharacterController>(FindObjectsSortMode.None))
             {
                 string name = cc.gameObject.name;

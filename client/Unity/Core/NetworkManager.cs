@@ -101,6 +101,17 @@ namespace SomniumSpace.Worlds.bently.networking
         private Dictionary<ushort, ushort> _receivedSequences = new Dictionary<ushort, ushort>();
         private ushort _sendSequence;
 
+        // =====================================================================
+        // Integration hooks — set these in your world's Start() to plug in
+        // a custom identity/transform source (e.g. SomniumBridgeIntegration.cs)
+        // =====================================================================
+
+        /// <summary>
+        /// Override the local player transform used for AOI and player position.
+        /// Set this to: () => SomniumBridge.PlayersContainer?.LocalPlayer?.References?.Body?.Head
+        /// </summary>
+        public static System.Func<Transform> LocalPlayerTransformProvider;
+
         // Stats (public for NetworkStats overlay)
         public static int MessagesSent;
         public static int MessagesReceived;

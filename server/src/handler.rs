@@ -5,23 +5,25 @@ use tokio::sync::RwLock;
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::client::{broadcast_except, send, Client};
-use crate::room::RoomMap;
+use crate::persistence::PersistenceDb;
 use crate::protocol::{
     ctrl_msg, ctrl_msg_u16, CTRL_AUTHORITY_ASSIGN, CTRL_CLAIM, CTRL_MASTER_CHANGED,
+    CTRL_PERSIST_DATA, CTRL_PERSIST_GET, CTRL_PERSIST_SET, CTRL_PLAYER_IDENT,
     CTRL_PLAYER_POSITION, CTRL_RELEASE, CTRL_SEND_SNAPSHOT, CTRL_YOU_ARE_MASTER,
     CTRL_YOU_ARE_SPECTATOR, MSG_ANIMATOR, MSG_EVENT, MSG_INTERACTION_UPDATE,
     MSG_POSITION_UPDATE, MSG_POSITION_UPDATE_SCALED, MSG_POSITION_VELOCITY, MSG_RIGIDBODY,
     MSG_SCALED_INTERACTION, MSG_SNAPSHOT, MSG_SNAPSHOT_SCALED, MSG_VARIABLE_UPDATE,
 };
 use crate::room::Room;
+use crate::room::RoomMap;
 
 /// Handle a single client connection (runs in its own task).
 pub async fn handle_connection(
     stream: tokio::net::TcpStream,
     addr: SocketAddr,
     rooms: RoomMap,
+    db: PersistenceDb,
 ) {
-    // Extract room_id from the WebSocket request URI path via callback
     let room_id = Arc::new(tokio::sync::Mutex::new(String::from("default")));
     let room_id_clone = room_id.clone();
 
@@ -30,7 +32,6 @@ pub async fn handle_connection(
         -> Result<tokio_tungstenite::tungstenite::handshake::server::Response, tokio_tungstenite::tungstenite::http::Response<Option<String>>> {
         let path = req.uri().path().trim_start_matches('/').to_string();
         if !path.is_empty() {
-            // Use try_lock since we're in a sync callback
             if let Ok(mut id) = room_id_clone.try_lock() {
                 *id = path;
             }
@@ -48,7 +49,6 @@ pub async fn handle_connection(
 
     let room_id = room_id.lock().await.clone();
 
-    // Get or create room
     let room = {
         let mut all_rooms = rooms.write().await;
         all_rooms
@@ -66,7 +66,6 @@ pub async fn handle_connection(
         addr,
     });
 
-    // Register client
     let (client_id, is_master) = {
         let mut r = room.write().await;
         let (id, is_master) = r.add_client(client.clone());
@@ -78,7 +77,6 @@ pub async fn handle_connection(
         (id, is_master)
     };
 
-    // Send role assignment
     if is_master {
         send(&client, ctrl_msg_u16(CTRL_YOU_ARE_MASTER, client_id)).await;
     } else {
@@ -86,7 +84,6 @@ pub async fn handle_connection(
         send_cached_snapshot(&room, &client, client_id, &room_id).await;
     }
 
-    // Message loop
     while let Some(msg) = futures_util::StreamExt::next(&mut rx).await {
         let msg = match msg {
             Ok(m) => m,
@@ -101,7 +98,7 @@ pub async fn handle_connection(
                 if data.is_empty() {
                     continue;
                 }
-                handle_binary(&room, client_id, &data, &room_id).await;
+                handle_binary(&room, &client, client_id, &data, &room_id, &db).await;
             }
             Message::Close(_) => break,
             Message::Ping(d) => {
@@ -111,16 +108,13 @@ pub async fn handle_connection(
         }
     }
 
-    // Client disconnected
     handle_disconnect(&room, client_id, &room_id).await;
 
-    // Cleanup empty room
     {
         let r = room.read().await;
         if r.client_count() == 0 {
             drop(r);
             let mut all_rooms = rooms.write().await;
-            // Double-check after acquiring write lock
             if let Some(r) = all_rooms.get(&room_id) {
                 if r.read().await.client_count() == 0 {
                     all_rooms.remove(&room_id);
@@ -153,7 +147,14 @@ async fn send_cached_snapshot(room: &Arc<RwLock<Room>>, client: &Client, client_
 }
 
 /// Handle a binary message from a client.
-async fn handle_binary(room: &Arc<RwLock<Room>>, client_id: u16, data: &[u8], room_id: &str) {
+async fn handle_binary(
+    room: &Arc<RwLock<Room>>,
+    client: &Arc<Client>,
+    client_id: u16,
+    data: &[u8],
+    room_id: &str,
+    db: &PersistenceDb,
+) {
     let msg_type = data[0];
 
     match msg_type {
@@ -178,7 +179,6 @@ async fn handle_binary(room: &Arc<RwLock<Room>>, client_id: u16, data: &[u8], ro
             broadcast_except(&room.clients, client_id, data).await;
         }
 
-        // 0x0B — authority position + velocity, any client can send, broadcast to all others
         MSG_POSITION_VELOCITY => {
             let room = room.read().await;
             broadcast_except(&room.clients, client_id, data).await;
@@ -192,7 +192,7 @@ async fn handle_binary(room: &Arc<RwLock<Room>>, client_id: u16, data: &[u8], ro
         }
 
         0xFF => {
-            handle_control(room, client_id, data, room_id).await;
+            handle_control(room, client, client_id, data, room_id, db).await;
         }
 
         _ => {
@@ -204,14 +204,21 @@ async fn handle_binary(room: &Arc<RwLock<Room>>, client_id: u16, data: &[u8], ro
     }
 }
 
-/// Handle control messages (0xFF) — claim/release.
-async fn handle_control(room: &Arc<RwLock<Room>>, client_id: u16, data: &[u8], room_id: &str) {
+/// Handle control messages (0xFF).
+async fn handle_control(
+    room: &Arc<RwLock<Room>>,
+    client: &Arc<Client>,
+    client_id: u16,
+    data: &[u8],
+    room_id: &str,
+    db: &PersistenceDb,
+) {
     if data.len() < 2 {
         return;
     }
     let ctrl = data[1];
 
-    // Player position — broadcast as-is
+    // --- Player position: broadcast as-is ---
     if ctrl == CTRL_PLAYER_POSITION {
         if data.len() >= 10 {
             let room = room.read().await;
@@ -220,7 +227,7 @@ async fn handle_control(room: &Arc<RwLock<Room>>, client_id: u16, data: &[u8], r
         return;
     }
 
-    // Authority assignment — broadcast as-is (format differs from claim/release)
+    // --- Authority assignment: broadcast as-is ---
     if ctrl == CTRL_AUTHORITY_ASSIGN {
         if data.len() >= 6 {
             let room = room.read().await;
@@ -229,6 +236,38 @@ async fn handle_control(room: &Arc<RwLock<Room>>, client_id: u16, data: &[u8], r
         return;
     }
 
+    // --- Persistence: player identity registration ---
+    if ctrl == CTRL_PLAYER_IDENT {
+        // [0xFF][0x20][u8 len][utf8 uuid...]
+        if data.len() >= 4 {
+            let len = data[2] as usize;
+            if data.len() >= 3 + len {
+                if let Ok(uuid) = std::str::from_utf8(&data[3..3 + len]) {
+                    let uuid = uuid.to_string();
+                    let mut room = room.write().await;
+                    room.player_ids.insert(client_id, uuid.clone());
+                    info!("[Room:{}] client_{} identified as player '{}'", room_id, client_id, uuid);
+                }
+            }
+        }
+        return;
+    }
+
+    // --- Persistence: write key/value ---
+    if ctrl == CTRL_PERSIST_SET {
+        // [0xFF][0x21][u8 ns_len][ns...][u8 key_len][key...][u16 val_len][val...]
+        handle_persist_set(room, client_id, data, room_id, db).await;
+        return;
+    }
+
+    // --- Persistence: read key ---
+    if ctrl == CTRL_PERSIST_GET {
+        // [0xFF][0x22][u16 req_id][u8 ns_len][ns...][u8 key_len][key...]
+        handle_persist_get(room, client, client_id, data, room_id, db).await;
+        return;
+    }
+
+    // Remaining messages need at least 6 bytes (obj_id + sender_id)
     if data.len() < 6 {
         return;
     }
@@ -250,6 +289,109 @@ async fn handle_control(room: &Arc<RwLock<Room>>, client_id: u16, data: &[u8], r
         }
         _ => {}
     }
+}
+
+/// Handle CTRL_PERSIST_SET — write a value to the database.
+async fn handle_persist_set(
+    room: &Arc<RwLock<Room>>,
+    client_id: u16,
+    data: &[u8],
+    room_id: &str,
+    db: &PersistenceDb,
+) {
+    // [0xFF][0x21][u8 ns_len][ns...][u8 key_len][key...][u16 val_len][val...]
+    let mut offset = 2usize;
+    if data.len() < offset + 1 { return; }
+
+    let ns_len = data[offset] as usize; offset += 1;
+    if data.len() < offset + ns_len { return; }
+    let namespace = match std::str::from_utf8(&data[offset..offset + ns_len]) {
+        Ok(s) => s.to_string(), Err(_) => return,
+    };
+    offset += ns_len;
+
+    if data.len() < offset + 1 { return; }
+    let key_len = data[offset] as usize; offset += 1;
+    if data.len() < offset + key_len { return; }
+    let key = match std::str::from_utf8(&data[offset..offset + key_len]) {
+        Ok(s) => s.to_string(), Err(_) => return,
+    };
+    offset += key_len;
+
+    if data.len() < offset + 2 { return; }
+    let val_len = u16::from_le_bytes([data[offset], data[offset + 1]]) as usize; offset += 2;
+    if data.len() < offset + val_len { return; }
+    let value = match std::str::from_utf8(&data[offset..offset + val_len]) {
+        Ok(s) => s.to_string(), Err(_) => return,
+    };
+
+    let player_id = {
+        let room = room.read().await;
+        room.player_ids.get(&client_id).cloned()
+    };
+
+    if let Some(pid) = player_id {
+        debug!("[Room:{}] Persist SET player='{}' ns='{}' key='{}'", room_id, pid, namespace, key);
+        db.set(&pid, &namespace, &key, &value);
+    } else {
+        warn!("[Room:{}] Persist SET from client_{} with no registered player ID", room_id, client_id);
+    }
+}
+
+/// Handle CTRL_PERSIST_GET — read a value and send it back to the requesting client.
+async fn handle_persist_get(
+    room: &Arc<RwLock<Room>>,
+    client: &Arc<Client>,
+    client_id: u16,
+    data: &[u8],
+    room_id: &str,
+    db: &PersistenceDb,
+) {
+    // [0xFF][0x22][u16 req_id][u8 ns_len][ns...][u8 key_len][key...]
+    let mut offset = 2usize;
+    if data.len() < offset + 2 { return; }
+    let req_id = u16::from_le_bytes([data[offset], data[offset + 1]]); offset += 2;
+
+    if data.len() < offset + 1 { return; }
+    let ns_len = data[offset] as usize; offset += 1;
+    if data.len() < offset + ns_len { return; }
+    let namespace = match std::str::from_utf8(&data[offset..offset + ns_len]) {
+        Ok(s) => s.to_string(), Err(_) => return,
+    };
+    offset += ns_len;
+
+    if data.len() < offset + 1 { return; }
+    let key_len = data[offset] as usize; offset += 1;
+    if data.len() < offset + key_len { return; }
+    let key = match std::str::from_utf8(&data[offset..offset + key_len]) {
+        Ok(s) => s.to_string(), Err(_) => return,
+    };
+
+    let player_id = {
+        let room = room.read().await;
+        room.player_ids.get(&client_id).cloned()
+    };
+
+    let value = if let Some(pid) = player_id {
+        debug!("[Room:{}] Persist GET player='{}' ns='{}' key='{}'", room_id, pid, namespace, key);
+        db.get(&pid, &namespace, &key)
+    } else {
+        warn!("[Room:{}] Persist GET from client_{} with no registered player ID", room_id, client_id);
+        None
+    };
+
+    // Build response: [0xFF][0x23][u16 req_id][u8 found][u16 val_len][val...]
+    let found = value.is_some();
+    let val_bytes = value.as_deref().unwrap_or("").as_bytes();
+    let mut resp = Vec::with_capacity(7 + val_bytes.len());
+    resp.push(0xFF);
+    resp.push(CTRL_PERSIST_DATA);
+    resp.extend_from_slice(&req_id.to_le_bytes());
+    resp.push(if found { 1 } else { 0 });
+    resp.extend_from_slice(&(val_bytes.len() as u16).to_le_bytes());
+    resp.extend_from_slice(val_bytes);
+
+    send(client, resp).await;
 }
 
 /// Handle client disconnect — cleanup and promote new master if needed.

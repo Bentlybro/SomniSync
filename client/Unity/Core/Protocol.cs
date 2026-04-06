@@ -43,6 +43,16 @@ namespace SomniumSpace.Worlds.bently.networking
         /// </summary>
         public const byte CTRL_AUTHORITY_ASSIGN  = 0x0A;
 
+        // --- Persistence control subtypes ---
+        /// <summary>Client → server: register stable player UUID. [0xFF][0x20][u8 len][utf8 uuid...]</summary>
+        public const byte CTRL_PLAYER_IDENT  = 0x20;
+        /// <summary>Client → server: write key/value. [0xFF][0x21][u8 ns_len][ns][u8 key_len][key][u16 val_len][val]</summary>
+        public const byte CTRL_PERSIST_SET   = 0x21;
+        /// <summary>Client → server: read request. [0xFF][0x22][u16 req_id][u8 ns_len][ns][u8 key_len][key]</summary>
+        public const byte CTRL_PERSIST_GET   = 0x22;
+        /// <summary>Server → client: read response. [0xFF][0x23][u16 req_id][u8 found][u16 val_len][val]</summary>
+        public const byte CTRL_PERSIST_DATA  = 0x23;
+
         // =====================================================================
         // Size constants
         // =====================================================================

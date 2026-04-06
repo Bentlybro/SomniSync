@@ -1,6 +1,7 @@
 mod client;
 mod config;
 mod handler;
+mod persistence;
 mod protocol;
 mod room;
 
@@ -11,6 +12,7 @@ use tokio::net::TcpListener;
 use tokio::sync::RwLock;
 
 use config::ServerConfig;
+use persistence::Db;
 use room::RoomMap;
 
 #[tokio::main]
@@ -18,6 +20,10 @@ async fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     let config = ServerConfig::from_args();
+
+    // Open persistence database (creates file if it doesn't exist)
+    let db = Db::open("./data/persistence.db").expect("Failed to open persistence database");
+    info!("[Server] Persistence database ready at ./data/persistence.db");
 
     let listener = TcpListener::bind(&config.addr)
         .await
@@ -36,7 +42,8 @@ async fn main() {
         tokio::select! {
             Ok((stream, addr)) = listener.accept() => {
                 let rooms = rooms.clone();
-                tokio::spawn(handler::handle_connection(stream, addr, rooms));
+                let db = db.clone();
+                tokio::spawn(handler::handle_connection(stream, addr, rooms, db));
             }
             _ = &mut shutdown => {
                 info!("[Server] Shutting down...");

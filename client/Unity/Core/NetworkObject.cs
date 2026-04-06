@@ -250,6 +250,8 @@ namespace SomniumSpace.Worlds.bently.networking
         public void AOIDeactivate()
         {
             if (!IsAOIActive) return;
+            // Don't freeze objects that are still in motion (e.g. thrown) — let them land first
+            if (_hasRb && !_rb.isKinematic && _rb.linearVelocity.sqrMagnitude > 0.5f) return;
             IsAOIActive = false;
             if (_hasRb && !_rb.isKinematic)
             {

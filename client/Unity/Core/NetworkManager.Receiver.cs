@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Text;
 using UnityEngine;
 
 namespace SomniumSpace.Worlds.bently.networking
@@ -27,7 +28,12 @@ namespace SomniumSpace.Worlds.bently.networking
                 case 0x0B: HandlePositionVelocityUpdates(data, length); break;
                 case 0xFF:
                     if (length >= 2)
-                        HandleControl(data, length);
+                    {
+                        if (data[1] == Protocol.CTRL_PERSIST_DATA)
+                            HandlePersistData(data, length);
+                        else
+                            HandleControl(data, length);
+                    }
                     break;
             }
         }
@@ -48,6 +54,7 @@ namespace SomniumSpace.Worlds.bently.networking
                     Debug.Log($"[Net] Assigned as MASTER (client_{ClientId})");
                     AssignAllAuthorityToSelf();
                     SendSnapshot();
+                    NetworkPersistence.OnNetworkReady(this);
                     if (!IsNetworkReady) { IsNetworkReady = true; OnNetworkReady?.Invoke(); }
                     OnBecameMaster?.Invoke();
                     break;
@@ -56,6 +63,7 @@ namespace SomniumSpace.Worlds.bently.networking
                     ClientId = BitConverter.ToUInt16(data, 2);
                     IsMaster = false;
                     Debug.Log($"[Net] Assigned as SPECTATOR (client_{ClientId})");
+                    NetworkPersistence.OnNetworkReady(this);
                     if (!IsNetworkReady) { IsNetworkReady = true; OnNetworkReady?.Invoke(); }
                     OnBecameSpectator?.Invoke();
                     break;
@@ -356,6 +364,23 @@ namespace SomniumSpace.Worlds.bently.networking
                 if (netAnim != null)
                     netAnim.ApplyRemoteState(data, 3);
             }
+        }
+
+        // =====================================================================
+        // Persistence response (0xFF / 0x23) — server sending back a loaded value
+        // =====================================================================
+
+        internal void HandlePersistData(byte[] data, int length)
+        {
+            // [0xFF][0x23][u16 req_id][u8 found][u16 val_len][val...]
+            if (length < 7) return;
+            ushort reqId  = Protocol.ReadU16(data, 2);
+            bool found    = data[4] != 0;
+            int valLen    = Protocol.ReadU16(data, 5);
+            string value  = (found && length >= 7 + valLen)
+                ? Encoding.UTF8.GetString(data, 7, valLen)
+                : null;
+            NetworkPersistence.HandlePersistData(reqId, found, value);
         }
 
         // =====================================================================
