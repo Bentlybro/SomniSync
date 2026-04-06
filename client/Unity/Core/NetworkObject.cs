@@ -10,8 +10,12 @@ namespace SomniumSpace.Worlds.bently.networking
     /// The master starts as authority for everything and redistributes to nearby clients
     /// automatically via RecalculateAuthority(). Any client can also claim objects by
     /// grabbing them regardless of StateAuthority.
+    ///
+    /// Split into partial classes:
+    ///   NetworkObject.Interpolation.cs — ApplyUpdate, SnapTo, smoothing helpers
+    ///   NetworkObject.Interaction.cs   — Grab, Release, claim/release notifications, push
     /// </summary>
-    public class NetworkObject : MonoBehaviour
+    public partial class NetworkObject : MonoBehaviour
     {
         [Header("Identity")]
         [Tooltip("Type name used for deterministic sorting (e.g. 'cube', 'ball', 'enemy')")]
@@ -67,7 +71,7 @@ namespace SomniumSpace.Worlds.bently.networking
         public bool IsClaimedByRemote => ClaimedByClient != 0 && !IsClaimedLocally;
 
         // =====================================================================
-        // Interpolation + dead reckoning
+        // Interpolation + dead reckoning (used by NetworkObject.Interpolation.cs)
         // =====================================================================
 
         private Vector3 _fromPos, _toPos;
@@ -77,10 +81,9 @@ namespace SomniumSpace.Worlds.bently.networking
         private float _interpDuration = 0.016f;
         private float _lastUpdateReceivedTime = -1f;
 
-        // Dead reckoning — extrapolate between packets using velocity
-        private Vector3 _drVelocity;   // velocity from last received update
-        private Vector3 _drBasePos;    // position at the moment of last update
-        private float   _drBaseTime;   // Time.time at last update
+        private Vector3 _drVelocity;
+        private Vector3 _drBasePos;
+        private float   _drBaseTime;
         private bool    _deadReckoning;
 
         // =====================================================================
@@ -92,7 +95,7 @@ namespace SomniumSpace.Worlds.bently.networking
         private Vector3 _lastSentScale;
 
         // =====================================================================
-        // Auto-claim / push state
+        // Auto-claim / push state (used by NetworkObject.Interaction.cs)
         // =====================================================================
 
         private const float AUTO_RELEASE_DELAY = 1.0f;
@@ -129,7 +132,6 @@ namespace SomniumSpace.Worlds.bently.networking
             {
                 if (_interpT < 1f)
                 {
-                    // Active lerp toward target
                     _interpT += Time.deltaTime / _interpDuration;
                     if (_interpT > 1f) _interpT = 1f;
 
@@ -140,8 +142,7 @@ namespace SomniumSpace.Worlds.bently.networking
                 }
                 else if (_deadReckoning && !HasStateAuthority)
                 {
-                    // Lerp finished — extrapolate from last known position+velocity.
-                    // Cap at 1 s to stop runaway if authority client disconnects.
+                    // Lerp finished — extrapolate using last known velocity (capped at 1s)
                     float dt = Mathf.Min(Time.time - _drBaseTime, 1f);
                     transform.position = _drBasePos + _drVelocity * dt;
                 }
@@ -162,7 +163,7 @@ namespace SomniumSpace.Worlds.bently.networking
         }
 
         // =====================================================================
-        // Authority management  (called by NetworkManager)
+        // Authority management (called by NetworkManager)
         // =====================================================================
 
         /// <summary>
@@ -179,7 +180,7 @@ namespace SomniumSpace.Worlds.bently.networking
             {
                 // Gained authority: take over physics from dead reckoning
                 _deadReckoning = false;
-                _interpT = 1f; // stop any active lerp
+                _interpT = 1f;
                 if (_hasRb && !IsClaimedByRemote)
                 {
                     _rb.isKinematic    = false;
@@ -193,14 +194,14 @@ namespace SomniumSpace.Worlds.bently.networking
                 // Lost authority: hand off to incoming dead reckoning
                 if (_hasRb)
                 {
-                    _drVelocity      = _rb.isKinematic ? Vector3.zero : _rb.linearVelocity;
-                    _rb.isKinematic  = true;
+                    _drVelocity     = _rb.isKinematic ? Vector3.zero : _rb.linearVelocity;
+                    _rb.isKinematic = true;
                 }
             }
         }
 
         // =====================================================================
-        // Physics helper  (called on initial connection)
+        // Physics helper (called on initial connection)
         // =====================================================================
 
         public void SetPhysics(bool enable)
@@ -243,185 +244,6 @@ namespace SomniumSpace.Worlds.bently.networking
             => (_hasRb && !_rb.isKinematic) ? _rb.linearVelocity : Vector3.zero;
 
         // =====================================================================
-        // Receive — position update (no velocity, legacy 0x01)
-        // =====================================================================
-
-        public void ApplyUpdate(Vector3 pos, Vector3 rot, Vector3? scale = null)
-        {
-            float baseDuration = GetSmoothingDuration();
-            if (baseDuration <= 0f)
-            {
-                transform.position    = pos;
-                transform.eulerAngles = rot;
-                if (syncScale && scale.HasValue) transform.localScale = scale.Value;
-                _lastUpdateReceivedTime = Time.time;
-                _deadReckoning = false;
-                return;
-            }
-
-            float timeSinceLastUpdate = _lastUpdateReceivedTime >= 0f
-                ? Time.time - _lastUpdateReceivedTime : baseDuration;
-            _lastUpdateReceivedTime = Time.time;
-
-            _fromPos = transform.position;
-            _fromRot = transform.eulerAngles;
-            _toPos   = pos;
-            _toRot   = rot;
-            if (syncScale && scale.HasValue) { _fromScale = transform.localScale; _toScale = scale.Value; }
-            _interpT        = 0f;
-            _interpDuration = Mathf.Clamp(Mathf.Max(baseDuration, timeSinceLastUpdate), baseDuration, 1f);
-            _deadReckoning  = false;
-        }
-
-        // =====================================================================
-        // Receive — position + velocity update (0x0B, dead reckoning)
-        // =====================================================================
-
-        public void ApplyUpdate(Vector3 pos, Vector3 rot, Vector3 velocity, Vector3? scale = null)
-        {
-            _drVelocity    = velocity;
-            _drBasePos     = pos;
-            _drBaseTime    = Time.time;
-            _deadReckoning = velocity.sqrMagnitude > 0.0001f;
-
-            float baseDuration = GetSmoothingDuration();
-            if (baseDuration <= 0f)
-            {
-                transform.position    = pos;
-                transform.eulerAngles = rot;
-                if (syncScale && scale.HasValue) transform.localScale = scale.Value;
-                _lastUpdateReceivedTime = Time.time;
-                return;
-            }
-
-            float timeSinceLastUpdate = _lastUpdateReceivedTime >= 0f
-                ? Time.time - _lastUpdateReceivedTime : baseDuration;
-            _lastUpdateReceivedTime = Time.time;
-            _interpDuration = Mathf.Clamp(Mathf.Max(baseDuration, timeSinceLastUpdate), baseDuration, 1f);
-
-            _fromPos = transform.position;
-            _fromRot = transform.eulerAngles;
-            // Predict where the object will be when the lerp finishes so we hand off
-            // seamlessly to dead reckoning without a position jump.
-            _toPos   = _deadReckoning ? pos + velocity * _interpDuration : pos;
-            _toRot   = rot;
-            if (syncScale && scale.HasValue) { _fromScale = transform.localScale; _toScale = scale.Value; }
-            _interpT = 0f;
-        }
-
-        // =====================================================================
-        // Receive — snap (initial snapshot, no interpolation)
-        // =====================================================================
-
-        public void SnapTo(Vector3 pos, Vector3 rot, Vector3? scale = null)
-        {
-            transform.position    = pos;
-            transform.eulerAngles = rot;
-            _fromPos = _toPos = pos;
-            _fromRot = _toRot = rot;
-            if (syncScale && scale.HasValue)
-            {
-                transform.localScale = scale.Value;
-                _fromScale = _toScale = scale.Value;
-            }
-            _interpT = 1f;
-            _deadReckoning = false;
-            _lastUpdateReceivedTime = -1f;
-        }
-
-        // =====================================================================
-        // Grab / Release
-        // =====================================================================
-
-        public void Grab()
-        {
-            if (!grabbable) return;
-            if (NetworkManager.Instance == null || !NetworkManager.Instance.IsConnected) return;
-            if (IsClaimedLocally) return;
-
-            IsClaimedLocally = true;
-            ClaimedByClient  = NetworkManager.Instance.ClientId;
-
-            if (!HasStateAuthority && _hasRb)
-                _rb.isKinematic = false; // enable physics for local movement
-
-            NetworkManager.Instance.SendClaim(LocalId);
-            _lastSentPos = transform.position;
-            _lastSentRot = transform.eulerAngles;
-        }
-
-        public void Release()
-        {
-            if (NetworkManager.Instance == null || !NetworkManager.Instance.IsConnected) return;
-            if (!IsClaimedLocally) return;
-
-            NetworkManager.Instance.SendInteractionUpdate(this);
-
-            IsClaimedLocally = false;
-            ClaimedByClient  = 0;
-            _lastReleaseTime = Time.time;
-
-            if (!HasStateAuthority && _hasRb)
-            {
-                _rb.linearVelocity  = Vector3.zero;
-                _rb.angularVelocity = Vector3.zero;
-                _rb.isKinematic     = true;
-                _fromPos = _toPos = transform.position;
-                _fromRot = _toRot = transform.eulerAngles;
-                _interpT = 1f;
-            }
-
-            NetworkManager.Instance.SendRelease(LocalId);
-        }
-
-        // =====================================================================
-        // Remote claim / release notifications
-        // =====================================================================
-
-        public void OnRemoteClaim(ushort clientId)
-        {
-            ClaimedByClient = clientId;
-            if (HasStateAuthority && _hasRb)
-                _rb.isKinematic = true; // pause our physics while remote holds it
-        }
-
-        public void OnRemoteRelease()
-        {
-            ClaimedByClient = 0;
-            if (HasStateAuthority && _hasRb)
-            {
-                _rb.isKinematic    = false;
-                _rb.linearVelocity  = Vector3.zero;
-                _rb.angularVelocity = Vector3.zero;
-            }
-        }
-
-        // =====================================================================
-        // Push detection (called by PlayerPushDetector)
-        // =====================================================================
-
-        public void OnPlayerPush()
-        {
-            if (!pushable) return;
-            _lastContactTime = Time.time;
-            if (!IsClaimedLocally && !IsClaimedByRemote
-                && (Time.time - _lastReleaseTime) > RECLAIM_COOLDOWN)
-            {
-                _autoClaimedByPush = true;
-                Grab();
-            }
-        }
-
-        private void OnCollisionEnter(Collision collision)
-        {
-            if (!IsClaimedLocally || !_hasRb) return;
-            if (_rb.linearVelocity.sqrMagnitude < 0.1f) return;
-            var other = collision.gameObject.GetComponent<NetworkObject>();
-            if (other == null || other.IsClaimedLocally || other.IsClaimedByRemote) return;
-            other.OnPlayerPush();
-        }
-
-        // =====================================================================
         // AOI (managed by NetworkManager)
         // =====================================================================
 
@@ -444,26 +266,5 @@ namespace SomniumSpace.Worlds.bently.networking
             if (HasStateAuthority && !IsClaimedByRemote && _hasRb)
                 _rb.isKinematic = false;
         }
-
-        // =====================================================================
-        // Helpers
-        // =====================================================================
-
-        private float GetSmoothingDuration()
-        {
-            switch (smoothing)
-            {
-                case SmoothingMode.None:   return 0f;
-                case SmoothingMode.Low:    return 0.033f;
-                case SmoothingMode.Medium: return 0.05f;
-                case SmoothingMode.High:   return 0.1f;
-                default:                   return 0.05f;
-            }
-        }
-
-        private static Vector3 LerpAngles(Vector3 from, Vector3 to, float t) => new Vector3(
-            Mathf.LerpAngle(from.x, to.x, t),
-            Mathf.LerpAngle(from.y, to.y, t),
-            Mathf.LerpAngle(from.z, to.z, t));
     }
 }
