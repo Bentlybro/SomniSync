@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Collections.Concurrent;
 using System.Net.WebSockets;
 using System.Threading;
 using UnityEngine;
@@ -54,6 +55,7 @@ namespace SomniumSpace.Worlds.bently.networking
         private ClientWebSocket _ws;
         private CancellationTokenSource _cts;
         private readonly byte[] _recvBuffer = new byte[65536];
+        private readonly ConcurrentQueue<byte[]> _sendQueue = new ConcurrentQueue<byte[]>();
         private float _sendInterval;
         private float _nextSendTime;
         private bool _pushDetectorAttached;
@@ -78,6 +80,8 @@ namespace SomniumSpace.Worlds.bently.networking
         public float aoiCheckRate = 2f;
         [Tooltip("Extra radius before deactivating (prevents flicker at boundary)")]
         public float aoiHysteresis = 5f;
+        [Tooltip("Override the local player transform used for AOI. If unset, auto-detected (Somnium) or falls back to Camera.main.")]
+        public Transform localPlayerTransformOverride;
 
         // AOI state
         private float _nextAOICheckTime;
@@ -290,8 +294,9 @@ namespace SomniumSpace.Worlds.bently.networking
             IsConnected = true;
             Debug.Log("[Net] Connected!");
 
-            // Start receive loop as coroutine
+            // Start receive and send loops as coroutines
             StartCoroutine(ReceiveLoop());
+            StartCoroutine(SendLoop());
 
             // Wait until disconnected
             while (IsConnected && _ws.State == WebSocketState.Open)
@@ -330,6 +335,21 @@ namespace SomniumSpace.Worlds.bently.networking
                     BytesReceived += result.Count;
                     ProcessBinary(_recvBuffer, result.Count);
                 }
+            }
+        }
+
+        private IEnumerator SendLoop()
+        {
+            while (IsConnected && _ws.State == WebSocketState.Open)
+            {
+                while (_sendQueue.TryDequeue(out byte[] data))
+                {
+                    var seg = new ArraySegment<byte>(data);
+                    var sendTask = _ws.SendAsync(seg, WebSocketMessageType.Binary, true, _cts.Token);
+                    while (!sendTask.IsCompleted)
+                        yield return null;
+                }
+                yield return null;
             }
         }
 
@@ -510,7 +530,11 @@ namespace SomniumSpace.Worlds.bently.networking
             foreach (var kvp in _playerPositions)
                 playerPositions.Add(kvp.Value);
 
-            if (playerPositions.Count == 0) return;
+            if (playerPositions.Count == 0)
+            {
+                Debug.LogWarning("[Net] AOI: no player positions found — all objects remain active. Assign 'Local Player Transform Override' on NetworkManager.");
+                return;
+            }
 
             float activateRadiusSq = aoiRadius * aoiRadius;
             float deactivateRadiusSq = (aoiRadius + aoiHysteresis) * (aoiRadius + aoiHysteresis);
@@ -579,6 +603,11 @@ namespace SomniumSpace.Worlds.bently.networking
 
         private Transform FindLocalPlayerTransform()
         {
+            // 1. Inspector override — highest priority
+            if (localPlayerTransformOverride != null)
+                return localPlayerTransformOverride;
+
+            // 2. Somnium Space specific search
             foreach (var cc in FindObjectsByType<CharacterController>(FindObjectsSortMode.None))
             {
                 string name = cc.gameObject.name;
@@ -590,6 +619,12 @@ namespace SomniumSpace.Worlds.bently.networking
 
                 return cc.transform;
             }
+
+            // 3. Fall back to main camera
+            if (Camera.main != null)
+                return Camera.main.transform;
+
+            Debug.LogWarning("[Net] AOI: could not find local player transform. Assign 'Local Player Transform Override' on NetworkManager or AOI will not deactivate out-of-range objects.");
             return null;
         }
 
@@ -1035,8 +1070,7 @@ namespace SomniumSpace.Worlds.bently.networking
         private void SendBinary(byte[] data)
         {
             if (_ws == null || _ws.State != WebSocketState.Open) return;
-            var seg = new ArraySegment<byte>(data);
-            _ws.SendAsync(seg, WebSocketMessageType.Binary, true, _cts.Token);
+            _sendQueue.Enqueue(data);
             MessagesSent++;
             BytesSent += data.Length;
         }
