@@ -40,6 +40,7 @@ namespace SomniumSpace.Worlds.bently.networking
             public bool persistForLateJoiners = true;
 
             [System.NonSerialized] public byte[] currentValue;
+            [System.NonSerialized] public byte[] nameBytes; // cached UTF-8 encoding of name
             [System.NonSerialized] public bool dirty;
         }
 
@@ -84,7 +85,8 @@ namespace SomniumSpace.Worlds.bently.networking
             {
                 if (string.IsNullOrEmpty(v.name)) continue;
                 v.currentValue = SerializeDefault(v.type, v.defaultValue);
-                v.dirty = false;
+                v.nameBytes    = Encoding.UTF8.GetBytes(v.name);
+                v.dirty        = false;
                 _varMap[v.name] = v;
             }
             _initialized = true;
@@ -244,33 +246,36 @@ namespace SomniumSpace.Worlds.bently.networking
         /// </summary>
         private void SendDirtyVars(bool immediateOnly)
         {
-            // Count dirty vars
+            // Count dirty vars — use cached nameBytes to avoid double encoding
             int count = 0;
             int totalSize = 4; // 0x04 + u16 obj_id + u8 count
             foreach (var v in variables)
             {
                 if (!v.dirty) continue;
                 if (immediateOnly && v.syncMode != SyncMode.Immediate) continue;
-                byte[] nameBytes = Encoding.UTF8.GetBytes(v.name);
                 // u8 name_len + name + u8 type + u16 value_len + value
-                totalSize += 1 + nameBytes.Length + 1 + 2 + (v.currentValue?.Length ?? 0);
+                int nameBytesLen = v.nameBytes?.Length ?? Encoding.UTF8.GetByteCount(v.name);
+                totalSize += 1 + nameBytesLen + 1 + 2 + (v.currentValue?.Length ?? 0);
                 count++;
             }
 
             if (count == 0) return;
+            int sendCount = Math.Min(count, 255);
 
             byte[] buf = new byte[totalSize];
             buf[0] = 0x04;
             WriteU16(buf, 1, _netObj.LocalId);
-            buf[3] = (byte)count;
+            buf[3] = (byte)sendCount;
 
             int offset = 4;
+            int written = 0;
             foreach (var v in variables)
             {
+                if (written >= sendCount) break;
                 if (!v.dirty) continue;
                 if (immediateOnly && v.syncMode != SyncMode.Immediate) continue;
 
-                byte[] nameBytes = Encoding.UTF8.GetBytes(v.name);
+                byte[] nameBytes = v.nameBytes ?? Encoding.UTF8.GetBytes(v.name);
                 buf[offset++] = (byte)nameBytes.Length;
                 Array.Copy(nameBytes, 0, buf, offset, nameBytes.Length);
                 offset += nameBytes.Length;
@@ -288,6 +293,7 @@ namespace SomniumSpace.Worlds.bently.networking
                 }
 
                 v.dirty = false;
+                written++;
             }
 
             NetworkManager.Instance.SendBinaryPublic(buf);
@@ -306,15 +312,20 @@ namespace SomniumSpace.Worlds.bently.networking
             int offset = startOffset;
             for (int i = 0; i < varCount; i++)
             {
+                if (offset >= data.Length) break;
                 int nameLen = data[offset++];
+                if (nameLen < 0 || offset + nameLen + 3 > data.Length) break; // name + type(1) + valLen(2)
                 string name = Encoding.UTF8.GetString(data, offset, nameLen);
                 offset += nameLen;
 
+                if (offset >= data.Length) break;
                 VarType type = (VarType)data[offset++];
 
+                if (offset + 2 > data.Length) break;
                 int valLen = ReadU16(data, offset);
                 offset += 2;
 
+                if (valLen < 0 || offset + valLen > data.Length) break;
                 byte[] value = new byte[valLen];
                 if (valLen > 0)
                     Array.Copy(data, offset, value, 0, valLen);
@@ -380,20 +391,26 @@ namespace SomniumSpace.Worlds.bently.networking
         /// </summary>
         public void ApplySnapshot(byte[] data, int startOffset)
         {
+            if (startOffset >= data.Length) return;
             int count = data[startOffset];
             int offset = startOffset + 1;
 
             for (int i = 0; i < count; i++)
             {
+                if (offset >= data.Length) break;
                 int nameLen = data[offset++];
+                if (nameLen < 0 || offset + nameLen + 3 > data.Length) break; // name + type(1) + valLen(2)
                 string name = Encoding.UTF8.GetString(data, offset, nameLen);
                 offset += nameLen;
 
+                if (offset >= data.Length) break;
                 VarType type = (VarType)data[offset++];
 
+                if (offset + 2 > data.Length) break;
                 int valLen = ReadU16(data, offset);
                 offset += 2;
 
+                if (valLen < 0 || offset + valLen > data.Length) break;
                 byte[] value = new byte[valLen];
                 if (valLen > 0)
                     Array.Copy(data, offset, value, 0, valLen);
@@ -426,10 +443,11 @@ namespace SomniumSpace.Worlds.bently.networking
 
             v = new VarDefinition
             {
-                name = name,
-                type = type,
+                name         = name,
+                type         = type,
                 currentValue = SerializeDefault(type, ""),
-                dirty = false
+                nameBytes    = Encoding.UTF8.GetBytes(name),
+                dirty        = false
             };
             variables.Add(v);
             _varMap[name] = v;

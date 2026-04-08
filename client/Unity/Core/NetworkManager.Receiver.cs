@@ -25,6 +25,7 @@ namespace SomniumSpace.Worlds.bently.networking
                 case 0x07: HandleAnimatorState(data, length);           break;
                 case 0x08: HandleRigidbodyUpdate(data, length);         break;
                 case 0x09: HandleScaledInteractionUpdates(data, length); break;
+                case 0x0A: HandleScaledSnapshot(data, length);          break;
                 case 0x0B: HandlePositionVelocityUpdates(data, length); break;
                 case 0xFF:
                     if (length >= 2)
@@ -49,6 +50,7 @@ namespace SomniumSpace.Worlds.bently.networking
             switch (ctrl)
             {
                 case 0x01: // You are master
+                    if (length < 4) break;
                     ClientId = BitConverter.ToUInt16(data, 2);
                     IsMaster = true;
                     Debug.Log($"[Net] Assigned as MASTER (client_{ClientId})");
@@ -60,6 +62,7 @@ namespace SomniumSpace.Worlds.bently.networking
                     break;
 
                 case 0x02: // You are spectator
+                    if (length < 4) break;
                     ClientId = BitConverter.ToUInt16(data, 2);
                     IsMaster = false;
                     Debug.Log($"[Net] Assigned as SPECTATOR (client_{ClientId})");
@@ -69,6 +72,7 @@ namespace SomniumSpace.Worlds.bently.networking
                     break;
 
                 case 0x03: // Send snapshot (master only)
+                    if (length < 4) break;
                     ushort targetClient = BitConverter.ToUInt16(data, 2);
                     Debug.Log($"[Net] Snapshot requested for client_{targetClient}");
                     SendSnapshot();
@@ -124,9 +128,19 @@ namespace SomniumSpace.Worlds.bently.networking
                         float px = Protocol.ReadHalf(data, 4);
                         float py = Protocol.ReadHalf(data, 6);
                         float pz = Protocol.ReadHalf(data, 8);
+                        if (!float.IsFinite(px) || !float.IsFinite(py) || !float.IsFinite(pz))
+                        {
+                            Debug.LogWarning($"[Net] Received invalid player position from client_{posClientId}, ignoring");
+                            break;
+                        }
                         _playerPositions[posClientId] = new Vector3(px, py, pz);
                         _playerLastSeen[posClientId]  = Time.time;
                     }
+                    break;
+
+                case 0xFE: // Server error notification
+                    if (length >= 2)
+                        Debug.LogError($"[Net] Server error: snapshot too large to relay — reduce scene object count or split into smaller snapshots");
                     break;
             }
         }
@@ -312,6 +326,36 @@ namespace SomniumSpace.Worlds.bently.networking
 
             _snapFramesRemaining = SNAP_FRAMES_AFTER_SNAPSHOT;
             Debug.Log($"[Net] Snapshot applied: {applied}/{count} objects");
+        }
+
+        // =====================================================================
+        // Scaled Snapshot (0x0A) — full state for new clients, scaled objects
+        // =====================================================================
+
+        private void HandleScaledSnapshot(byte[] data, int length)
+        {
+            if (!_sceneReady) return;
+
+            ushort count = BitConverter.ToUInt16(data, 1);
+            int offset = 3;
+            int applied = 0;
+
+            for (int i = 0; i < count && offset + Protocol.BYTES_PER_ENTITY_SCALED <= length; i++)
+            {
+                ushort localId;
+                Vector3 pos, rot, scale;
+                offset = Protocol.ReadEntityScaled(data, offset, out localId, out pos, out rot, out scale);
+
+                if (_objectMap.TryGetValue(localId, out var obj))
+                {
+                    if (obj.HasStateAuthority) continue;
+                    obj.SnapTo(pos, rot, scale);
+                    applied++;
+                }
+            }
+
+            _snapFramesRemaining = SNAP_FRAMES_AFTER_SNAPSHOT;
+            Debug.Log($"[Net] Scaled snapshot applied: {applied}/{count} objects");
         }
 
         // =====================================================================

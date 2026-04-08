@@ -20,6 +20,9 @@ impl Db {
     /// Open (or create) the database at `path` and ensure the schema exists.
     pub fn open(path: &str) -> Result<PersistenceDb> {
         let conn = Connection::open(path)?;
+        // WAL mode allows concurrent reads while a write is in progress,
+        // significantly improving throughput under load.
+        conn.execute_batch("PRAGMA journal_mode = WAL;")?;
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS player_data (
                 player_id  TEXT NOT NULL,
@@ -37,40 +40,42 @@ impl Db {
 
     /// Write (insert or replace) a value for a player.
     pub fn set(&self, player_id: &str, namespace: &str, key: &str, value: &str) {
-        match self.conn.lock() {
-            Ok(conn) => {
-                if let Err(e) = conn.execute(
-                    "INSERT OR REPLACE INTO player_data
-                        (player_id, namespace, key, value, updated_at)
-                     VALUES (?1, ?2, ?3, ?4, unixepoch())",
-                    params![player_id, namespace, key, value],
-                ) {
-                    error!("[DB] Set failed for player={} ns={} key={}: {}", player_id, namespace, key, e);
-                }
+        let conn = match self.conn.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                error!("[DB] Mutex was poisoned — recovering lock for set");
+                poisoned.into_inner()
             }
-            Err(e) => error!("[DB] Mutex poisoned on set: {}", e),
+        };
+        if let Err(e) = conn.execute(
+            "INSERT OR REPLACE INTO player_data
+                (player_id, namespace, key, value, updated_at)
+             VALUES (?1, ?2, ?3, ?4, unixepoch())",
+            params![player_id, namespace, key, value],
+        ) {
+            error!("[DB] Set failed for player={} ns={} key={}: {}", player_id, namespace, key, e);
         }
     }
 
     /// Read a value for a player. Returns None if not found.
     pub fn get(&self, player_id: &str, namespace: &str, key: &str) -> Option<String> {
-        match self.conn.lock() {
-            Ok(conn) => conn
-                .query_row(
-                    "SELECT value FROM player_data
-                     WHERE player_id = ?1 AND namespace = ?2 AND key = ?3",
-                    params![player_id, namespace, key],
-                    |row| row.get(0),
-                )
-                .optional()
-                .unwrap_or_else(|e| {
-                    error!("[DB] Get failed for player={} ns={} key={}: {}", player_id, namespace, key, e);
-                    None
-                }),
-            Err(e) => {
-                error!("[DB] Mutex poisoned on get: {}", e);
-                None
+        let conn = match self.conn.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                error!("[DB] Mutex was poisoned — recovering lock for get");
+                poisoned.into_inner()
             }
-        }
+        };
+        conn.query_row(
+            "SELECT value FROM player_data
+             WHERE player_id = ?1 AND namespace = ?2 AND key = ?3",
+            params![player_id, namespace, key],
+            |row| row.get(0),
+        )
+        .optional()
+        .unwrap_or_else(|e| {
+            error!("[DB] Get failed for player={} ns={} key={}: {}", player_id, namespace, key, e);
+            None
+        })
     }
 }

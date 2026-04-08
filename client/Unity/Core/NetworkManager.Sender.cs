@@ -145,23 +145,33 @@ namespace SomniumSpace.Worlds.bently.networking
         {
             if (obj.syncScale)
             {
-                byte[] buf = new byte[3 + Protocol.BYTES_PER_ENTITY_SCALED];
-                buf[0] = 0x09;
-                WriteU16(buf, 1, 1);
-                Protocol.WriteEntityScaled(buf, 3, obj.LocalId,
-                    obj.transform.position, obj.transform.eulerAngles, obj.transform.localScale);
-                obj.MarkSent();
-                SendBinary(buf);
+                int size = 3 + Protocol.BYTES_PER_ENTITY_SCALED;
+                byte[] pooled = ArrayPool<byte>.Shared.Rent(size);
+                try
+                {
+                    pooled[0] = 0x09;
+                    WriteU16(pooled, 1, 1);
+                    Protocol.WriteEntityScaled(pooled, 3, obj.LocalId,
+                        obj.transform.position, obj.transform.eulerAngles, obj.transform.localScale);
+                    obj.MarkSent();
+                    SendBinarySegment(pooled, size);
+                }
+                finally { ArrayPool<byte>.Shared.Return(pooled); }
             }
             else
             {
-                byte[] buf = new byte[3 + Protocol.BYTES_PER_ENTITY];
-                buf[0] = 0x03;
-                WriteU16(buf, 1, 1);
-                WriteEntityCompact(buf, 3, obj.LocalId,
-                    obj.transform.position, obj.transform.eulerAngles);
-                obj.MarkSent();
-                SendBinary(buf);
+                int size = 3 + Protocol.BYTES_PER_ENTITY;
+                byte[] pooled = ArrayPool<byte>.Shared.Rent(size);
+                try
+                {
+                    pooled[0] = 0x03;
+                    WriteU16(pooled, 1, 1);
+                    WriteEntityCompact(pooled, 3, obj.LocalId,
+                        obj.transform.position, obj.transform.eulerAngles);
+                    obj.MarkSent();
+                    SendBinarySegment(pooled, size);
+                }
+                finally { ArrayPool<byte>.Shared.Return(pooled); }
             }
         }
 
@@ -198,13 +208,17 @@ namespace SomniumSpace.Worlds.bently.networking
             byte[] normBuf = ArrayPool<byte>.Shared.Rent(maxNormal);
             byte[] scalBuf = ArrayPool<byte>.Shared.Rent(maxScaled);
 
-            normBuf[0] = 0x02;
-            scalBuf[0] = Protocol.MSG_POSITION_UPDATE_SCALED;
+            normBuf[0] = Protocol.MSG_SNAPSHOT;
+            scalBuf[0] = Protocol.MSG_SNAPSHOT_SCALED;
             int normOffset = 3, scalOffset = 3;
             int normCount = 0, scalCount = 0;
 
             foreach (var obj in _objects)
             {
+                // Skip AOI-inactive objects — they are frozen far from all players and
+                // don't need to be included in snapshots for late-joining clients.
+                if (!obj.IsAOIActive) continue;
+
                 if (obj.syncScale)
                 {
                     scalOffset = Protocol.WriteEntityScaled(scalBuf, scalOffset, obj.LocalId,

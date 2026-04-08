@@ -202,12 +202,41 @@ namespace SomniumSpace.Worlds.bently.networking
                 return;
             }
 
-            _reqId++;
+            // Skip IDs already in use (handles wraparound after 65535 requests).
+            // Guard against infinite spin if somehow all 65535 slots are occupied.
+            int attempts = 0;
+            do
+            {
+                unchecked { _reqId++; }
+                attempts++;
+            }
+            while (_pending.ContainsKey(_reqId) && attempts < 65535);
+
+            if (attempts >= 65535)
+            {
+                Debug.LogError("[Persist] All request ID slots in use — too many concurrent Load calls, dropping request");
+                callback?.Invoke(null, false);
+                return;
+            }
+
             ushort id = _reqId;
             _pending[id] = callback;
 
             byte[] nsBytes  = Encoding.UTF8.GetBytes(ns);
             byte[] keyBytes = Encoding.UTF8.GetBytes(key);
+
+            if (nsBytes.Length > 255)
+            {
+                Debug.LogError($"[Persist] Namespace '{ns}' exceeds 255 bytes when UTF-8 encoded, aborting Load");
+                callback?.Invoke(null, false);
+                return;
+            }
+            if (keyBytes.Length > 255)
+            {
+                Debug.LogError($"[Persist] Key '{key}' exceeds 255 bytes when UTF-8 encoded, aborting Load");
+                callback?.Invoke(null, false);
+                return;
+            }
 
             // [0xFF][0x22][u16 req_id][u8 ns_len][ns][u8 key_len][key]
             int size = 6 + nsBytes.Length + keyBytes.Length;
@@ -233,6 +262,17 @@ namespace SomniumSpace.Worlds.bently.networking
             byte[] nsBytes  = Encoding.UTF8.GetBytes(ns);
             byte[] keyBytes = Encoding.UTF8.GetBytes(key);
             byte[] valBytes = Encoding.UTF8.GetBytes(value);
+
+            if (nsBytes.Length > 255)
+            {
+                Debug.LogError($"[Persist] Namespace '{ns}' exceeds 255 bytes when UTF-8 encoded, aborting Save");
+                return;
+            }
+            if (keyBytes.Length > 255)
+            {
+                Debug.LogError($"[Persist] Key '{key}' exceeds 255 bytes when UTF-8 encoded, aborting Save");
+                return;
+            }
 
             // [0xFF][0x21][u8 ns_len][ns][u8 key_len][key][u16 val_len][val]
             int size = 4 + nsBytes.Length + keyBytes.Length + 2 + valBytes.Length;

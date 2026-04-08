@@ -2,12 +2,13 @@ use log::{debug, error, info, warn};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use tokio::time::{timeout, Duration};
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::client::{broadcast_except, send, Client};
+use crate::client::{broadcast_except, new_client, send, Client, ClientMsg};
 use crate::persistence::PersistenceDb;
 use crate::protocol::{
-    ctrl_msg, ctrl_msg_u16, CTRL_AUTHORITY_ASSIGN, CTRL_CLAIM, CTRL_MASTER_CHANGED,
+    ctrl_msg, ctrl_msg_u16, CTRL_AUTHORITY_ASSIGN, CTRL_CLAIM, CTRL_ERROR, CTRL_MASTER_CHANGED,
     CTRL_PERSIST_DATA, CTRL_PERSIST_GET, CTRL_PERSIST_SET, CTRL_PLAYER_IDENT,
     CTRL_PLAYER_POSITION, CTRL_RELEASE, CTRL_SEND_SNAPSHOT, CTRL_YOU_ARE_MASTER,
     CTRL_YOU_ARE_SPECTATOR, MSG_ANIMATOR, MSG_EVENT, MSG_INTERACTION_UPDATE,
@@ -60,11 +61,8 @@ pub async fn handle_connection(
             .clone()
     };
 
-    let (tx, mut rx) = futures_util::StreamExt::split(ws);
-    let client = Arc::new(Client {
-        tx: tokio::sync::Mutex::new(tx),
-        addr,
-    });
+    let (ws_tx, mut rx) = futures_util::StreamExt::split(ws);
+    let client = new_client(addr, ws_tx);
 
     let (client_id, is_master) = {
         let mut r = room.write().await;
@@ -84,11 +82,27 @@ pub async fn handle_connection(
         send_cached_snapshot(&room, &client, client_id, &room_id).await;
     }
 
-    while let Some(msg) = futures_util::StreamExt::next(&mut rx).await {
-        let msg = match msg {
-            Ok(m) => m,
-            Err(e) => {
+    const IDLE_TIMEOUT_SECS: u64 = 60;
+
+    loop {
+        let next = timeout(
+            Duration::from_secs(IDLE_TIMEOUT_SECS),
+            futures_util::StreamExt::next(&mut rx),
+        )
+        .await;
+
+        let msg = match next {
+            Ok(Some(Ok(m))) => m,
+            Ok(Some(Err(e))) => {
                 warn!("[Room:{}] Error from client_{}: {}", room_id, client_id, e);
+                break;
+            }
+            Ok(None) => break, // stream closed cleanly
+            Err(_) => {
+                warn!(
+                    "[Room:{}] client_{} idle for >{}s, disconnecting",
+                    room_id, client_id, IDLE_TIMEOUT_SECS
+                );
                 break;
             }
         };
@@ -102,9 +116,7 @@ pub async fn handle_connection(
             }
             Message::Close(_) => break,
             Message::Ping(d) => {
-                use futures_util::SinkExt;
-                let mut tx = client.tx.lock().await;
-                let _ = tx.send(Message::Pong(d)).await;
+                let _ = client.tx.send(ClientMsg::Pong(d.into())).await;
             }
             _ => {}
         }
@@ -165,7 +177,7 @@ async fn handle_binary(
             if room.master_id != Some(client_id) {
                 return;
             }
-            broadcast_except(&room.clients, client_id, data).await;
+            broadcast_except(&room.clients, client_id, data);
         }
 
         MSG_SNAPSHOT => {
@@ -173,24 +185,30 @@ async fn handle_binary(
             if room.master_id != Some(client_id) {
                 return;
             }
+            const MAX_SNAPSHOT_BYTES: usize = 512 * 1024; // 512 KB — covers ~37k entities
+            if data.len() > MAX_SNAPSHOT_BYTES {
+                warn!("[Room:{}] Snapshot from master too large ({} bytes), rejecting", room_id, data.len());
+                send(&client, ctrl_msg(CTRL_ERROR, b"snapshot_too_large")).await;
+                return;
+            }
             info!(
                 "[Room:{}] Received snapshot from master ({} bytes), caching",
                 room_id, data.len()
             );
             room.latest_snapshot = Some(data.to_vec());
-            broadcast_except(&room.clients, client_id, data).await;
+            broadcast_except(&room.clients, client_id, data);
         }
 
         MSG_POSITION_VELOCITY => {
             let room = room.read().await;
-            broadcast_except(&room.clients, client_id, data).await;
+            broadcast_except(&room.clients, client_id, data);
         }
 
         MSG_INTERACTION_UPDATE | MSG_VARIABLE_UPDATE | MSG_POSITION_UPDATE_SCALED
         | MSG_SNAPSHOT_SCALED | MSG_EVENT | MSG_ANIMATOR | MSG_RIGIDBODY
         | MSG_SCALED_INTERACTION => {
             let room = room.read().await;
-            broadcast_except(&room.clients, client_id, data).await;
+            broadcast_except(&room.clients, client_id, data);
         }
 
         0xFF => {
@@ -224,7 +242,7 @@ async fn handle_control(
     if ctrl == CTRL_PLAYER_POSITION {
         if data.len() >= 10 {
             let room = room.read().await;
-            broadcast_except(&room.clients, client_id, data).await;
+            broadcast_except(&room.clients, client_id, data);
         }
         return;
     }
@@ -233,7 +251,7 @@ async fn handle_control(
     if ctrl == CTRL_AUTHORITY_ASSIGN {
         if data.len() >= 6 {
             let room = room.read().await;
-            broadcast_except(&room.clients, client_id, data).await;
+            broadcast_except(&room.clients, client_id, data);
         }
         return;
     }
@@ -267,7 +285,7 @@ async fn handle_control(
     // --- Persistence: write key/value ---
     if ctrl == CTRL_PERSIST_SET {
         // [0xFF][0x21][u8 ns_len][ns...][u8 key_len][key...][u16 val_len][val...]
-        handle_persist_set(room, client_id, data, room_id, db).await;
+        handle_persist_set(room, client, client_id, data, room_id, db).await;
         return;
     }
 
@@ -290,13 +308,13 @@ async fn handle_control(
             let mut room = room.write().await;
             room.claimed_objects.insert(obj_id, sender_id);
             debug!("[Room:{}] Client_{} claimed object {}", room_id, sender_id, obj_id);
-            broadcast_except(&room.clients, client_id, data).await;
+            broadcast_except(&room.clients, client_id, data);
         }
         CTRL_RELEASE => {
             let mut room = room.write().await;
             room.claimed_objects.remove(&obj_id);
             debug!("[Room:{}] Client_{} released object {}", room_id, sender_id, obj_id);
-            broadcast_except(&room.clients, client_id, data).await;
+            broadcast_except(&room.clients, client_id, data);
         }
         _ => {}
     }
@@ -305,6 +323,7 @@ async fn handle_control(
 /// Handle CTRL_PERSIST_SET — write a value to the database.
 async fn handle_persist_set(
     room: &Arc<RwLock<Room>>,
+    client: &Arc<Client>,
     client_id: u16,
     data: &[u8],
     room_id: &str,
@@ -314,7 +333,12 @@ async fn handle_persist_set(
     let mut offset = 2usize;
     if data.len() < offset + 1 { return; }
 
+    const MAX_NS_LEN: usize    = 64;
+    const MAX_KEY_LEN: usize   = 128;
+    const MAX_VALUE_LEN: usize = 4096;
+
     let ns_len = data[offset] as usize; offset += 1;
+    if ns_len > MAX_NS_LEN { return; }
     if data.len() < offset + ns_len { return; }
     let namespace = match std::str::from_utf8(&data[offset..offset + ns_len]) {
         Ok(s) => s.to_string(), Err(_) => return,
@@ -323,6 +347,7 @@ async fn handle_persist_set(
 
     if data.len() < offset + 1 { return; }
     let key_len = data[offset] as usize; offset += 1;
+    if key_len > MAX_KEY_LEN { return; }
     if data.len() < offset + key_len { return; }
     let key = match std::str::from_utf8(&data[offset..offset + key_len]) {
         Ok(s) => s.to_string(), Err(_) => return,
@@ -331,9 +356,9 @@ async fn handle_persist_set(
 
     if data.len() < offset + 2 { return; }
     let val_len = u16::from_le_bytes([data[offset], data[offset + 1]]) as usize; offset += 2;
-    const MAX_VALUE_LEN: usize = 4096;
     if val_len > MAX_VALUE_LEN {
         warn!("[Room:{}] Persist SET from client_{} exceeded max value size ({} bytes)", room_id, client_id, val_len);
+        send(client, ctrl_msg(CTRL_ERROR, b"persist_value_too_large")).await;
         return;
     }
     if data.len() < offset + val_len { return; }
@@ -369,8 +394,12 @@ async fn handle_persist_get(
     if data.len() < offset + 2 { return; }
     let req_id = u16::from_le_bytes([data[offset], data[offset + 1]]); offset += 2;
 
+    const MAX_NS_LEN: usize  = 64;
+    const MAX_KEY_LEN: usize = 128;
+
     if data.len() < offset + 1 { return; }
     let ns_len = data[offset] as usize; offset += 1;
+    if ns_len > MAX_NS_LEN { return; }
     if data.len() < offset + ns_len { return; }
     let namespace = match std::str::from_utf8(&data[offset..offset + ns_len]) {
         Ok(s) => s.to_string(), Err(_) => return,
@@ -379,6 +408,7 @@ async fn handle_persist_get(
 
     if data.len() < offset + 1 { return; }
     let key_len = data[offset] as usize; offset += 1;
+    if key_len > MAX_KEY_LEN { return; }
     if data.len() < offset + key_len { return; }
     let key = match std::str::from_utf8(&data[offset..offset + key_len]) {
         Ok(s) => s.to_string(), Err(_) => return,
@@ -416,25 +446,28 @@ async fn handle_persist_get(
 
 /// Handle client disconnect — cleanup and promote new master if needed.
 async fn handle_disconnect(room: &Arc<RwLock<Room>>, client_id: u16, room_id: &str) {
-    let new_master = {
-        let mut room = room.write().await;
-        let new_master = room.remove_client(client_id);
+    // Clone the Arc<Client> while holding the write lock, then drop the lock
+    // before awaiting the send. Holding a lock across async I/O would block all
+    // other message handlers for the entire room during network latency.
+    let promotion: Option<(u16, Arc<crate::client::Client>)> = {
+        let mut room_guard = room.write().await;
+        let new_master_id = room_guard.remove_client(client_id);
         info!(
             "[Room:{}] Client_{} disconnected ({} remaining)",
-            room_id, client_id, room.client_count()
+            room_id, client_id, room_guard.client_count()
         );
-        new_master
-    };
+        // Clone the Arc while we still have the lock — fast (just a ref-count bump).
+        new_master_id.and_then(|id| {
+            room_guard.clients.get(&id).map(|c| (id, Arc::clone(c)))
+        })
+    }; // write lock dropped here
 
-    if let Some(new_master_id) = new_master {
-        let room = room.read().await;
-        if let Some(new_master_client) = room.clients.get(&new_master_id) {
-            info!("[Room:{}] Promoting client_{} to master", room_id, new_master_id);
-            send(
-                new_master_client,
-                ctrl_msg(CTRL_MASTER_CHANGED, &new_master_id.to_le_bytes()),
-            )
-            .await;
-        }
+    if let Some((new_master_id, new_master_client)) = promotion {
+        info!("[Room:{}] Promoting client_{} to master", room_id, new_master_id);
+        send(
+            &new_master_client,
+            ctrl_msg(CTRL_MASTER_CHANGED, &new_master_id.to_le_bytes()),
+        )
+        .await;
     }
 }

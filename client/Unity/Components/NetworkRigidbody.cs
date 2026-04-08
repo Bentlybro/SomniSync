@@ -1,4 +1,5 @@
 using System;
+using System.Buffers;
 using UnityEngine;
 
 namespace SomniumSpace.Worlds.bently.networking
@@ -76,7 +77,7 @@ namespace SomniumSpace.Worlds.bently.networking
                 if (_sleepTimer < 0.2f) return;
                 _sleepTimer = 0f;
 
-                if (_rb.velocity.sqrMagnitude > velocityThreshold * velocityThreshold ||
+                if (_rb.linearVelocity.sqrMagnitude > velocityThreshold * velocityThreshold ||
                     _rb.angularVelocity.sqrMagnitude > angularVelocityThreshold * angularVelocityThreshold)
                 {
                     _sleeping = false;
@@ -93,11 +94,14 @@ namespace SomniumSpace.Worlds.bently.networking
             if (_syncTimer < 1f / syncRate) return;
             _syncTimer = 0f;
 
-            var vel = _rb.velocity;
+            var vel = _rb.linearVelocity;
             var angVel = _rb.angularVelocity;
 
-            bool velChanged = Vector3.Distance(vel, _lastSentVelocity) > velocityThreshold;
-            bool angChanged = Vector3.Distance(angVel, _lastSentAngularVelocity) > angularVelocityThreshold;
+            // Use sqrMagnitude comparisons to avoid sqrt on the hot path
+            float velThreshSq = velocityThreshold * velocityThreshold;
+            float angThreshSq = angularVelocityThreshold * angularVelocityThreshold;
+            bool velChanged = (vel - _lastSentVelocity).sqrMagnitude > velThreshSq;
+            bool angChanged = (angVel - _lastSentAngularVelocity).sqrMagnitude > angThreshSq;
 
             bool wasStopped = _lastSentVelocity.sqrMagnitude < 0.001f && _lastSentAngularVelocity.sqrMagnitude < 0.001f;
             bool isStopped = vel.sqrMagnitude < 0.001f && angVel.sqrMagnitude < 0.001f;
@@ -123,16 +127,26 @@ namespace SomniumSpace.Worlds.bently.networking
 
         private void SendVelocity(Vector3 vel, Vector3 angVel)
         {
-            byte[] buf = new byte[MSG_SIZE];
-            buf[0] = MSG_RIGIDBODY;
-            Protocol.WriteU16(buf, 1, _netObj.LocalId);
-            Protocol.WriteHalf(buf, 3, vel.x);
-            Protocol.WriteHalf(buf, 5, vel.y);
-            Protocol.WriteHalf(buf, 7, vel.z);
-            Protocol.WriteHalf(buf, 9, angVel.x);
-            Protocol.WriteHalf(buf, 11, angVel.y);
-            Protocol.WriteHalf(buf, 13, angVel.z);
-            _manager.SendBinaryPublic(buf);
+            byte[] buf = ArrayPool<byte>.Shared.Rent(MSG_SIZE);
+            try
+            {
+                buf[0] = MSG_RIGIDBODY;
+                Protocol.WriteU16(buf, 1, _netObj.LocalId);
+                Protocol.WriteHalf(buf, 3, vel.x);
+                Protocol.WriteHalf(buf, 5, vel.y);
+                Protocol.WriteHalf(buf, 7, vel.z);
+                Protocol.WriteHalf(buf, 9, angVel.x);
+                Protocol.WriteHalf(buf, 11, angVel.y);
+                Protocol.WriteHalf(buf, 13, angVel.z);
+                // SendBinaryPublic enqueues a copy, so return the pooled buffer immediately after
+                byte[] msg = new byte[MSG_SIZE];
+                System.Buffer.BlockCopy(buf, 0, msg, 0, MSG_SIZE);
+                _manager.SendBinaryPublic(msg);
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(buf);
+            }
         }
 
         /// <summary>Called by NetworkManager when a 0x08 message arrives.</summary>
@@ -151,7 +165,7 @@ namespace SomniumSpace.Worlds.bently.networking
             // Only apply if rigidbody is kinematic (spectator mode)
             if (_rb.isKinematic) return;
 
-            _rb.velocity = new Vector3(vx, vy, vz);
+            _rb.linearVelocity = new Vector3(vx, vy, vz);
             _rb.angularVelocity = new Vector3(avx, avy, avz);
         }
     }

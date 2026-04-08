@@ -36,9 +36,23 @@ impl Room {
     }
 
     /// Add a client to the room. Returns (client_id, is_master).
+    /// IDs are assigned from 1..=65535 with wraparound, skipping any ID still in use.
     pub fn add_client(&mut self, client: Arc<Client>) -> (u16, bool) {
+        let start = self.next_id;
+        loop {
+            self.next_id = self.next_id.wrapping_add(1);
+            if self.next_id == 0 {
+                self.next_id = 1; // skip 0 — reserved as "no client"
+            }
+            if !self.clients.contains_key(&self.next_id) {
+                break;
+            }
+            if self.next_id == start {
+                // All 65535 slots occupied — practically impossible, but don't spin forever.
+                break;
+            }
+        }
         let id = self.next_id;
-        self.next_id += 1;
         let is_master = self.master_id.is_none();
         if is_master {
             self.master_id = Some(id);

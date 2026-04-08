@@ -41,6 +41,11 @@ async fn main() {
     loop {
         tokio::select! {
             Ok((stream, addr)) = listener.accept() => {
+                // Disable Nagle's algorithm — game updates are small and latency-sensitive.
+                // Without this, the kernel may buffer small packets for up to 40 ms.
+                if let Err(e) = stream.set_nodelay(true) {
+                    log::warn!("[Server] TCP_NODELAY failed for {}: {}", addr, e);
+                }
                 let rooms = rooms.clone();
                 let db = db.clone();
                 tokio::spawn(handler::handle_connection(stream, addr, rooms, db));

@@ -44,6 +44,9 @@ pub const CTRL_PERSIST_SET: u8   = 0x21; // client → server: write key/value
 pub const CTRL_PERSIST_GET: u8   = 0x22; // client → server: read request
 pub const CTRL_PERSIST_DATA: u8  = 0x23; // server → client: read response
 
+// --- Server error notification ---
+pub const CTRL_ERROR: u8 = 0xFE; // server → client: operation failed (e.g. snapshot too large)
+
 /// Build a control message: [0xFF][ctrl_type][payload...]
 pub fn ctrl_msg(ctrl_type: u8, payload: &[u8]) -> Vec<u8> {
     let mut buf = Vec::with_capacity(2 + payload.len());

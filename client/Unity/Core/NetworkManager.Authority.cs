@@ -31,17 +31,20 @@ namespace SomniumSpace.Worlds.bently.networking
         {
             if (!IsMaster) return;
 
-            var players = new List<(ushort clientId, Vector3 pos)>();
+            // Reuse scratch collections — clear instead of allocate
+            _authorityPlayersScratch.Clear();
             if (_localPlayerTransform != null)
-                players.Add((ClientId, _localPlayerTransform.position));
+                _authorityPlayersScratch.Add((ClientId, _localPlayerTransform.position));
             foreach (var kvp in _playerPositions)
-                players.Add((kvp.Key, kvp.Value));
+                _authorityPlayersScratch.Add((kvp.Key, kvp.Value));
 
             // Nothing to redistribute with only one player
-            if (players.Count <= 1) return;
+            if (_authorityPlayersScratch.Count <= 1) return;
 
-            // For each active object, find nearest player; send assignment if it changed
-            var newAssignments = new Dictionary<ushort, List<ushort>>(); // clientId → objIds
+            // For each active object, find nearest player; collect assignments that changed
+            // Reuse the dictionary — clear values but keep List<ushort> instances to avoid allocs
+            foreach (var list in _newAssignmentsScratch.Values) list.Clear();
+            _newAssignmentsScratch.Clear();
 
             foreach (var obj in _objects)
             {
@@ -51,7 +54,7 @@ namespace SomniumSpace.Worlds.bently.networking
                 ushort nearestClient = ClientId;
                 float  nearestDistSq = float.MaxValue;
 
-                foreach (var (cid, pos) in players)
+                foreach (var (cid, pos) in _authorityPlayersScratch)
                 {
                     float distSq = (obj.transform.position - pos).sqrMagnitude;
                     if (distSq < nearestDistSq) { nearestDistSq = distSq; nearestClient = cid; }
@@ -59,13 +62,13 @@ namespace SomniumSpace.Worlds.bently.networking
 
                 if (obj.StateAuthorityId != nearestClient)
                 {
-                    if (!newAssignments.ContainsKey(nearestClient))
-                        newAssignments[nearestClient] = new List<ushort>();
-                    newAssignments[nearestClient].Add(obj.LocalId);
+                    if (!_newAssignmentsScratch.ContainsKey(nearestClient))
+                        _newAssignmentsScratch[nearestClient] = new List<ushort>();
+                    _newAssignmentsScratch[nearestClient].Add(obj.LocalId);
                 }
             }
 
-            foreach (var kvp in newAssignments)
+            foreach (var kvp in _newAssignmentsScratch)
                 SendAuthorityAssignment(kvp.Key, kvp.Value);
         }
 

@@ -32,6 +32,7 @@ namespace SomniumSpace.Worlds.bently.networking
 
         private NetworkObject _netObj;
         private Dictionary<string, List<Action<object[]>>> _handlers = new Dictionary<string, List<Action<object[]>>>();
+        private readonly List<byte[]> _paramDataCache = new List<byte[]>();
 
         private void Start()
         {
@@ -156,9 +157,9 @@ namespace SomniumSpace.Worlds.bently.networking
             byte[] nameBytes = Encoding.UTF8.GetBytes(eventName);
             int paramCount = parameters?.Length ?? 0;
 
-            // Calculate size
+            // Calculate size — reuse instance list, clear instead of allocate
             int size = 1 + 2 + 1 + 1 + nameBytes.Length + 1; // type + obj_id + target + name_len + name + param_count
-            List<byte[]> paramData = new List<byte[]>();
+            _paramDataCache.Clear();
 
             for (int i = 0; i < paramCount; i++)
             {
@@ -167,8 +168,8 @@ namespace SomniumSpace.Worlds.bently.networking
                 SerializeParam(parameters[i], out type, out val);
                 // u8 type + u16 len + value
                 size += 1 + 2 + val.Length;
-                paramData.Add(new byte[] { type });
-                paramData.Add(val);
+                _paramDataCache.Add(new byte[] { type });
+                _paramDataCache.Add(val);
             }
 
             byte[] buf = new byte[size];
@@ -184,8 +185,8 @@ namespace SomniumSpace.Worlds.bently.networking
 
             for (int i = 0; i < paramCount; i++)
             {
-                buf[offset++] = paramData[i * 2][0]; // type byte
-                byte[] val = paramData[i * 2 + 1];
+                buf[offset++] = _paramDataCache[i * 2][0]; // type byte
+                byte[] val = _paramDataCache[i * 2 + 1];
                 buf[offset++] = (byte)(val.Length & 0xFF);
                 buf[offset++] = (byte)(val.Length >> 8);
                 Array.Copy(val, 0, buf, offset, val.Length);
@@ -206,6 +207,7 @@ namespace SomniumSpace.Worlds.bently.networking
         /// <summary>Called by NetworkManager when receiving 0x06.</summary>
         public void ApplyRemoteEvent(byte[] data, int startOffset, int length)
         {
+            if (startOffset + 3 > length) return; // need target(1) + nameLen(1) + paramCount(1) minimum
             int offset = startOffset;
             EventTarget target = (EventTarget)data[offset++];
 
@@ -214,17 +216,23 @@ namespace SomniumSpace.Worlds.bently.networking
             if (target == EventTarget.Authority && !isAuthority) return;
             if (target == EventTarget.Proxies && isAuthority) return;
 
+            if (offset >= length) return;
             int nameLen = data[offset++];
+            if (nameLen < 0 || offset + nameLen + 1 > length) return;
             string eventName = Encoding.UTF8.GetString(data, offset, nameLen);
             offset += nameLen;
+
+            if (offset >= length) return;
             int paramCount = data[offset++];
 
             object[] parameters = new object[paramCount];
             for (int i = 0; i < paramCount; i++)
             {
+                if (offset + 3 > length) break; // need type(1) + valLen(2)
                 byte type = data[offset++];
                 int valLen = data[offset] | (data[offset + 1] << 8);
                 offset += 2;
+                if (valLen < 0 || offset + valLen > length) break;
                 parameters[i] = DeserializeParam(type, data, offset, valLen);
                 offset += valLen;
             }

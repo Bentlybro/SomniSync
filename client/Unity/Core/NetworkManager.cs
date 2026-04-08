@@ -61,6 +61,11 @@ namespace SomniumSpace.Worlds.bently.networking
         private ClientWebSocket _ws;
         private CancellationTokenSource _cts;
         private readonly byte[] _recvBuffer = new byte[65536];
+        // Accumulation buffer for fragmented WebSocket messages (messages > 65536 bytes
+        // arrive in multiple ReceiveAsync calls with EndOfMessage=false until the last chunk).
+        // Sized to the server's snapshot limit so no valid message is ever dropped.
+        private readonly byte[] _recvAccumBuf = new byte[512 * 1024];
+        private int _recvAccumLen = 0;
         private readonly ConcurrentQueue<byte[]> _sendQueue = new ConcurrentQueue<byte[]>();
         private float _sendInterval;
         private float _rbSendInterval;
@@ -105,6 +110,11 @@ namespace SomniumSpace.Worlds.bently.networking
         // Sequence numbers — track per-sender to discard stale 0x0B packets
         private Dictionary<ushort, ushort> _receivedSequences = new Dictionary<ushort, ushort>();
         private ushort _sendSequence;
+
+        // Reusable scratch collections for AOI and authority (avoid per-tick allocations)
+        private readonly List<Vector3> _aoiPlayerPosScratch          = new List<Vector3>(16);
+        private readonly List<(ushort, Vector3)> _authorityPlayersScratch = new List<(ushort, Vector3)>(16);
+        private readonly Dictionary<ushort, List<ushort>> _newAssignmentsScratch = new Dictionary<ushort, List<ushort>>();
 
         // =====================================================================
         // Integration hooks — set these in your world's Start() to plug in
@@ -205,7 +215,7 @@ namespace SomniumSpace.Worlds.bently.networking
             }
 
             // Spectators send their position to master for AOI
-            if (!IsMaster && enableAOI && Time.time >= _nextPlayerPosSendTime)
+            if (!IsMaster && IsNetworkReady && enableAOI && Time.time >= _nextPlayerPosSendTime)
             {
                 _nextPlayerPosSendTime = Time.time + (1f / PLAYER_POS_SEND_RATE);
                 SendPlayerPosition();
@@ -355,9 +365,39 @@ namespace SomniumSpace.Worlds.bently.networking
                 var result = recvTask.Result;
                 if (result.MessageType == WebSocketMessageType.Binary && result.Count > 0)
                 {
-                    MessagesReceived++;
                     BytesReceived += result.Count;
-                    ProcessBinary(_recvBuffer, result.Count);
+
+                    if (result.EndOfMessage && _recvAccumLen == 0)
+                    {
+                        // Fast path: complete message arrived in one chunk (the common case)
+                        MessagesReceived++;
+                        ProcessBinary(_recvBuffer, result.Count);
+                    }
+                    else
+                    {
+                        // Fragmented message: accumulate until EndOfMessage=true
+                        int space = _recvAccumBuf.Length - _recvAccumLen;
+                        if (result.Count <= space)
+                        {
+                            System.Buffer.BlockCopy(_recvBuffer, 0, _recvAccumBuf, _recvAccumLen, result.Count);
+                            _recvAccumLen += result.Count;
+                        }
+                        else
+                        {
+                            Debug.LogError($"[Net] Incoming message exceeds accumulation buffer ({_recvAccumLen + result.Count} bytes), discarding");
+                            _recvAccumLen = 0; // reset so next message starts clean
+                        }
+
+                        if (result.EndOfMessage)
+                        {
+                            if (_recvAccumLen > 0)
+                            {
+                                MessagesReceived++;
+                                ProcessBinary(_recvAccumBuf, _recvAccumLen);
+                            }
+                            _recvAccumLen = 0;
+                        }
+                    }
                 }
             }
         }

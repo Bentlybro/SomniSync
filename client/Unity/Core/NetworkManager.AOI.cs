@@ -34,18 +34,18 @@ namespace SomniumSpace.Worlds.bently.networking
                 }
             }
 
-            // Collect all player positions: master + remote spectators
-            var playerPositions = new List<Vector3>();
+            // Collect all player positions into reused scratch list (no allocation)
+            _aoiPlayerPosScratch.Clear();
 
             if (_localPlayerTransform == null)
                 _localPlayerTransform = FindLocalPlayerTransform();
             if (_localPlayerTransform != null)
-                playerPositions.Add(_localPlayerTransform.position);
+                _aoiPlayerPosScratch.Add(_localPlayerTransform.position);
 
             foreach (var kvp in _playerPositions)
-                playerPositions.Add(kvp.Value);
+                _aoiPlayerPosScratch.Add(kvp.Value);
 
-            if (playerPositions.Count == 0)
+            if (_aoiPlayerPosScratch.Count == 0)
                 return;
 
             float activateRadiusSq   = aoiRadius * aoiRadius;
@@ -65,9 +65,9 @@ namespace SomniumSpace.Worlds.bently.networking
                 Vector3 objPos = obj.transform.position;
                 float closestDistSq = float.MaxValue;
 
-                for (int i = 0; i < playerPositions.Count; i++)
+                for (int i = 0; i < _aoiPlayerPosScratch.Count; i++)
                 {
-                    float distSq = (objPos - playerPositions[i]).sqrMagnitude;
+                    float distSq = (objPos - _aoiPlayerPosScratch[i]).sqrMagnitude;
                     if (distSq < closestDistSq)
                         closestDistSq = distSq;
                 }

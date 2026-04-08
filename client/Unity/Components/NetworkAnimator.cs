@@ -30,6 +30,7 @@ namespace SomniumSpace.Worlds.bently.networking
 
         private NetworkObject _netObj;
         private Animator _animator;
+        private NetworkEvents _events;
         private float _syncInterval;
         private float _nextSyncTime;
 
@@ -44,6 +45,8 @@ namespace SomniumSpace.Worlds.bently.networking
         }
 
         private ParamCache[] _paramCache;
+        private byte[][] _paramNameBytes; // cached UTF-8 name encodings to avoid per-frame allocation
+        private int[] _dirtyIndices;      // reused dirty-param scratch buffer
         private int _lastStateHash;
         private float _lastNormalizedTime;
 
@@ -60,10 +63,13 @@ namespace SomniumSpace.Worlds.bently.networking
             }
 
             _syncInterval = 1f / syncRate;
+            _events = GetComponent<NetworkEvents>();
 
-            // Cache initial parameter state
+            // Cache initial parameter state + pre-encode names to avoid per-frame allocs
             var parameters = _animator.parameters;
             _paramCache = new ParamCache[parameters.Length];
+            _paramNameBytes = new byte[parameters.Length][];
+            _dirtyIndices = new int[parameters.Length];
             for (int i = 0; i < parameters.Length; i++)
             {
                 var p = parameters[i];
@@ -75,6 +81,7 @@ namespace SomniumSpace.Worlds.bently.networking
                     floatValue = p.type == AnimatorControllerParameterType.Float ? _animator.GetFloat(p.name) : 0f,
                     boolValue = p.type == AnimatorControllerParameterType.Bool ? _animator.GetBool(p.name) : false
                 };
+                _paramNameBytes[i] = Encoding.UTF8.GetBytes(p.name);
             }
         }
 
@@ -129,10 +136,9 @@ namespace SomniumSpace.Worlds.bently.networking
 
             var stateInfo = _animator.GetCurrentAnimatorStateInfo(0);
             bool stateChanged = stateInfo.fullPathHash != _lastStateHash;
-            bool hasDirtyParams = false;
+            int dirtyCount = 0;
 
-            // Check parameters for changes
-            List<int> dirtyIndices = new List<int>();
+            // Check parameters for changes — write into pre-allocated scratch array, no List alloc
             for (int i = 0; i < _paramCache.Length; i++)
             {
                 var cache = _paramCache[i];
@@ -155,25 +161,19 @@ namespace SomniumSpace.Worlds.bently.networking
                 }
 
                 if (dirty)
-                {
-                    dirtyIndices.Add(i);
-                    hasDirtyParams = true;
-                }
+                    _dirtyIndices[dirtyCount++] = i;
             }
 
-            if (!stateChanged && !hasDirtyParams) return;
+            if (!stateChanged && dirtyCount == 0) return;
 
             _lastStateHash = stateInfo.fullPathHash;
             _lastNormalizedTime = stateInfo.normalizedTime;
 
-            // Build message
+            // Build message using pre-cached name byte arrays — no per-frame allocs
             // [0x07][u16 obj_id][i32 state_hash][f32 norm_time][u8 dirty_count][per param: u8 name_len, name, u8 type, 4B value]
             int size = 1 + 2 + 4 + 4 + 1; // header
-            for (int i = 0; i < dirtyIndices.Count; i++)
-            {
-                var cache = _paramCache[dirtyIndices[i]];
-                size += 1 + Encoding.UTF8.GetByteCount(cache.name) + 1 + 4;
-            }
+            for (int i = 0; i < dirtyCount; i++)
+                size += 1 + _paramNameBytes[_dirtyIndices[i]].Length + 1 + 4;
 
             byte[] buf = new byte[size];
             int offset = 0;
@@ -186,12 +186,13 @@ namespace SomniumSpace.Worlds.bently.networking
             byte[] timeBytes = BitConverter.GetBytes(_lastNormalizedTime);
             Array.Copy(timeBytes, 0, buf, offset, 4); offset += 4;
 
-            buf[offset++] = (byte)dirtyIndices.Count;
+            buf[offset++] = (byte)dirtyCount;
 
-            for (int i = 0; i < dirtyIndices.Count; i++)
+            for (int i = 0; i < dirtyCount; i++)
             {
-                var cache = _paramCache[dirtyIndices[i]];
-                byte[] nameBytes = Encoding.UTF8.GetBytes(cache.name);
+                int idx = _dirtyIndices[i];
+                var cache = _paramCache[idx];
+                byte[] nameBytes = _paramNameBytes[idx]; // use cached encoding
                 buf[offset++] = (byte)nameBytes.Length;
                 Array.Copy(nameBytes, 0, buf, offset, nameBytes.Length);
                 offset += nameBytes.Length;
@@ -226,11 +227,10 @@ namespace SomniumSpace.Worlds.bently.networking
         {
             if (NetworkManager.Instance == null || !NetworkManager.Instance.IsConnected) return;
 
-            // Use NetworkEvents if available, otherwise send raw
-            var events = GetComponent<NetworkEvents>();
-            if (events != null)
+            // Use cached NetworkEvents if available (GetComponent already called in Start)
+            if (_events != null)
             {
-                events.Send("_anim_trigger", triggerName);
+                _events.Send("_anim_trigger", triggerName);
                 return;
             }
 
@@ -258,6 +258,7 @@ namespace SomniumSpace.Worlds.bently.networking
         public void ApplyRemoteState(byte[] data, int startOffset)
         {
             if (_animator == null) return;
+            if (startOffset + 9 > data.Length) return; // need stateHash(4) + normTime(4) + paramCount(1)
 
             int offset = startOffset;
             int stateHash = BitConverter.ToInt32(data, offset); offset += 4;
@@ -267,11 +268,16 @@ namespace SomniumSpace.Worlds.bently.networking
             // Apply parameters
             for (int i = 0; i < paramCount; i++)
             {
+                if (offset >= data.Length) break;
                 int nameLen = data[offset++];
+                if (nameLen < 0 || offset + nameLen + 5 > data.Length) break; // name + type(1) + value(4)
                 string paramName = Encoding.UTF8.GetString(data, offset, nameLen);
                 offset += nameLen;
+
+                if (offset >= data.Length) break;
                 byte type = data[offset++];
 
+                if (offset + 4 > data.Length) break;
                 switch (type)
                 {
                     case 0: // int

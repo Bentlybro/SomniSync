@@ -41,9 +41,9 @@ namespace SomniumSpace.Worlds.bently.networking
 
             if (!HasStateAuthority && _hasRb)
             {
-                _rb.linearVelocity  = Vector3.zero;
-                _rb.angularVelocity = Vector3.zero;
-                _rb.isKinematic     = true;
+                // Don't zero velocity here — the authority client will resume physics
+                // from the position sent by SendInteractionUpdate and apply dead-reckoning.
+                _rb.isKinematic = true;
                 _fromPos = _toPos = transform.position;
                 _fromRot = _toRot = transform.eulerAngles;
                 _interpT = 1f;
