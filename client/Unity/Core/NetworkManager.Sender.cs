@@ -257,6 +257,34 @@ namespace SomniumSpace.Worlds.bently.networking
         }
 
         // =====================================================================
+        // AOI farewell — single-object zero-velocity update on deactivation
+        // =====================================================================
+
+        /// <summary>
+        /// Sent by the master when an object is AOI-frozen so spectators know to stop
+        /// dead-reckoning it. Without this, spectators extrapolate using the last received
+        /// velocity for up to 1 second before the dead-reckoning cap kicks in.
+        /// </summary>
+        private void SendAOIFarewellUpdate(NetworkObject obj)
+        {
+            // MSG_POSITION_VELOCITY with count=1, zero velocity
+            int size = 7 + Protocol.BYTES_PER_ENTITY_VELOCITY;
+            byte[] buf = ArrayPool<byte>.Shared.Rent(size);
+            try
+            {
+                buf[0] = Protocol.MSG_POSITION_VELOCITY;
+                Protocol.WriteU16(buf, 1, ClientId);
+                _sendSequence++;
+                Protocol.WriteU16(buf, 3, _sendSequence);
+                Protocol.WriteU16(buf, 5, 1); // count = 1
+                Protocol.WriteEntityVelocity(buf, 7, obj.LocalId,
+                    obj.transform.position, obj.transform.eulerAngles, Vector3.zero);
+                SendBinarySegment(buf, size);
+            }
+            finally { ArrayPool<byte>.Shared.Return(buf); }
+        }
+
+        // =====================================================================
         // Send a correctly-sized copy of a pooled buffer segment
         // =====================================================================
 

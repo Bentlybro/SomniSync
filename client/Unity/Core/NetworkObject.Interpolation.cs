@@ -24,17 +24,16 @@ namespace SomniumSpace.Worlds.bently.networking
                 return;
             }
 
-            float timeSinceLastUpdate = _lastUpdateReceivedTime >= 0f
-                ? Time.time - _lastUpdateReceivedTime : baseDuration;
             _lastUpdateReceivedTime = Time.time;
-
             _fromPos = transform.position;
             _fromRot = transform.eulerAngles;
             _toPos   = pos;
             _toRot   = rot;
             if (syncScale && scale.HasValue) { _fromScale = transform.localScale; _toScale = scale.Value; }
             _interpT        = 0f;
-            _interpDuration = Mathf.Clamp(Mathf.Max(baseDuration, timeSinceLastUpdate), baseDuration, 1f);
+            // Fixed duration — variable duration causes objects to visually change speed
+            // whenever a packet arrives late/early, which reads as jitter.
+            _interpDuration = baseDuration;
             _deadReckoning  = false;
         }
 
@@ -59,18 +58,20 @@ namespace SomniumSpace.Worlds.bently.networking
                 return;
             }
 
-            float timeSinceLastUpdate = _lastUpdateReceivedTime >= 0f
-                ? Time.time - _lastUpdateReceivedTime : baseDuration;
             _lastUpdateReceivedTime = Time.time;
-            _interpDuration = Mathf.Clamp(Mathf.Max(baseDuration, timeSinceLastUpdate), baseDuration, 1f);
-
             _fromPos = transform.position;
             _fromRot = transform.eulerAngles;
-            // Predict where the object will be when lerp finishes for a seamless dead-reckoning handoff
-            _toPos   = _deadReckoning ? pos + velocity * _interpDuration : pos;
+            // Lerp to where dead reckoning will be when the lerp finishes.
+            // At t=baseDuration after receipt, DR gives: pos + vel * baseDuration.
+            // Setting _toPos to that value means the lerp lands exactly where DR
+            // picks up — no position jump at the lerp→DR transition.
+            // (The old comment about overshoot applied when _interpDuration varied
+            // per packet; now it is fixed, so the concern no longer applies.)
+            _toPos   = pos + velocity * baseDuration;
             _toRot   = rot;
             if (syncScale && scale.HasValue) { _fromScale = transform.localScale; _toScale = scale.Value; }
-            _interpT = 0f;
+            _interpT        = 0f;
+            _interpDuration = baseDuration; // fixed, never jitter from packet timing
         }
 
         // =====================================================================

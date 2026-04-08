@@ -75,8 +75,6 @@ namespace SomniumSpace.Worlds.bently.networking
         private float _nextPushDetectorCheckTime;
 
         // After snapshot, snap first N updates instead of interpolating
-        private int _snapFramesRemaining;
-        private const int SNAP_FRAMES_AFTER_SNAPSHOT = 3;
 
         // Periodic resync snapshot (master only)
         [Header("Resync")]
@@ -188,22 +186,14 @@ namespace SomniumSpace.Worlds.bently.networking
                 SendAuthorityPositionUpdates(rigidbodies: true);
             }
 
-            // Periodic full snapshot to correct drift (master only)
+            // Periodic full snapshot to correct drift (master only).
+            // Always send — even when nothing has moved. Spectators accumulate dead-reckoning
+            // error over time and the resync is the only mechanism to correct it. Gating on
+            // anyMoved meant the resync never fired once objects settled, so drift was permanent.
             if (IsMaster && resyncInterval > 0 && Time.time >= _nextResyncTime)
             {
                 _nextResyncTime = Time.time + resyncInterval;
-                bool anyMoved = false;
-                foreach (var obj in _objects)
-                {
-                    if (!obj.IsAOIActive) continue;
-                    if (obj.HasMoved(positionThreshold, rotationThreshold))
-                    {
-                        anyMoved = true;
-                        break;
-                    }
-                }
-                if (anyMoved)
-                    SendSnapshot();
+                SendSnapshot();
             }
 
             // AOI + authority: master recalculates periodically

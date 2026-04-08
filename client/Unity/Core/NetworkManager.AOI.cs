@@ -76,7 +76,15 @@ namespace SomniumSpace.Worlds.bently.networking
                 {
                     // Active — use wider deactivate radius (hysteresis prevents flicker)
                     if (closestDistSq > deactivateRadiusSq)
+                    {
+                        bool wasActive = obj.IsAOIActive;
                         obj.AOIDeactivate();
+                        // If the object actually froze, send a zero-velocity farewell update
+                        // so spectators stop dead-reckoning it immediately rather than
+                        // extrapolating for up to 1 second before the cap kicks in.
+                        if (wasActive && !obj.IsAOIActive)
+                            SendAOIFarewellUpdate(obj);
+                    }
                     else
                         activeCount++;
                 }

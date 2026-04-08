@@ -176,15 +176,9 @@ namespace SomniumSpace.Worlds.bently.networking
                 {
                     if (obj.HasStateAuthority) continue;
                     if (obj.IsClaimedLocally)  continue;
-                    if (_snapFramesRemaining > 0)
-                        obj.SnapTo(pos, rot);
-                    else
-                        obj.ApplyUpdate(pos, rot, vel);
+                    obj.ApplyUpdate(pos, rot, vel);
                 }
             }
-
-            if (_snapFramesRemaining > 0)
-                _snapFramesRemaining--;
         }
 
         // =====================================================================
@@ -208,15 +202,9 @@ namespace SomniumSpace.Worlds.bently.networking
                 {
                     if (obj.HasStateAuthority) continue;
                     if (obj.IsClaimedLocally)  continue;
-                    if (_snapFramesRemaining > 0)
-                        obj.SnapTo(pos, rot);
-                    else
-                        obj.ApplyUpdate(pos, rot);
+                    obj.ApplyUpdate(pos, rot);
                 }
             }
-
-            if (_snapFramesRemaining > 0)
-                _snapFramesRemaining--;
         }
 
         // =====================================================================
@@ -265,10 +253,7 @@ namespace SomniumSpace.Worlds.bently.networking
                 {
                     if (obj.HasStateAuthority) continue;
                     if (obj.IsClaimedLocally)  continue;
-                    if (_snapFramesRemaining > 0)
-                        obj.SnapTo(pos, rot, scale);
-                    else
-                        obj.ApplyUpdate(pos, rot, scale);
+                    obj.ApplyUpdate(pos, rot, scale);
                 }
             }
         }
@@ -324,7 +309,6 @@ namespace SomniumSpace.Worlds.bently.networking
                 }
             }
 
-            _snapFramesRemaining = SNAP_FRAMES_AFTER_SNAPSHOT;
             Debug.Log($"[Net] Snapshot applied: {applied}/{count} objects");
         }
 
@@ -354,7 +338,6 @@ namespace SomniumSpace.Worlds.bently.networking
                 }
             }
 
-            _snapFramesRemaining = SNAP_FRAMES_AFTER_SNAPSHOT;
             Debug.Log($"[Net] Scaled snapshot applied: {applied}/{count} objects");
         }
 
