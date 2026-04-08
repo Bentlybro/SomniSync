@@ -12,9 +12,15 @@ pub type Tx = futures_util::stream::SplitSink<
 >;
 
 /// How many outbound messages to buffer per client before dropping.
-/// At 60 Hz with 50 entities, a message is ~420 bytes. 256 slots = ~4 seconds of buffer.
-/// If a client's buffer is full they're too lagged to receive real-time data anyway.
-const SEND_BUFFER: usize = 256;
+///
+/// Keep this small. Game position/velocity data is real-time — queuing old frames
+/// creates latency spikes rather than smoothness. If a client falls behind by more
+/// than SEND_BUFFER messages, we drop the newest arrival (they're too lagged for
+/// stale frames to be useful anyway). Smaller = lower worst-case latency.
+///
+/// At 20 Hz send rate: 32 slots ≈ 1.6s of buffer before dropping.
+/// At 60 Hz send rate: 32 slots ≈ 0.5s of buffer before dropping.
+const SEND_BUFFER: usize = 32;
 
 pub enum ClientMsg {
     Binary(Bytes),

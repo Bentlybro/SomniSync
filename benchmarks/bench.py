@@ -18,6 +18,7 @@ Usage:
 """
 
 import asyncio
+import socket
 import struct
 import time
 import statistics
@@ -133,7 +134,16 @@ def separator(char="-", width=60):
 # ---------------------------------------------------------------------------
 async def connect(server: str, room: str = "bench"):
     uri = f"{server}/{room}"
-    return await websockets.connect(uri, max_size=2**20, close_timeout=5)
+    ws = await websockets.connect(uri, max_size=2**20, close_timeout=5)
+    # Disable Nagle's algorithm on the client socket — same as the server-side fix.
+    # Without this, the kernel may buffer small game packets for up to 40ms.
+    try:
+        sock = ws.transport.get_extra_info("socket")
+        if sock:
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    except Exception:
+        pass
+    return ws
 
 
 # ---------------------------------------------------------------------------
@@ -295,11 +305,12 @@ async def test_throughput(server: str, duration_secs: float = THROUGHPUT_SECS, e
 # ---------------------------------------------------------------------------
 # TEST 4 - Scale Test
 # ---------------------------------------------------------------------------
-async def test_scale(server: str, steps: Optional[List[int]] = None, msg_count: int = 200):
+async def test_scale(server: str, steps: Optional[List[int]] = None, msg_count: int = 200, tick_hz: float = 20.0):
     if steps is None:
         steps = SCALE_STEPS
+    tick_interval = 1.0 / tick_hz
     separator()
-    print(f"TEST 4 - Scale Test  (spectator counts: {steps})")
+    print(f"TEST 4 - Scale Test  (spectator counts: {steps}, send rate: {tick_hz:.0f} Hz)")
     separator()
     print(f"  {'Spectators':>10}  {'p50':>9}  {'p95':>9}  {'p99':>9}  {'recv/sent':>10}  {'msg/s':>8}")
     print(f"  {'-'*10}  {'-'*9}  {'-'*9}  {'-'*9}  {'-'*10}  {'-'*8}")
@@ -344,9 +355,16 @@ async def test_scale(server: str, steps: Optional[List[int]] = None, msg_count: 
         t0 = time.perf_counter()
         recv_task = asyncio.create_task(recv_all())
 
-        for i in range(msg_count):
+        # Send at a realistic game tick rate rather than flooding.
+        # Flooding fills channel queues and gives artificially high latency.
+        next_send = time.perf_counter()
+        for _ in range(msg_count):
+            now = time.perf_counter()
+            if next_send > now:
+                await asyncio.sleep(next_send - now)
             await master.send(make_event(0, time.perf_counter_ns()))
             total_sent += 1
+            next_send += tick_interval
 
         await recv_task
         elapsed = time.perf_counter() - t0
@@ -372,7 +390,7 @@ async def _recv_samples(ws, expected: int, out_samples: list) -> int:
     count = 0
     while count < expected:
         try:
-            raw = await asyncio.wait_for(ws.recv(), timeout=5.0)
+            raw = await asyncio.wait_for(ws.recv(), timeout=15.0)
             if isinstance(raw, bytes):
                 ts = extract_event_ts(raw)
                 if ts is not None:
