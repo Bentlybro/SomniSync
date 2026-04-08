@@ -215,10 +215,10 @@ namespace SomniumSpace.Worlds.bently.networking
 
             foreach (var obj in _objects)
             {
-                // Skip AOI-inactive objects — they are frozen far from all players and
-                // don't need to be included in snapshots for late-joining clients.
-                if (!obj.IsAOIActive) continue;
-
+                // ALL objects must be included in snapshots regardless of AOI/sleep state.
+                // Snapshots are the authoritative full world state used for late-joiner sync
+                // and desync recovery. Skipping sleeping objects here causes spectators to
+                // never receive the final resting positions of settled physics objects.
                 if (obj.syncScale)
                 {
                     scalOffset = Protocol.WriteEntityScaled(scalBuf, scalOffset, obj.LocalId,
