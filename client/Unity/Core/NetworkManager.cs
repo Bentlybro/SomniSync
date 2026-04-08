@@ -67,6 +67,7 @@ namespace SomniumSpace.Worlds.bently.networking
         private float _nextSendTime;
         private float _nextRbSendTime;
         private bool _pushDetectorAttached;
+        private float _nextPushDetectorCheckTime;
 
         // After snapshot, snap first N updates instead of interpolating
         private int _snapFramesRemaining;
@@ -155,9 +156,12 @@ namespace SomniumSpace.Worlds.bently.networking
 
             if (!IsConnected) return;
 
-            // Attach push detector to local player (once) — all clients can push/grab
-            if (!_pushDetectorAttached)
+            // Attach push detector — retry every 0.5s until found (not every frame)
+            if (!_pushDetectorAttached && Time.time >= _nextPushDetectorCheckTime)
+            {
+                _nextPushDetectorCheckTime = Time.time + 0.5f;
                 AttachPushDetector();
+            }
 
             // Send position updates at configured rate (60Hz for transforms/grabbed)
             if (Time.time >= _nextSendTime)
@@ -323,6 +327,8 @@ namespace SomniumSpace.Worlds.bently.networking
             IsConnected = false;
             IsMaster = false;
             IsNetworkReady = false;
+            _pushDetectorAttached = false;
+            NetworkPersistence.ClearPending();
             Debug.Log("[Net] Disconnected.");
             OnDisconnected?.Invoke();
         }

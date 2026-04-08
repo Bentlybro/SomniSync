@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.Text;
 using UnityEngine;
 
+// ReSharper disable Unity.PerformanceCriticalCodeInvocation
+
 namespace SomniumSpace.Worlds.bently.networking
 {
     /// <summary>
@@ -49,6 +51,17 @@ namespace SomniumSpace.Worlds.bently.networking
         private static readonly Dictionary<ushort, Action<string, bool>> _pending
             = new Dictionary<ushort, Action<string, bool>>();
         private static ushort _reqId;
+
+        // =====================================================================
+        // Called by NetworkManager on disconnect — fire all pending with not-found
+        // =====================================================================
+
+        internal static void ClearPending()
+        {
+            foreach (var cb in _pending.Values)
+                cb?.Invoke(null, false);
+            _pending.Clear();
+        }
 
         // =====================================================================
         // Called by NetworkManager when connection + role are assigned

@@ -1,25 +1,40 @@
+using System.Buffers;
 using UnityEngine;
 
 namespace SomniumSpace.Worlds.bently.networking
 {
     /// <summary>
     /// Handles all outgoing position, interaction, and snapshot messages.
+    /// Uses ArrayPool + single-pass writes to minimise per-frame allocations.
     /// </summary>
     public partial class NetworkManager
     {
         // =====================================================================
         // Authority position updates (0x0B) — any client, for owned objects
         // Format: [0x0B][u16 senderClientId][u16 sequence][u16 count][20B entities...]
+        // rigidbodies=true  → only physics objects (20Hz)
+        // rigidbodies=false → only non-physics objects (60Hz)
         // =====================================================================
 
-        // rigidbodies=true  → only send physics objects (at 20Hz)
-        // rigidbodies=false → only send non-physics objects (at 60Hz)
         private void SendAuthorityPositionUpdates(bool rigidbodies)
         {
             if (_objects.Count == 0) return;
 
-            int movedCount = 0;
-            int movedScaledCount = 0;
+            // --- Non-scaled: single pass, write into pooled buffer, send if count > 0 ---
+            int maxVelSize = 7 + _objects.Count * Protocol.BYTES_PER_ENTITY_VELOCITY;
+            byte[] velBuf = ArrayPool<byte>.Shared.Rent(maxVelSize);
+            velBuf[0] = Protocol.MSG_POSITION_VELOCITY;
+            Protocol.WriteU16(velBuf, 1, ClientId);
+            // sequence written after we know count > 0
+            int velOffset = 7;
+            int velCount = 0;
+
+            int maxScaledSize = 3 + _objects.Count * Protocol.BYTES_PER_ENTITY_SCALED;
+            byte[] scaledBuf = ArrayPool<byte>.Shared.Rent(maxScaledSize);
+            scaledBuf[0] = Protocol.MSG_POSITION_UPDATE_SCALED;
+            int scaledOffset = 3;
+            int scaledCount = 0;
+
             foreach (var obj in _objects)
             {
                 if (!obj.HasStateAuthority) continue;
@@ -28,56 +43,37 @@ namespace SomniumSpace.Worlds.bently.networking
                 if (obj.IsRigidbody != rigidbodies) continue;
                 if (obj.IsSleeping) continue;
                 if (!obj.HasMoved(positionThreshold, rotationThreshold)) continue;
-                if (obj.syncScale) movedScaledCount++;
-                else movedCount++;
+
+                if (obj.syncScale)
+                {
+                    scaledOffset = Protocol.WriteEntityScaled(scaledBuf, scaledOffset, obj.LocalId,
+                        obj.transform.position, obj.transform.eulerAngles, obj.transform.localScale);
+                    scaledCount++;
+                }
+                else
+                {
+                    velOffset = Protocol.WriteEntityVelocity(velBuf, velOffset, obj.LocalId,
+                        obj.transform.position, obj.transform.eulerAngles, obj.GetCurrentVelocity());
+                    velCount++;
+                }
+                obj.MarkSent();
             }
 
-            // 0x0B — non-scaled with velocity for dead reckoning
-            if (movedCount > 0)
+            if (velCount > 0)
             {
                 _sendSequence++;
-                int size = 7 + movedCount * Protocol.BYTES_PER_ENTITY_VELOCITY;
-                byte[] buf = new byte[size];
-                buf[0] = Protocol.MSG_POSITION_VELOCITY;
-                Protocol.WriteU16(buf, 1, ClientId);
-                Protocol.WriteU16(buf, 3, _sendSequence);
-                Protocol.WriteU16(buf, 5, (ushort)movedCount);
-                int offset = 7;
-                foreach (var obj in _objects)
-                {
-                    if (!obj.HasStateAuthority || obj.syncScale) continue;
-                    if (!obj.IsAOIActive || obj.IsClaimedByRemote) continue;
-                    if (obj.IsRigidbody != rigidbodies) continue;
-                    if (obj.IsSleeping) continue;
-                    if (!obj.HasMoved(positionThreshold, rotationThreshold)) continue;
-                    offset = Protocol.WriteEntityVelocity(buf, offset, obj.LocalId,
-                        obj.transform.position, obj.transform.eulerAngles, obj.GetCurrentVelocity());
-                    obj.MarkSent();
-                }
-                SendBinary(buf);
+                Protocol.WriteU16(velBuf, 3, _sendSequence);
+                Protocol.WriteU16(velBuf, 5, (ushort)velCount);
+                SendBinarySegment(velBuf, velOffset);
             }
+            ArrayPool<byte>.Shared.Return(velBuf);
 
-            // 0x05 — scaled objects (scale-synced objects are usually slow, no velocity needed)
-            if (movedScaledCount > 0)
+            if (scaledCount > 0)
             {
-                int size = 3 + movedScaledCount * Protocol.BYTES_PER_ENTITY_SCALED;
-                byte[] buf = new byte[size];
-                buf[0] = Protocol.MSG_POSITION_UPDATE_SCALED;
-                WriteU16(buf, 1, (ushort)movedScaledCount);
-                int offset = 3;
-                foreach (var obj in _objects)
-                {
-                    if (!obj.HasStateAuthority || !obj.syncScale) continue;
-                    if (!obj.IsAOIActive || obj.IsClaimedByRemote) continue;
-                    if (obj.IsRigidbody != rigidbodies) continue;
-                    if (obj.IsSleeping) continue;
-                    if (!obj.HasMoved(positionThreshold, rotationThreshold)) continue;
-                    offset = Protocol.WriteEntityScaled(buf, offset, obj.LocalId,
-                        obj.transform.position, obj.transform.eulerAngles, obj.transform.localScale);
-                    obj.MarkSent();
-                }
-                SendBinary(buf);
+                WriteU16(scaledBuf, 1, (ushort)scaledCount);
+                SendBinarySegment(scaledBuf, scaledOffset);
             }
+            ArrayPool<byte>.Shared.Return(scaledBuf);
         }
 
         // =====================================================================
@@ -86,53 +82,48 @@ namespace SomniumSpace.Worlds.bently.networking
 
         private void SendInteractionUpdates()
         {
-            int movedCount = 0;
-            int movedScaledCount = 0;
+            int maxSize = 3 + _objects.Count * Protocol.BYTES_PER_ENTITY_SCALED; // worst case
+            byte[] buf     = ArrayPool<byte>.Shared.Rent(maxSize);
+            byte[] scalBuf = ArrayPool<byte>.Shared.Rent(maxSize);
+
+            buf[0]     = 0x03;
+            scalBuf[0] = 0x09;
+            int offset = 3, scalOffset = 3;
+            int count = 0, scalCount = 0;
+
             foreach (var obj in _objects)
             {
                 if (!obj.IsClaimedLocally) continue;
                 if (!obj.HasMoved(positionThreshold, rotationThreshold)) continue;
-                if (obj.syncScale) movedScaledCount++;
-                else movedCount++;
-            }
 
-            // Non-scaled interaction updates (0x03)
-            if (movedCount > 0)
-            {
-                int size = 3 + movedCount * Protocol.BYTES_PER_ENTITY;
-                byte[] buf = new byte[size];
-                buf[0] = 0x03;
-                WriteU16(buf, 1, (ushort)movedCount);
-                int offset = 3;
-                foreach (var obj in _objects)
+                if (obj.syncScale)
                 {
-                    if (!obj.IsClaimedLocally || obj.syncScale) continue;
-                    if (!obj.HasMoved(positionThreshold, rotationThreshold)) continue;
+                    scalOffset = Protocol.WriteEntityScaled(scalBuf, scalOffset, obj.LocalId,
+                        obj.transform.position, obj.transform.eulerAngles, obj.transform.localScale);
+                    scalCount++;
+                }
+                else
+                {
                     offset = WriteEntityCompact(buf, offset, obj.LocalId,
                         obj.transform.position, obj.transform.eulerAngles);
-                    obj.MarkSent();
+                    count++;
                 }
-                SendBinary(buf);
+                obj.MarkSent();
             }
 
-            // Scaled interaction updates (0x09)
-            if (movedScaledCount > 0)
+            if (count > 0)
             {
-                int size = 3 + movedScaledCount * Protocol.BYTES_PER_ENTITY_SCALED;
-                byte[] buf = new byte[size];
-                buf[0] = 0x09;
-                WriteU16(buf, 1, (ushort)movedScaledCount);
-                int offset = 3;
-                foreach (var obj in _objects)
-                {
-                    if (!obj.IsClaimedLocally || !obj.syncScale) continue;
-                    if (!obj.HasMoved(positionThreshold, rotationThreshold)) continue;
-                    offset = Protocol.WriteEntityScaled(buf, offset, obj.LocalId,
-                        obj.transform.position, obj.transform.eulerAngles, obj.transform.localScale);
-                    obj.MarkSent();
-                }
-                SendBinary(buf);
+                WriteU16(buf, 1, (ushort)count);
+                SendBinarySegment(buf, offset);
             }
+            ArrayPool<byte>.Shared.Return(buf);
+
+            if (scalCount > 0)
+            {
+                WriteU16(scalBuf, 1, (ushort)scalCount);
+                SendBinarySegment(scalBuf, scalOffset);
+            }
+            ArrayPool<byte>.Shared.Return(scalBuf);
         }
 
         /// <summary>
@@ -162,29 +153,21 @@ namespace SomniumSpace.Worlds.bently.networking
             }
         }
 
-        /// <summary>
-        /// Send a claim message for an object (called by NetworkObject.Grab()).
-        /// </summary>
+        /// <summary>Send a claim message (called by NetworkObject.Grab()).</summary>
         public void SendClaim(ushort objectId)
         {
-            // [0xFF][0x05][u16 object_id][u16 client_id]
             byte[] buf = new byte[6];
-            buf[0] = 0xFF;
-            buf[1] = 0x05;
+            buf[0] = 0xFF; buf[1] = 0x05;
             WriteU16(buf, 2, objectId);
             WriteU16(buf, 4, ClientId);
             SendBinary(buf);
         }
 
-        /// <summary>
-        /// Send a release message for an object (called by NetworkObject.Release()).
-        /// </summary>
+        /// <summary>Send a release message (called by NetworkObject.Release()).</summary>
         public void SendRelease(ushort objectId)
         {
-            // [0xFF][0x06][u16 object_id][u16 client_id]
             byte[] buf = new byte[6];
-            buf[0] = 0xFF;
-            buf[1] = 0x06;
+            buf[0] = 0xFF; buf[1] = 0x06;
             WriteU16(buf, 2, objectId);
             WriteU16(buf, 4, ClientId);
             SendBinary(buf);
@@ -198,49 +181,58 @@ namespace SomniumSpace.Worlds.bently.networking
         {
             if (_objects.Count == 0) return;
 
-            int normalCount = 0;
-            int scaledCount = 0;
+            int maxNormal = 3 + _objects.Count * Protocol.BYTES_PER_ENTITY;
+            int maxScaled = 3 + _objects.Count * Protocol.BYTES_PER_ENTITY_SCALED;
+            byte[] normBuf = ArrayPool<byte>.Shared.Rent(maxNormal);
+            byte[] scalBuf = ArrayPool<byte>.Shared.Rent(maxScaled);
+
+            normBuf[0] = 0x02;
+            scalBuf[0] = Protocol.MSG_POSITION_UPDATE_SCALED;
+            int normOffset = 3, scalOffset = 3;
+            int normCount = 0, scalCount = 0;
+
             foreach (var obj in _objects)
             {
-                if (obj.syncScale) scaledCount++;
-                else normalCount++;
-            }
-
-            // Non-scaled snapshot (0x02)
-            if (normalCount > 0)
-            {
-                int size = 3 + normalCount * Protocol.BYTES_PER_ENTITY;
-                byte[] buf = new byte[size];
-                buf[0] = 0x02;
-                WriteU16(buf, 1, (ushort)normalCount);
-                int offset = 3;
-                foreach (var obj in _objects)
+                if (obj.syncScale)
                 {
-                    if (obj.syncScale) continue;
-                    offset = WriteEntityCompact(buf, offset, obj.LocalId,
-                        obj.transform.position, obj.transform.eulerAngles);
-                }
-                SendBinary(buf);
-            }
-
-            // Scaled snapshot (0x05 — same handler as scaled position updates)
-            if (scaledCount > 0)
-            {
-                int size = 3 + scaledCount * Protocol.BYTES_PER_ENTITY_SCALED;
-                byte[] buf = new byte[size];
-                buf[0] = Protocol.MSG_POSITION_UPDATE_SCALED;
-                WriteU16(buf, 1, (ushort)scaledCount);
-                int offset = 3;
-                foreach (var obj in _objects)
-                {
-                    if (!obj.syncScale) continue;
-                    offset = Protocol.WriteEntityScaled(buf, offset, obj.LocalId,
+                    scalOffset = Protocol.WriteEntityScaled(scalBuf, scalOffset, obj.LocalId,
                         obj.transform.position, obj.transform.eulerAngles, obj.transform.localScale);
+                    scalCount++;
                 }
-                SendBinary(buf);
+                else
+                {
+                    normOffset = WriteEntityCompact(normBuf, normOffset, obj.LocalId,
+                        obj.transform.position, obj.transform.eulerAngles);
+                    normCount++;
+                }
             }
 
-            Debug.Log($"[Net] Sending snapshot: {normalCount} normal + {scaledCount} scaled objects");
+            if (normCount > 0)
+            {
+                WriteU16(normBuf, 1, (ushort)normCount);
+                SendBinarySegment(normBuf, normOffset);
+            }
+            ArrayPool<byte>.Shared.Return(normBuf);
+
+            if (scalCount > 0)
+            {
+                WriteU16(scalBuf, 1, (ushort)scalCount);
+                SendBinarySegment(scalBuf, scalOffset);
+            }
+            ArrayPool<byte>.Shared.Return(scalBuf);
+
+            Debug.Log($"[Net] Sending snapshot: {normCount} normal + {scalCount} scaled objects");
+        }
+
+        // =====================================================================
+        // Send a correctly-sized copy of a pooled buffer segment
+        // =====================================================================
+
+        private void SendBinarySegment(byte[] buf, int length)
+        {
+            byte[] msg = new byte[length];
+            System.Buffer.BlockCopy(buf, 0, msg, 0, length);
+            SendBinary(msg);
         }
     }
 }

@@ -102,7 +102,9 @@ pub async fn handle_connection(
             }
             Message::Close(_) => break,
             Message::Ping(d) => {
-                send(&client, Message::Pong(d).into_data()).await;
+                use futures_util::SinkExt;
+                let mut tx = client.tx.lock().await;
+                let _ = tx.send(Message::Pong(d)).await;
             }
             _ => {}
         }
@@ -236,11 +238,20 @@ async fn handle_control(
         return;
     }
 
-    // --- Persistence: player identity registration ---
+    // --- Persistence: player identity registration (once per connection only) ---
     if ctrl == CTRL_PLAYER_IDENT {
         // [0xFF][0x20][u8 len][utf8 uuid...]
+        {
+            let room_r = room.read().await;
+            if room_r.player_ids.contains_key(&client_id) {
+                warn!("[Room:{}] client_{} tried to re-register identity — ignored", room_id, client_id);
+                return;
+            }
+        }
         if data.len() >= 4 {
             let len = data[2] as usize;
+            const MAX_ID_LEN: usize = 64;
+            if len > MAX_ID_LEN { return; }
             if data.len() >= 3 + len {
                 if let Ok(uuid) = std::str::from_utf8(&data[3..3 + len]) {
                     let uuid = uuid.to_string();
@@ -320,6 +331,11 @@ async fn handle_persist_set(
 
     if data.len() < offset + 2 { return; }
     let val_len = u16::from_le_bytes([data[offset], data[offset + 1]]) as usize; offset += 2;
+    const MAX_VALUE_LEN: usize = 4096;
+    if val_len > MAX_VALUE_LEN {
+        warn!("[Room:{}] Persist SET from client_{} exceeded max value size ({} bytes)", room_id, client_id, val_len);
+        return;
+    }
     if data.len() < offset + val_len { return; }
     let value = match std::str::from_utf8(&data[offset..offset + val_len]) {
         Ok(s) => s.to_string(), Err(_) => return,
@@ -332,7 +348,8 @@ async fn handle_persist_set(
 
     if let Some(pid) = player_id {
         debug!("[Room:{}] Persist SET player='{}' ns='{}' key='{}'", room_id, pid, namespace, key);
-        db.set(&pid, &namespace, &key, &value);
+        let db = db.clone();
+        tokio::task::spawn_blocking(move || db.set(&pid, &namespace, &key, &value)).await.ok();
     } else {
         warn!("[Room:{}] Persist SET from client_{} with no registered player ID", room_id, client_id);
     }
@@ -374,7 +391,10 @@ async fn handle_persist_get(
 
     let value = if let Some(pid) = player_id {
         debug!("[Room:{}] Persist GET player='{}' ns='{}' key='{}'", room_id, pid, namespace, key);
-        db.get(&pid, &namespace, &key)
+        let db = db.clone();
+        tokio::task::spawn_blocking(move || db.get(&pid, &namespace, &key))
+            .await
+            .unwrap_or(None)
     } else {
         warn!("[Room:{}] Persist GET from client_{} with no registered player ID", room_id, client_id);
         None
