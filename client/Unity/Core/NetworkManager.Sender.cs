@@ -59,21 +59,27 @@ namespace SomniumSpace.Worlds.bently.networking
                 obj.MarkSent();
             }
 
-            if (velCount > 0)
+            try
             {
-                _sendSequence++;
-                Protocol.WriteU16(velBuf, 3, _sendSequence);
-                Protocol.WriteU16(velBuf, 5, (ushort)velCount);
-                SendBinarySegment(velBuf, velOffset);
+                if (velCount > 0)
+                {
+                    _sendSequence++;
+                    Protocol.WriteU16(velBuf, 3, _sendSequence);
+                    Protocol.WriteU16(velBuf, 5, (ushort)velCount);
+                    SendBinarySegment(velBuf, velOffset);
+                }
             }
-            ArrayPool<byte>.Shared.Return(velBuf);
+            finally { ArrayPool<byte>.Shared.Return(velBuf); }
 
-            if (scaledCount > 0)
+            try
             {
-                WriteU16(scaledBuf, 1, (ushort)scaledCount);
-                SendBinarySegment(scaledBuf, scaledOffset);
+                if (scaledCount > 0)
+                {
+                    WriteU16(scaledBuf, 1, (ushort)scaledCount);
+                    SendBinarySegment(scaledBuf, scaledOffset);
+                }
             }
-            ArrayPool<byte>.Shared.Return(scaledBuf);
+            finally { ArrayPool<byte>.Shared.Return(scaledBuf); }
         }
 
         // =====================================================================
@@ -111,19 +117,25 @@ namespace SomniumSpace.Worlds.bently.networking
                 obj.MarkSent();
             }
 
-            if (count > 0)
+            try
             {
-                WriteU16(buf, 1, (ushort)count);
-                SendBinarySegment(buf, offset);
+                if (count > 0)
+                {
+                    WriteU16(buf, 1, (ushort)count);
+                    SendBinarySegment(buf, offset);
+                }
             }
-            ArrayPool<byte>.Shared.Return(buf);
+            finally { ArrayPool<byte>.Shared.Return(buf); }
 
-            if (scalCount > 0)
+            try
             {
-                WriteU16(scalBuf, 1, (ushort)scalCount);
-                SendBinarySegment(scalBuf, scalOffset);
+                if (scalCount > 0)
+                {
+                    WriteU16(scalBuf, 1, (ushort)scalCount);
+                    SendBinarySegment(scalBuf, scalOffset);
+                }
             }
-            ArrayPool<byte>.Shared.Return(scalBuf);
+            finally { ArrayPool<byte>.Shared.Return(scalBuf); }
         }
 
         /// <summary>
@@ -207,19 +219,25 @@ namespace SomniumSpace.Worlds.bently.networking
                 }
             }
 
-            if (normCount > 0)
+            try
             {
-                WriteU16(normBuf, 1, (ushort)normCount);
-                SendBinarySegment(normBuf, normOffset);
+                if (normCount > 0)
+                {
+                    WriteU16(normBuf, 1, (ushort)normCount);
+                    SendBinarySegment(normBuf, normOffset);
+                }
             }
-            ArrayPool<byte>.Shared.Return(normBuf);
+            finally { ArrayPool<byte>.Shared.Return(normBuf); }
 
-            if (scalCount > 0)
+            try
             {
-                WriteU16(scalBuf, 1, (ushort)scalCount);
-                SendBinarySegment(scalBuf, scalOffset);
+                if (scalCount > 0)
+                {
+                    WriteU16(scalBuf, 1, (ushort)scalCount);
+                    SendBinarySegment(scalBuf, scalOffset);
+                }
             }
-            ArrayPool<byte>.Shared.Return(scalBuf);
+            finally { ArrayPool<byte>.Shared.Return(scalBuf); }
 
             Debug.Log($"[Net] Sending snapshot: {normCount} normal + {scalCount} scaled objects");
         }
