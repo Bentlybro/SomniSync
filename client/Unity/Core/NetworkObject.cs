@@ -126,13 +126,21 @@ namespace SomniumSpace.Worlds.bently.networking
                 _rb.isKinematic = true; // freeze until authority is assigned
         }
 
-        private void Update()
+        // Update() intentionally removed — NetworkManager calls NetworkUpdate() for all
+        // objects in a single loop, eliminating 1000 separate MonoBehaviour.Update()
+        // dispatch calls per frame (each of which crosses the native/managed boundary).
+
+        /// <summary>
+        /// Called once per frame by NetworkManager for every registered object.
+        /// Handles interpolation, dead reckoning, and auto-release in one pass.
+        /// </summary>
+        internal void NetworkUpdate(float deltaTime, float currentTime)
         {
             if (!IsClaimedLocally)
             {
                 if (_interpT < 1f)
                 {
-                    _interpT += Time.deltaTime / _interpDuration;
+                    _interpT += deltaTime / _interpDuration;
                     if (_interpT > 1f) _interpT = 1f;
 
                     transform.position    = Vector3.Lerp(_fromPos, _toPos, _interpT);
@@ -143,7 +151,7 @@ namespace SomniumSpace.Worlds.bently.networking
                 else if (_deadReckoning && !HasStateAuthority)
                 {
                     // Lerp finished — extrapolate using last known velocity (capped at 1s)
-                    float dt = Mathf.Min(Time.time - _drBaseTime, 1f);
+                    float dt = Mathf.Min(currentTime - _drBaseTime, 1f);
                     transform.position = _drBasePos + _drVelocity * dt;
                 }
             }
@@ -151,7 +159,7 @@ namespace SomniumSpace.Worlds.bently.networking
             // Auto-release when push-grabbed object settles
             if (_autoClaimedByPush && IsClaimedLocally && _hasRb)
             {
-                bool touching = (Time.time - _lastContactTime) < 0.1f;
+                bool touching = (currentTime - _lastContactTime) < 0.1f;
                 bool settled  = _rb.linearVelocity.sqrMagnitude  < 0.05f
                              && _rb.angularVelocity.sqrMagnitude < 0.05f;
                 if (!touching && settled)

@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Buffers;
 using UnityEngine;
 
 namespace SomniumSpace.Worlds.bently.networking
@@ -9,6 +10,9 @@ namespace SomniumSpace.Worlds.bently.networking
     /// </summary>
     public partial class NetworkManager
     {
+        // Reuse this list every AOI tick — avoids per-tick allocation for farewell batching.
+        private readonly List<NetworkObject> _farewellScratch = new List<NetworkObject>(32);
+
         // =====================================================================
         // AOI calculation (master only)
         // =====================================================================
@@ -52,8 +56,12 @@ namespace SomniumSpace.Worlds.bently.networking
             float deactivateRadiusSq = (aoiRadius + aoiHysteresis) * (aoiRadius + aoiHysteresis);
             int activeCount = 0;
 
-            foreach (var obj in _objects)
+            _farewellScratch.Clear();
+
+            for (int i = 0; i < _objects.Count; i++)
             {
+                var obj = _objects[i];
+
                 // Never deactivate remotely claimed objects
                 if (obj.IsClaimedByRemote)
                 {
@@ -65,9 +73,9 @@ namespace SomniumSpace.Worlds.bently.networking
                 Vector3 objPos = obj.transform.position;
                 float closestDistSq = float.MaxValue;
 
-                for (int i = 0; i < _aoiPlayerPosScratch.Count; i++)
+                for (int p = 0; p < _aoiPlayerPosScratch.Count; p++)
                 {
-                    float distSq = (objPos - _aoiPlayerPosScratch[i]).sqrMagnitude;
+                    float distSq = (objPos - _aoiPlayerPosScratch[p]).sqrMagnitude;
                     if (distSq < closestDistSq)
                         closestDistSq = distSq;
                 }
@@ -77,13 +85,12 @@ namespace SomniumSpace.Worlds.bently.networking
                     // Active — use wider deactivate radius (hysteresis prevents flicker)
                     if (closestDistSq > deactivateRadiusSq)
                     {
-                        bool wasActive = obj.IsAOIActive;
                         obj.AOIDeactivate();
-                        // If the object actually froze, send a zero-velocity farewell update
-                        // so spectators stop dead-reckoning it immediately rather than
-                        // extrapolating for up to 1 second before the cap kicks in.
-                        if (wasActive && !obj.IsAOIActive)
-                            SendAOIFarewellUpdate(obj);
+                        // Collect for batched farewell — one message for all deactivations
+                        // this tick, instead of N separate messages (which could flood the
+                        // send queue when many objects leave the zone simultaneously).
+                        if (!obj.IsAOIActive)
+                            _farewellScratch.Add(obj);
                     }
                     else
                         activeCount++;
@@ -98,6 +105,10 @@ namespace SomniumSpace.Worlds.bently.networking
                     }
                 }
             }
+
+            // Send all farewell updates in one batched message
+            if (_farewellScratch.Count > 0)
+                SendAOIFarewellBatch(_farewellScratch);
 
             ActiveAOIObjects = activeCount;
             TotalObjects = _objects.Count;

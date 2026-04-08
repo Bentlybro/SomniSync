@@ -18,9 +18,12 @@ pub type Tx = futures_util::stream::SplitSink<
 /// than SEND_BUFFER messages, we drop the newest arrival (they're too lagged for
 /// stale frames to be useful anyway). Smaller = lower worst-case latency.
 ///
-/// At 20 Hz send rate: 32 slots ≈ 1.6s of buffer before dropping.
-/// At 60 Hz send rate: 32 slots ≈ 0.5s of buffer before dropping.
-const SEND_BUFFER: usize = 32;
+/// At 20 Hz send rate: 8 slots ≈ 0.4s of buffer before dropping.
+/// At 60 Hz send rate: 8 slots ≈ 0.13s of buffer before dropping.
+/// Reduced from 32: the old value let slow clients accumulate 1.6s of stale
+/// position frames that all arrived at once when congestion cleared, causing
+/// a sudden flood of outdated positions that spectators applied as jumps.
+const SEND_BUFFER: usize = 8;
 
 pub enum ClientMsg {
     Binary(Bytes),

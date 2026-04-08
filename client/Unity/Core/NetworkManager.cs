@@ -1,9 +1,11 @@
 using System;
+using System.Buffers;
 using System.Collections;
 using System.Collections.Generic;
 using System.Collections.Concurrent;
 using System.Net.WebSockets;
 using System.Threading;
+using System.Threading.Tasks;
 using UnityEngine;
 
 namespace SomniumSpace.Worlds.bently.networking
@@ -52,10 +54,24 @@ namespace SomniumSpace.Worlds.bently.networking
         /// <summary>Fired when this client becomes spectator.</summary>
         public event Action OnBecameSpectator;
 
-        // All network objects sorted deterministically — index = local_id
+        // All network objects sorted deterministically — index = local_id.
+        // IDs are sequential (0…N-1), so _objects[id] is O(1) direct access — no dictionary needed.
         private List<NetworkObject> _objects = new List<NetworkObject>();
-        private Dictionary<ushort, NetworkObject> _objectMap = new Dictionary<ushort, NetworkObject>();
         private bool _sceneReady;
+
+        // =====================================================================
+        // Queued send message — avoids per-send heap allocation.
+        // Pooled=true → send loop returns Data to ArrayPool after the send completes.
+        // =====================================================================
+
+        private readonly struct QueuedMessage
+        {
+            public readonly byte[] Data;
+            public readonly int    Length;
+            public readonly bool   Pooled;
+            public QueuedMessage(byte[] data, int length, bool pooled = false)
+            { Data = data; Length = length; Pooled = pooled; }
+        }
 
         // WebSocket
         private ClientWebSocket _ws;
@@ -66,7 +82,10 @@ namespace SomniumSpace.Worlds.bently.networking
         // Sized to the server's snapshot limit so no valid message is ever dropped.
         private readonly byte[] _recvAccumBuf = new byte[512 * 1024];
         private int _recvAccumLen = 0;
-        private readonly ConcurrentQueue<byte[]> _sendQueue = new ConcurrentQueue<byte[]>();
+        private readonly ConcurrentQueue<QueuedMessage> _sendQueue = new ConcurrentQueue<QueuedMessage>();
+        // Signals the async send loop when new data is available — avoids busy-waiting
+        // and removes the 1-frame-per-send delay that coroutines introduced.
+        private readonly SemaphoreSlim _sendSignal = new SemaphoreSlim(0);
         private float _sendInterval;
         private float _rbSendInterval;
         private float _nextSendTime;
@@ -164,6 +183,14 @@ namespace SomniumSpace.Worlds.bently.networking
 
             if (!IsConnected) return;
 
+            // Centralized object update — replaces 1000 separate MonoBehaviour.Update()
+            // dispatches. Each MonoBehaviour.Update() call crosses the native/managed
+            // boundary; iterating a List<T> in a single loop is far cheaper.
+            float dt = Time.deltaTime;
+            float t  = Time.time;
+            for (int i = 0; i < _objects.Count; i++)
+                _objects[i].NetworkUpdate(dt, t);
+
             // Attach push detector — retry every 0.5s until found (not every frame)
             if (!_pushDetectorAttached && Time.time >= _nextPushDetectorCheckTime)
             {
@@ -249,7 +276,6 @@ namespace SomniumSpace.Worlds.bently.networking
         private void CollectAndSortObjects()
         {
             _objects.Clear();
-            _objectMap.Clear();
 
             var all = FindObjectsByType<NetworkObject>(FindObjectsSortMode.None);
 
@@ -270,12 +296,14 @@ namespace SomniumSpace.Worlds.bently.networking
 
             for (int i = 0; i < all.Length; i++)
             {
-                ushort localId = (ushort)i;
-                all[i].LocalId = localId;
+                all[i].LocalId = (ushort)i;
                 _objects.Add(all[i]);
-                _objectMap[localId] = all[i];
             }
         }
+
+        // O(1) object lookup — IDs are sequential so _objects[id] is a direct index.
+        private NetworkObject GetObject(ushort id)
+            => id < _objects.Count ? _objects[id] : null;
 
         // =====================================================================
         // Connection
@@ -319,7 +347,15 @@ namespace SomniumSpace.Worlds.bently.networking
             Debug.Log("[Net] Connected!");
 
             StartCoroutine(ReceiveLoop());
-            StartCoroutine(SendLoop());
+            // Send loop runs as an async Task so WebSocket sends complete as fast as the
+            // network allows — no longer limited to one send per Unity frame (coroutines
+            // yielded for a full 16ms frame after every SendAsync, stacking up to 50ms
+            // of extra latency at 1000-object send rates).
+            _ = SendLoopAsync(_ws, _cts).ContinueWith(t =>
+            {
+                if (t.IsFaulted)
+                    Debug.LogWarning($"[Net] Send loop error: {t.Exception?.InnerException?.Message}");
+            }, TaskContinuationOptions.OnlyOnFaulted);
 
             while (IsConnected && _ws.State == WebSocketState.Open)
                 yield return null;
@@ -329,6 +365,12 @@ namespace SomniumSpace.Worlds.bently.networking
             IsNetworkReady = false;
             _pushDetectorAttached = false;
             NetworkPersistence.ClearPending();
+
+            // Drain send queue and return any pooled buffers so the pool isn't leaked
+            // when the connection closes and the send loop exits.
+            while (_sendQueue.TryDequeue(out QueuedMessage stale))
+                if (stale.Pooled) ArrayPool<byte>.Shared.Return(stale.Data);
+
             Debug.Log("[Net] Disconnected.");
             OnDisconnected?.Invoke();
         }
@@ -392,18 +434,43 @@ namespace SomniumSpace.Worlds.bently.networking
             }
         }
 
-        private IEnumerator SendLoop()
+        // SendLoop coroutine replaced by SendLoopAsync (below).
+
+        /// <summary>
+        /// Async send loop — runs on the thread pool so WebSocket sends complete at
+        /// network speed rather than at Unity's frame rate. The coroutine approach
+        /// yielded for a full frame (≥16ms) after every SendAsync, which meant that
+        /// at 1000-object send rates (2–3 messages/tick) messages piled up 33–50ms
+        /// deep before being flushed, arriving at spectators as position jumps.
+        /// Captures its own ws/cts so reconnects don't corrupt a running loop.
+        /// </summary>
+        private async Task SendLoopAsync(ClientWebSocket ws, CancellationTokenSource cts)
         {
-            while (IsConnected && _ws.State == WebSocketState.Open)
+            while (ws.State == WebSocketState.Open)
             {
-                while (_sendQueue.TryDequeue(out byte[] data))
+                try { await _sendSignal.WaitAsync(cts.Token).ConfigureAwait(false); }
+                catch (OperationCanceledException) { break; }
+
+                // Drain everything queued since the last signal — multiple messages can
+                // arrive close together (rigidbody + transform + interaction in the same
+                // frame) and we want to send them all without waiting for the next signal.
+                while (_sendQueue.TryDequeue(out QueuedMessage msg))
                 {
-                    var seg = new ArraySegment<byte>(data);
-                    var sendTask = _ws.SendAsync(seg, WebSocketMessageType.Binary, true, _cts.Token);
-                    while (!sendTask.IsCompleted)
-                        yield return null;
+                    bool breakLoop = false;
+                    if (ws.State == WebSocketState.Open)
+                    {
+                        try
+                        {
+                            await ws.SendAsync(
+                                new ArraySegment<byte>(msg.Data, 0, msg.Length),
+                                WebSocketMessageType.Binary, true, cts.Token).ConfigureAwait(false);
+                        }
+                        catch (OperationCanceledException) { breakLoop = true; }
+                        catch (Exception)                  { breakLoop = true; }
+                    }
+                    if (msg.Pooled) ArrayPool<byte>.Shared.Return(msg.Data);
+                    if (breakLoop) break;
                 }
-                yield return null;
             }
         }
 
@@ -414,9 +481,28 @@ namespace SomniumSpace.Worlds.bently.networking
         private void SendBinary(byte[] data)
         {
             if (_ws == null || _ws.State != WebSocketState.Open) return;
-            _sendQueue.Enqueue(data);
+            _sendQueue.Enqueue(new QueuedMessage(data, data.Length, pooled: false));
+            _sendSignal.Release();
             MessagesSent++;
             BytesSent += data.Length;
+        }
+
+        /// <summary>
+        /// Enqueues a slice of a pooled ArrayPool buffer for sending.
+        /// Takes ownership of the buffer — the send loop returns it to the pool after the
+        /// send completes.  Callers must NOT return the buffer themselves after this call.
+        /// </summary>
+        private void SendBinaryPooled(byte[] pooledBuf, int length)
+        {
+            if (_ws == null || _ws.State != WebSocketState.Open)
+            {
+                ArrayPool<byte>.Shared.Return(pooledBuf);
+                return;
+            }
+            _sendQueue.Enqueue(new QueuedMessage(pooledBuf, length, pooled: true));
+            _sendSignal.Release();
+            MessagesSent++;
+            BytesSent += length;
         }
 
         /// <summary>Public send for components like NetworkVariables.</summary>

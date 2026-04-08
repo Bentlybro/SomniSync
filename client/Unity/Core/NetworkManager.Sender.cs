@@ -5,7 +5,11 @@ namespace SomniumSpace.Worlds.bently.networking
 {
     /// <summary>
     /// Handles all outgoing position, interaction, and snapshot messages.
-    /// Uses ArrayPool + single-pass writes to minimise per-frame allocations.
+    ///
+    /// Allocation strategy: every method rents a buffer from ArrayPool, writes into it,
+    /// then passes ownership to SendBinaryPooled(). The async send loop returns the buffer
+    /// to the pool after the WebSocket send completes — zero heap allocations in hot paths.
+    /// If nothing is queued (count == 0), the buffer is returned immediately.
     /// </summary>
     public partial class NetworkManager
     {
@@ -20,28 +24,29 @@ namespace SomniumSpace.Worlds.bently.networking
         {
             if (_objects.Count == 0) return;
 
-            // --- Non-scaled: single pass, write into pooled buffer, send if count > 0 ---
-            int maxVelSize = 7 + _objects.Count * Protocol.BYTES_PER_ENTITY_VELOCITY;
-            byte[] velBuf = ArrayPool<byte>.Shared.Rent(maxVelSize);
-            velBuf[0] = Protocol.MSG_POSITION_VELOCITY;
-            Protocol.WriteU16(velBuf, 1, ClientId);
-            // sequence written after we know count > 0
-            int velOffset = 7;
-            int velCount = 0;
-
+            int maxVelSize    = 7 + _objects.Count * Protocol.BYTES_PER_ENTITY_VELOCITY;
             int maxScaledSize = 3 + _objects.Count * Protocol.BYTES_PER_ENTITY_SCALED;
-            byte[] scaledBuf = ArrayPool<byte>.Shared.Rent(maxScaledSize);
-            scaledBuf[0] = Protocol.MSG_POSITION_UPDATE_SCALED;
-            int scaledOffset = 3;
-            int scaledCount = 0;
 
-            foreach (var obj in _objects)
+            byte[] velBuf    = ArrayPool<byte>.Shared.Rent(maxVelSize);
+            byte[] scaledBuf = ArrayPool<byte>.Shared.Rent(maxScaledSize);
+
+            velBuf[0]    = Protocol.MSG_POSITION_VELOCITY;
+            scaledBuf[0] = Protocol.MSG_POSITION_UPDATE_SCALED;
+            Protocol.WriteU16(velBuf, 1, ClientId);
+
+            int velOffset    = 7; // [type][sender u16][seq u16][count u16] written below
+            int scaledOffset = 3;
+            int velCount     = 0;
+            int scaledCount  = 0;
+
+            for (int i = 0; i < _objects.Count; i++)
             {
-                if (!obj.HasStateAuthority) continue;
-                if (!obj.IsAOIActive) continue;
-                if (obj.IsClaimedByRemote) continue;
-                if (obj.IsRigidbody != rigidbodies) continue;
-                if (obj.IsSleeping) continue;
+                var obj = _objects[i];
+                if (!obj.HasStateAuthority)                              continue;
+                if (!obj.IsAOIActive)                                    continue;
+                if (obj.IsClaimedByRemote)                               continue;
+                if (obj.IsRigidbody != rigidbodies)                      continue;
+                if (obj.IsSleeping)                                      continue;
                 if (!obj.HasMoved(positionThreshold, rotationThreshold)) continue;
 
                 if (obj.syncScale)
@@ -59,27 +64,23 @@ namespace SomniumSpace.Worlds.bently.networking
                 obj.MarkSent();
             }
 
-            try
+            if (velCount > 0)
             {
-                if (velCount > 0)
-                {
-                    _sendSequence++;
-                    Protocol.WriteU16(velBuf, 3, _sendSequence);
-                    Protocol.WriteU16(velBuf, 5, (ushort)velCount);
-                    SendBinarySegment(velBuf, velOffset);
-                }
+                _sendSequence++;
+                Protocol.WriteU16(velBuf, 3, _sendSequence);
+                Protocol.WriteU16(velBuf, 5, (ushort)velCount);
+                SendBinaryPooled(velBuf, velOffset); // ownership transferred
+                velBuf = null;
             }
-            finally { ArrayPool<byte>.Shared.Return(velBuf); }
+            if (velBuf != null) ArrayPool<byte>.Shared.Return(velBuf);
 
-            try
+            if (scaledCount > 0)
             {
-                if (scaledCount > 0)
-                {
-                    WriteU16(scaledBuf, 1, (ushort)scaledCount);
-                    SendBinarySegment(scaledBuf, scaledOffset);
-                }
+                WriteU16(scaledBuf, 1, (ushort)scaledCount);
+                SendBinaryPooled(scaledBuf, scaledOffset); // ownership transferred
+                scaledBuf = null;
             }
-            finally { ArrayPool<byte>.Shared.Return(scaledBuf); }
+            if (scaledBuf != null) ArrayPool<byte>.Shared.Return(scaledBuf);
         }
 
         // =====================================================================
@@ -88,17 +89,21 @@ namespace SomniumSpace.Worlds.bently.networking
 
         private void SendInteractionUpdates()
         {
-            int maxSize = 3 + _objects.Count * Protocol.BYTES_PER_ENTITY_SCALED; // worst case
-            byte[] buf     = ArrayPool<byte>.Shared.Rent(maxSize);
+            int maxSize = 3 + _objects.Count * Protocol.BYTES_PER_ENTITY_SCALED;
+
+            byte[] buf    = ArrayPool<byte>.Shared.Rent(maxSize);
             byte[] scalBuf = ArrayPool<byte>.Shared.Rent(maxSize);
 
             buf[0]     = 0x03;
             scalBuf[0] = 0x09;
-            int offset = 3, scalOffset = 3;
-            int count = 0, scalCount = 0;
+            int offset    = 3;
+            int scalOffset = 3;
+            int count     = 0;
+            int scalCount  = 0;
 
-            foreach (var obj in _objects)
+            for (int i = 0; i < _objects.Count; i++)
             {
+                var obj = _objects[i];
                 if (!obj.IsClaimedLocally) continue;
                 if (!obj.HasMoved(positionThreshold, rotationThreshold)) continue;
 
@@ -117,25 +122,21 @@ namespace SomniumSpace.Worlds.bently.networking
                 obj.MarkSent();
             }
 
-            try
+            if (count > 0)
             {
-                if (count > 0)
-                {
-                    WriteU16(buf, 1, (ushort)count);
-                    SendBinarySegment(buf, offset);
-                }
+                WriteU16(buf, 1, (ushort)count);
+                SendBinaryPooled(buf, offset);
+                buf = null;
             }
-            finally { ArrayPool<byte>.Shared.Return(buf); }
+            if (buf != null) ArrayPool<byte>.Shared.Return(buf);
 
-            try
+            if (scalCount > 0)
             {
-                if (scalCount > 0)
-                {
-                    WriteU16(scalBuf, 1, (ushort)scalCount);
-                    SendBinarySegment(scalBuf, scalOffset);
-                }
+                WriteU16(scalBuf, 1, (ushort)scalCount);
+                SendBinaryPooled(scalBuf, scalOffset);
+                scalBuf = null;
             }
-            finally { ArrayPool<byte>.Shared.Return(scalBuf); }
+            if (scalBuf != null) ArrayPool<byte>.Shared.Return(scalBuf);
         }
 
         /// <summary>
@@ -146,32 +147,24 @@ namespace SomniumSpace.Worlds.bently.networking
             if (obj.syncScale)
             {
                 int size = 3 + Protocol.BYTES_PER_ENTITY_SCALED;
-                byte[] pooled = ArrayPool<byte>.Shared.Rent(size);
-                try
-                {
-                    pooled[0] = 0x09;
-                    WriteU16(pooled, 1, 1);
-                    Protocol.WriteEntityScaled(pooled, 3, obj.LocalId,
-                        obj.transform.position, obj.transform.eulerAngles, obj.transform.localScale);
-                    obj.MarkSent();
-                    SendBinarySegment(pooled, size);
-                }
-                finally { ArrayPool<byte>.Shared.Return(pooled); }
+                byte[] buf = ArrayPool<byte>.Shared.Rent(size);
+                buf[0] = 0x09;
+                WriteU16(buf, 1, 1);
+                Protocol.WriteEntityScaled(buf, 3, obj.LocalId,
+                    obj.transform.position, obj.transform.eulerAngles, obj.transform.localScale);
+                obj.MarkSent();
+                SendBinaryPooled(buf, size);
             }
             else
             {
                 int size = 3 + Protocol.BYTES_PER_ENTITY;
-                byte[] pooled = ArrayPool<byte>.Shared.Rent(size);
-                try
-                {
-                    pooled[0] = 0x03;
-                    WriteU16(pooled, 1, 1);
-                    WriteEntityCompact(pooled, 3, obj.LocalId,
-                        obj.transform.position, obj.transform.eulerAngles);
-                    obj.MarkSent();
-                    SendBinarySegment(pooled, size);
-                }
-                finally { ArrayPool<byte>.Shared.Return(pooled); }
+                byte[] buf = ArrayPool<byte>.Shared.Rent(size);
+                buf[0] = 0x03;
+                WriteU16(buf, 1, 1);
+                WriteEntityCompact(buf, 3, obj.LocalId,
+                    obj.transform.position, obj.transform.eulerAngles);
+                obj.MarkSent();
+                SendBinaryPooled(buf, size);
             }
         }
 
@@ -205,20 +198,22 @@ namespace SomniumSpace.Worlds.bently.networking
 
             int maxNormal = 3 + _objects.Count * Protocol.BYTES_PER_ENTITY;
             int maxScaled = 3 + _objects.Count * Protocol.BYTES_PER_ENTITY_SCALED;
+
             byte[] normBuf = ArrayPool<byte>.Shared.Rent(maxNormal);
             byte[] scalBuf = ArrayPool<byte>.Shared.Rent(maxScaled);
 
             normBuf[0] = Protocol.MSG_SNAPSHOT;
             scalBuf[0] = Protocol.MSG_SNAPSHOT_SCALED;
-            int normOffset = 3, scalOffset = 3;
-            int normCount = 0, scalCount = 0;
+            int normOffset = 3;
+            int scalOffset = 3;
+            int normCount  = 0;
+            int scalCount  = 0;
 
-            foreach (var obj in _objects)
+            for (int i = 0; i < _objects.Count; i++)
             {
-                // ALL objects must be included in snapshots regardless of AOI/sleep state.
-                // Snapshots are the authoritative full world state used for late-joiner sync
-                // and desync recovery. Skipping sleeping objects here causes spectators to
-                // never receive the final resting positions of settled physics objects.
+                var obj = _objects[i];
+                // ALL objects — see comment in original: snapshots are authoritative world state,
+                // skipping sleeping objects causes spectators to miss final resting positions.
                 if (obj.syncScale)
                 {
                     scalOffset = Protocol.WriteEntityScaled(scalBuf, scalOffset, obj.LocalId,
@@ -233,66 +228,59 @@ namespace SomniumSpace.Worlds.bently.networking
                 }
             }
 
-            try
+            if (normCount > 0)
             {
-                if (normCount > 0)
-                {
-                    WriteU16(normBuf, 1, (ushort)normCount);
-                    SendBinarySegment(normBuf, normOffset);
-                }
+                WriteU16(normBuf, 1, (ushort)normCount);
+                SendBinaryPooled(normBuf, normOffset);
+                normBuf = null;
             }
-            finally { ArrayPool<byte>.Shared.Return(normBuf); }
+            if (normBuf != null) ArrayPool<byte>.Shared.Return(normBuf);
 
-            try
+            if (scalCount > 0)
             {
-                if (scalCount > 0)
-                {
-                    WriteU16(scalBuf, 1, (ushort)scalCount);
-                    SendBinarySegment(scalBuf, scalOffset);
-                }
+                WriteU16(scalBuf, 1, (ushort)scalCount);
+                SendBinaryPooled(scalBuf, scalOffset);
+                scalBuf = null;
             }
-            finally { ArrayPool<byte>.Shared.Return(scalBuf); }
+            if (scalBuf != null) ArrayPool<byte>.Shared.Return(scalBuf);
 
             Debug.Log($"[Net] Sending snapshot: {normCount} normal + {scalCount} scaled objects");
         }
 
         // =====================================================================
-        // AOI farewell — single-object zero-velocity update on deactivation
+        // AOI farewell batch — zero-velocity updates for all objects deactivated
+        // this AOI tick. Batched into one message instead of one per object.
         // =====================================================================
 
         /// <summary>
-        /// Sent by the master when an object is AOI-frozen so spectators know to stop
-        /// dead-reckoning it. Without this, spectators extrapolate using the last received
-        /// velocity for up to 1 second before the dead-reckoning cap kicks in.
+        /// Called once per AOI tick with all objects that just deactivated.
+        /// Sends them as a single 0x0B batch with velocity=zero so spectators stop
+        /// dead-reckoning immediately. The old per-object SendAOIFarewellUpdate()
+        /// sent N separate messages which could flood the send queue during mass
+        /// deactivation (e.g. all spheres leaving the AOI zone at once).
         /// </summary>
-        private void SendAOIFarewellUpdate(NetworkObject obj)
+        internal void SendAOIFarewellBatch(System.Collections.Generic.List<NetworkObject> objs)
         {
-            // MSG_POSITION_VELOCITY with count=1, zero velocity
-            int size = 7 + Protocol.BYTES_PER_ENTITY_VELOCITY;
+            if (objs.Count == 0) return;
+
+            int size = 7 + objs.Count * Protocol.BYTES_PER_ENTITY_VELOCITY;
             byte[] buf = ArrayPool<byte>.Shared.Rent(size);
-            try
+
+            buf[0] = Protocol.MSG_POSITION_VELOCITY;
+            Protocol.WriteU16(buf, 1, ClientId);
+            _sendSequence++;
+            Protocol.WriteU16(buf, 3, _sendSequence);
+            Protocol.WriteU16(buf, 5, (ushort)objs.Count);
+
+            int offset = 7;
+            for (int i = 0; i < objs.Count; i++)
             {
-                buf[0] = Protocol.MSG_POSITION_VELOCITY;
-                Protocol.WriteU16(buf, 1, ClientId);
-                _sendSequence++;
-                Protocol.WriteU16(buf, 3, _sendSequence);
-                Protocol.WriteU16(buf, 5, 1); // count = 1
-                Protocol.WriteEntityVelocity(buf, 7, obj.LocalId,
+                var obj = objs[i];
+                offset = Protocol.WriteEntityVelocity(buf, offset, obj.LocalId,
                     obj.transform.position, obj.transform.eulerAngles, Vector3.zero);
-                SendBinarySegment(buf, size);
             }
-            finally { ArrayPool<byte>.Shared.Return(buf); }
-        }
 
-        // =====================================================================
-        // Send a correctly-sized copy of a pooled buffer segment
-        // =====================================================================
-
-        private void SendBinarySegment(byte[] buf, int length)
-        {
-            byte[] msg = new byte[length];
-            System.Buffer.BlockCopy(buf, 0, msg, 0, length);
-            SendBinary(msg);
+            SendBinaryPooled(buf, offset);
         }
     }
 }

@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using System.Text;
 using UnityEngine;
 
@@ -95,7 +94,7 @@ namespace SomniumSpace.Worlds.bently.networking
                         for (int i = 0; i < assignCount && aOffset + 2 <= length; i++)
                         {
                             ushort objId = Protocol.ReadU16(data, aOffset); aOffset += 2;
-                            if (_objectMap.TryGetValue(objId, out var assignObj))
+                            if (GetObject(objId) is { } assignObj)
                                 assignObj.SetStateAuthority(assignedClient);
                         }
                         Debug.Log($"[Net] Authority: client_{assignedClient} now owns {assignCount} objects");
@@ -107,7 +106,7 @@ namespace SomniumSpace.Worlds.bently.networking
                     {
                         ushort claimObjId    = BitConverter.ToUInt16(data, 2);
                         ushort claimClientId = BitConverter.ToUInt16(data, 4);
-                        if (_objectMap.TryGetValue(claimObjId, out var claimObj))
+                        if (GetObject(claimObjId) is { } claimObj)
                             claimObj.OnRemoteClaim(claimClientId);
                     }
                     break;
@@ -116,7 +115,7 @@ namespace SomniumSpace.Worlds.bently.networking
                     if (length >= 6)
                     {
                         ushort releaseObjId = BitConverter.ToUInt16(data, 2);
-                        if (_objectMap.TryGetValue(releaseObjId, out var releaseObj))
+                        if (GetObject(releaseObjId) is { } releaseObj)
                             releaseObj.OnRemoteRelease();
                     }
                     break;
@@ -172,7 +171,7 @@ namespace SomniumSpace.Worlds.bently.networking
                 Vector3 pos, rot, vel;
                 offset = Protocol.ReadEntityVelocity(data, offset, out localId, out pos, out rot, out vel);
 
-                if (_objectMap.TryGetValue(localId, out var obj))
+                if (GetObject(localId) is { } obj)
                 {
                     if (obj.HasStateAuthority) continue;
                     if (obj.IsClaimedLocally)  continue;
@@ -198,7 +197,7 @@ namespace SomniumSpace.Worlds.bently.networking
                 Vector3 pos, rot;
                 offset = ReadEntityCompact(data, offset, out localId, out pos, out rot);
 
-                if (_objectMap.TryGetValue(localId, out var obj))
+                if (GetObject(localId) is { } obj)
                 {
                     if (obj.HasStateAuthority) continue;
                     if (obj.IsClaimedLocally)  continue;
@@ -224,7 +223,7 @@ namespace SomniumSpace.Worlds.bently.networking
                 Vector3 pos, rot;
                 offset = ReadEntityCompact(data, offset, out localId, out pos, out rot);
 
-                if (_objectMap.TryGetValue(localId, out var obj))
+                if (GetObject(localId) is { } obj)
                 {
                     if (!obj.IsClaimedLocally)
                         obj.ApplyUpdate(pos, rot);
@@ -249,7 +248,7 @@ namespace SomniumSpace.Worlds.bently.networking
                 Vector3 pos, rot, scale;
                 offset = Protocol.ReadEntityScaled(data, offset, out localId, out pos, out rot, out scale);
 
-                if (_objectMap.TryGetValue(localId, out var obj))
+                if (GetObject(localId) is { } obj)
                 {
                     if (obj.HasStateAuthority) continue;
                     if (obj.IsClaimedLocally)  continue;
@@ -275,7 +274,7 @@ namespace SomniumSpace.Worlds.bently.networking
                 Vector3 pos, rot, scale;
                 offset = Protocol.ReadEntityScaled(data, offset, out localId, out pos, out rot, out scale);
 
-                if (_objectMap.TryGetValue(localId, out var obj))
+                if (GetObject(localId) is { } obj)
                 {
                     if (!obj.IsClaimedLocally)
                         obj.ApplyUpdate(pos, rot, scale);
@@ -301,7 +300,7 @@ namespace SomniumSpace.Worlds.bently.networking
                 Vector3 pos, rot;
                 offset = ReadEntityCompact(data, offset, out localId, out pos, out rot);
 
-                if (_objectMap.TryGetValue(localId, out var obj))
+                if (GetObject(localId) is { } obj)
                 {
                     if (obj.HasStateAuthority) continue;
                     obj.SnapTo(pos, rot);
@@ -330,7 +329,7 @@ namespace SomniumSpace.Worlds.bently.networking
                 Vector3 pos, rot, scale;
                 offset = Protocol.ReadEntityScaled(data, offset, out localId, out pos, out rot, out scale);
 
-                if (_objectMap.TryGetValue(localId, out var obj))
+                if (GetObject(localId) is { } obj)
                 {
                     if (obj.HasStateAuthority) continue;
                     obj.SnapTo(pos, rot, scale);
@@ -351,7 +350,7 @@ namespace SomniumSpace.Worlds.bently.networking
             ushort objId = (ushort)(data[1] | (data[2] << 8));
             int varCount = data[3];
 
-            if (_objectMap.TryGetValue(objId, out var netVarObj))
+            if (GetObject(objId) is { } netVarObj)
             {
                 var netVars = netVarObj.GetComponent<NetworkVariables>();
                 if (netVars != null)
@@ -368,7 +367,7 @@ namespace SomniumSpace.Worlds.bently.networking
             if (length < 4) return;
             ushort objId = (ushort)(data[1] | (data[2] << 8));
 
-            if (_objectMap.TryGetValue(objId, out var eventObj))
+            if (GetObject(objId) is { } eventObj)
             {
                 var netEvents = eventObj.GetComponent<NetworkEvents>();
                 if (netEvents != null)
@@ -385,7 +384,7 @@ namespace SomniumSpace.Worlds.bently.networking
             if (length < 10) return;
             ushort objId = (ushort)(data[1] | (data[2] << 8));
 
-            if (_objectMap.TryGetValue(objId, out var animObj))
+            if (GetObject(objId) is { } animObj)
             {
                 var netAnim = animObj.GetComponent<NetworkAnimator>();
                 if (netAnim != null)
@@ -419,7 +418,7 @@ namespace SomniumSpace.Worlds.bently.networking
             if (length < 15) return;
             ushort objId = (ushort)(data[1] | (data[2] << 8));
 
-            if (_objectMap.TryGetValue(objId, out var rbObj))
+            if (GetObject(objId) is { } rbObj)
             {
                 var netRb = rbObj.GetComponent<NetworkRigidbody>();
                 if (netRb != null)
