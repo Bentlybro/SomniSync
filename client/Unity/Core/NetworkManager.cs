@@ -43,6 +43,8 @@ namespace SomniumSpace.Worlds.bently.networking
         public bool IsMaster { get; private set; }
         public ushort ClientId { get; private set; }
         public bool IsNetworkReady { get; private set; }
+        /// <summary>True when the server is running authoritative physics (Rapier3D).</summary>
+        public bool IsPhysicsMode { get; private set; }
 
         // Events — subscribe to these for connection lifecycle
         /// <summary>Fired when networking is ready (connected + role assigned). Safe to use network features.</summary>
@@ -202,7 +204,10 @@ namespace SomniumSpace.Worlds.bently.networking
             if (Time.time >= _nextSendTime)
             {
                 _nextSendTime = Time.time + _sendInterval;
-                SendAuthorityPositionUpdates(rigidbodies: false);
+                // In physics mode the server owns all object positions — only send
+                // interaction updates for locally claimed (grabbed) objects.
+                if (!IsPhysicsMode)
+                    SendAuthorityPositionUpdates(rigidbodies: false);
                 SendInteractionUpdates();
             }
 
@@ -210,29 +215,33 @@ namespace SomniumSpace.Worlds.bently.networking
             if (Time.time >= _nextRbSendTime)
             {
                 _nextRbSendTime = Time.time + _rbSendInterval;
-                SendAuthorityPositionUpdates(rigidbodies: true);
+                if (!IsPhysicsMode)
+                    SendAuthorityPositionUpdates(rigidbodies: true);
             }
 
-            // Periodic full snapshot to correct drift (master only).
-            // Always send — even when nothing has moved. Spectators accumulate dead-reckoning
-            // error over time and the resync is the only mechanism to correct it. Gating on
-            // anyMoved meant the resync never fired once objects settled, so drift was permanent.
-            if (IsMaster && resyncInterval > 0 && Time.time >= _nextResyncTime)
+            // Periodic full snapshot to correct drift (master only, relay mode only).
+            // In physics mode the server generates authoritative snapshots from Rapier state.
+            if (IsMaster && !IsPhysicsMode && resyncInterval > 0 && Time.time >= _nextResyncTime)
             {
                 _nextResyncTime = Time.time + resyncInterval;
                 SendSnapshot();
             }
 
-            // AOI + authority: master recalculates periodically
-            if (IsMaster && enableAOI && Time.time >= _nextAOICheckTime)
+            // AOI + authority redistribution: master only, relay mode only.
+            // In physics mode the server handles AOI and there is no authority to redistribute.
+            if (IsMaster && !IsPhysicsMode && enableAOI && Time.time >= _nextAOICheckTime)
             {
                 _nextAOICheckTime = Time.time + (1f / aoiCheckRate);
                 UpdateAOI();
                 RecalculateAuthority();
             }
 
-            // Spectators send their position to master for AOI
-            if (!IsMaster && IsNetworkReady && enableAOI && Time.time >= _nextPlayerPosSendTime)
+            // Player position: spectators → master (relay mode), all clients → server (physics mode).
+            // In physics mode every client's position is needed for server-side AOI filtering.
+            bool shouldSendPos = IsPhysicsMode
+                ? IsNetworkReady
+                : (!IsMaster && IsNetworkReady && enableAOI);
+            if (shouldSendPos && Time.time >= _nextPlayerPosSendTime)
             {
                 _nextPlayerPosSendTime = Time.time + (1f / PLAYER_POS_SEND_RATE);
                 SendPlayerPosition();
@@ -304,6 +313,23 @@ namespace SomniumSpace.Worlds.bently.networking
         // O(1) object lookup — IDs are sequential so _objects[id] is a direct index.
         private NetworkObject GetObject(ushort id)
             => id < _objects.Count ? _objects[id] : null;
+
+        // =====================================================================
+        // Physics Mode
+        // =====================================================================
+
+        /// <summary>
+        /// Switch to server-authoritative physics mode.
+        /// Clears all local StateAuthority — the server (Rapier3D) now owns every object.
+        /// Called when the server broadcasts CTRL_PHYSICS_READY (0xFF 0x08).
+        /// </summary>
+        private void EnterPhysicsMode()
+        {
+            IsPhysicsMode = true;
+            for (int i = 0; i < _objects.Count; i++)
+                _objects[i].SetStateAuthority(0); // 0 = server / no client
+            Debug.Log("[Net] Physics mode: server is now the physics authority");
+        }
 
         // =====================================================================
         // Connection

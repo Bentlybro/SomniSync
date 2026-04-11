@@ -2,21 +2,26 @@ use log::{debug, error, info, warn};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tokio::time::{timeout, Duration};
+use tokio::time::{timeout, Duration, Instant};
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::client::{broadcast_except, new_client, send, Client, ClientMsg};
+use crate::client::{broadcast_except, broadcast_all, new_client, send, Client, ClientMsg};
 use crate::persistence::PersistenceDb;
+use crate::physics::{parse_scene_init, PhysicsWorld};
 use crate::protocol::{
     ctrl_msg, ctrl_msg_u16, CTRL_AUTHORITY_ASSIGN, CTRL_CLAIM, CTRL_ERROR, CTRL_MASTER_CHANGED,
-    CTRL_PERSIST_DATA, CTRL_PERSIST_GET, CTRL_PERSIST_SET, CTRL_PLAYER_IDENT,
-    CTRL_PLAYER_POSITION, CTRL_RELEASE, CTRL_SEND_SNAPSHOT, CTRL_YOU_ARE_MASTER,
-    CTRL_YOU_ARE_SPECTATOR, MSG_ANIMATOR, MSG_EVENT, MSG_INTERACTION_UPDATE,
+    CTRL_PERSIST_DATA, CTRL_PERSIST_GET, CTRL_PERSIST_SET, CTRL_PHYSICS_READY,
+    CTRL_PLAYER_IDENT, CTRL_PLAYER_POSITION, CTRL_RELEASE, CTRL_SEND_SNAPSHOT,
+    CTRL_YOU_ARE_MASTER, CTRL_YOU_ARE_SPECTATOR, MSG_ANIMATOR, MSG_EVENT, MSG_INTERACTION_UPDATE,
     MSG_POSITION_UPDATE, MSG_POSITION_UPDATE_SCALED, MSG_POSITION_VELOCITY, MSG_RIGIDBODY,
-    MSG_SCALED_INTERACTION, MSG_SNAPSHOT, MSG_SNAPSHOT_SCALED, MSG_VARIABLE_UPDATE,
+    MSG_SCALED_INTERACTION, MSG_SCENE_INIT, MSG_SNAPSHOT, MSG_SNAPSHOT_SCALED,
+    MSG_VARIABLE_UPDATE,
 };
 use crate::room::Room;
 use crate::room::RoomMap;
+
+/// AOI radius squared for physics-mode position filtering (50 m radius)
+const AOI_RADIUS_SQ: f32 = 2500.0; // 50m²
 
 /// Handle a single client connection (runs in its own task).
 pub async fn handle_connection(
@@ -139,7 +144,7 @@ pub async fn handle_connection(
     }
 }
 
-/// Send cached snapshot to a newly connected spectator + request fresh from master.
+/// Send cached snapshots to a newly connected spectator + request fresh from master.
 async fn send_cached_snapshot(room: &Arc<RwLock<Room>>, client: &Client, client_id: u16, room_id: &str) {
     let room = room.read().await;
     if let Some(ref snapshot) = room.latest_snapshot {
@@ -148,6 +153,13 @@ async fn send_cached_snapshot(room: &Arc<RwLock<Room>>, client: &Client, client_
             room_id, client_id, snapshot.len()
         );
         send(client, snapshot.clone()).await;
+    }
+    if let Some(ref scaled) = room.latest_scaled_snapshot {
+        info!(
+            "[Room:{}] Sending cached scaled snapshot to client_{} ({} bytes)",
+            room_id, client_id, scaled.len()
+        );
+        send(client, scaled.clone()).await;
     }
     if let Some(master_id) = room.master_id {
         if let Some(master) = room.clients.get(&master_id) {
@@ -185,10 +197,10 @@ async fn handle_binary(
             if room.master_id != Some(client_id) {
                 return;
             }
-            const MAX_SNAPSHOT_BYTES: usize = 512 * 1024; // 512 KB — covers ~37k entities
+            const MAX_SNAPSHOT_BYTES: usize = 512 * 1024; // 512 KB
             if data.len() > MAX_SNAPSHOT_BYTES {
                 warn!("[Room:{}] Snapshot from master too large ({} bytes), rejecting", room_id, data.len());
-                send(&client, ctrl_msg(CTRL_ERROR, b"snapshot_too_large")).await;
+                send(client, ctrl_msg(CTRL_ERROR, b"snapshot_too_large")).await;
                 return;
             }
             info!(
@@ -200,13 +212,43 @@ async fn handle_binary(
         }
 
         MSG_POSITION_VELOCITY => {
-            let room = room.read().await;
+            // In physics mode: only relay 0x0B for claimed objects owned by this sender.
+            // In relay mode: broadcast as-is.
+            let (physics_mode, physics_world_opt) = {
+                let r = room.read().await;
+                (r.physics_mode, r.physics_world.clone())
+            };
+
+            if physics_mode {
+                if let Some(pw_arc) = physics_world_opt {
+                    handle_physics_mode_0x0b(room, client_id, data, room_id, pw_arc).await;
+                }
+            } else {
+                let room = room.read().await;
+                broadcast_except(&room.clients, client_id, data);
+            }
+        }
+
+        MSG_SCENE_INIT => {
+            handle_scene_init(room, &room_id.to_string(), data).await;
+        }
+
+        MSG_SNAPSHOT_SCALED => {
+            let mut room = room.write().await;
+            if room.master_id != Some(client_id) {
+                return;
+            }
+            const MAX_SCALED_SNAPSHOT_BYTES: usize = 512 * 1024;
+            if data.len() > MAX_SCALED_SNAPSHOT_BYTES {
+                warn!("[Room:{}] Scaled snapshot from master too large ({} bytes), dropping", room_id, data.len());
+                return;
+            }
+            room.latest_scaled_snapshot = Some(data.to_vec());
             broadcast_except(&room.clients, client_id, data);
         }
 
         MSG_INTERACTION_UPDATE | MSG_VARIABLE_UPDATE | MSG_POSITION_UPDATE_SCALED
-        | MSG_SNAPSHOT_SCALED | MSG_EVENT | MSG_ANIMATOR | MSG_RIGIDBODY
-        | MSG_SCALED_INTERACTION => {
+        | MSG_EVENT | MSG_ANIMATOR | MSG_RIGIDBODY | MSG_SCALED_INTERACTION => {
             let room = room.read().await;
             broadcast_except(&room.clients, client_id, data);
         }
@@ -224,6 +266,326 @@ async fn handle_binary(
     }
 }
 
+/// Handle a 0x0B message in physics mode.
+/// Only relay entities that are claimed by this sender; update their kinematic positions.
+async fn handle_physics_mode_0x0b(
+    room: &Arc<RwLock<Room>>,
+    client_id: u16,
+    data: &[u8],
+    room_id: &str,
+    pw_arc: Arc<tokio::sync::Mutex<PhysicsWorld>>,
+) {
+    // Minimum size: [0x0B][u16 sender][u16 seq][u16 count] = 7
+    if data.len() < 7 {
+        return;
+    }
+
+    use crate::protocol::MSG_POSITION_VELOCITY;
+    const BYTES_PER_ENTITY: usize = 20;
+
+    let count = u16::from_le_bytes([data[5], data[6]]) as usize;
+    if data.len() < 7 + count * BYTES_PER_ENTITY {
+        return;
+    }
+
+    // Parse all entities from the message
+    let mut offset = 7usize;
+    let mut relayable: Vec<(u16, [f32; 3], [f32; 3], [f32; 3])> = Vec::new();
+
+    // Read claimed objects for this room (under read lock)
+    let claimed_objects_snapshot = {
+        let r = room.read().await;
+        r.claimed_objects.clone()
+    };
+
+    for _ in 0..count {
+        if offset + BYTES_PER_ENTITY > data.len() {
+            break;
+        }
+
+        let obj_id = u16::from_le_bytes([data[offset], data[offset + 1]]);
+        let px = read_f16(&data[offset + 2..]);
+        let py = read_f16(&data[offset + 4..]);
+        let pz = read_f16(&data[offset + 6..]);
+        let rx_deg = read_rot_u16(&data[offset + 8..]);
+        let ry_deg = read_rot_u16(&data[offset + 10..]);
+        let rz_deg = read_rot_u16(&data[offset + 12..]);
+        let vx = read_f16(&data[offset + 14..]);
+        let vy = read_f16(&data[offset + 16..]);
+        let vz = read_f16(&data[offset + 18..]);
+        offset += BYTES_PER_ENTITY;
+
+        // Only accept this update if this sender claims the object
+        if claimed_objects_snapshot.get(&obj_id) != Some(&client_id) {
+            continue;
+        }
+
+        // Update kinematic position in physics world
+        {
+            let mut pw = pw_arc.lock().await;
+            pw.update_claimed(obj_id, px, py, pz, rx_deg, ry_deg, rz_deg, vx, vy, vz);
+        }
+
+        relayable.push((obj_id, [px, py, pz], [rx_deg, ry_deg, rz_deg], [vx, vy, vz]));
+    }
+
+    if relayable.is_empty() {
+        return;
+    }
+
+    // Build a relay 0x0B message containing only the claimed entities
+    // Preserve the original sender_id and sequence from the incoming message
+    let mut relay_buf = Vec::with_capacity(7 + relayable.len() * BYTES_PER_ENTITY);
+    relay_buf.push(MSG_POSITION_VELOCITY);
+    relay_buf.push(data[1]); // sender_id lo
+    relay_buf.push(data[2]); // sender_id hi
+    relay_buf.push(data[3]); // sequence lo
+    relay_buf.push(data[4]); // sequence hi
+    push_u16_vec(&mut relay_buf, relayable.len() as u16);
+
+    for (obj_id, pos, rot_deg, vel) in &relayable {
+        push_u16_vec(&mut relay_buf, *obj_id);
+        push_f16_vec(&mut relay_buf, pos[0]);
+        push_f16_vec(&mut relay_buf, pos[1]);
+        push_f16_vec(&mut relay_buf, pos[2]);
+        push_rot_u16_vec(&mut relay_buf, rot_deg[0]);
+        push_rot_u16_vec(&mut relay_buf, rot_deg[1]);
+        push_rot_u16_vec(&mut relay_buf, rot_deg[2]);
+        push_f16_vec(&mut relay_buf, vel[0]);
+        push_f16_vec(&mut relay_buf, vel[1]);
+        push_f16_vec(&mut relay_buf, vel[2]);
+    }
+
+    let room_r = room.read().await;
+    broadcast_except(&room_r.clients, client_id, &relay_buf);
+    debug!(
+        "[Room:{}] Relayed {}/{} claimed entities from client_{} in physics mode",
+        room_id,
+        relayable.len(),
+        count,
+        client_id
+    );
+}
+
+/// Handle a SCENE_INIT (0x10) message — set up server-side physics.
+async fn handle_scene_init(room: &Arc<RwLock<Room>>, room_id: &str, data: &[u8]) {
+    // First client to send SCENE_INIT wins; ignore duplicates.
+    {
+        let r = room.read().await;
+        if r.physics_mode {
+            debug!("[Room:{}] SCENE_INIT ignored (physics already active)", room_id);
+            return;
+        }
+    }
+
+    let objects = match parse_scene_init(data) {
+        Some(objs) => objs,
+        None => {
+            warn!("[Room:{}] Failed to parse SCENE_INIT", room_id);
+            return;
+        }
+    };
+
+    info!(
+        "[Room:{}] SCENE_INIT received: {} physics objects. Entering physics mode.",
+        room_id,
+        objects.len()
+    );
+
+    let mut world = PhysicsWorld::new();
+    for desc in &objects {
+        world.add_object(desc);
+    }
+
+    let pw_arc = Arc::new(tokio::sync::Mutex::new(world));
+
+    // Store physics world and set physics_mode, broadcast CTRL_PHYSICS_READY
+    {
+        let mut r = room.write().await;
+        r.physics_mode = true;
+        r.physics_world = Some(pw_arc.clone());
+
+        // [0xFF][0x08] — no payload needed
+        let ready_msg = vec![0xFF_u8, CTRL_PHYSICS_READY];
+        broadcast_all(&r.clients, &ready_msg);
+    }
+
+    // Spawn the physics tick task
+    let room_weak = Arc::downgrade(room);
+    let room_id_owned = room_id.to_string();
+
+    tokio::spawn(async move {
+        physics_tick_task(room_weak, pw_arc, room_id_owned).await;
+    });
+}
+
+/// Physics tick task — runs at 50Hz physics, 20Hz broadcast.
+async fn physics_tick_task(
+    room_weak: std::sync::Weak<RwLock<Room>>,
+    pw_arc: Arc<tokio::sync::Mutex<PhysicsWorld>>,
+    room_id: String,
+) {
+    const PHYSICS_HZ: u64 = 50;
+    const BROADCAST_HZ: u64 = 20;
+    const PHYSICS_INTERVAL: Duration = Duration::from_millis(1000 / PHYSICS_HZ);
+    const BROADCAST_INTERVAL: Duration = Duration::from_millis(1000 / BROADCAST_HZ);
+    // Check for empty room every 2 seconds
+    const ROOM_CHECK_INTERVAL: Duration = Duration::from_secs(2);
+
+    let mut last_physics    = Instant::now();
+    let mut last_broadcast  = Instant::now();
+    let mut last_room_check = Instant::now();
+    let mut server_sequence: u16 = 0;
+
+    info!("[Room:{}] Physics tick task started (50Hz sim / 20Hz broadcast)", room_id);
+
+    loop {
+        // Yield to the tokio runtime; sleep the minimum needed interval
+        let now = Instant::now();
+        let next_physics   = last_physics   + PHYSICS_INTERVAL;
+        let next_broadcast = last_broadcast + BROADCAST_INTERVAL;
+        let next_check     = last_room_check + ROOM_CHECK_INTERVAL;
+
+        let wake_at = next_physics.min(next_broadcast).min(next_check);
+        if wake_at > now {
+            tokio::time::sleep_until(wake_at).await;
+        }
+
+        let now = Instant::now();
+
+        // ── Physics step ────────────────────────────────────────────────────────
+        if now >= next_physics {
+            last_physics = now;
+            let mut pw = pw_arc.lock().await;
+            pw.step();
+        }
+
+        // ── Broadcast position message ──────────────────────────────────────────
+        if now >= next_broadcast {
+            last_broadcast = now;
+
+            let msg_opt = {
+                let mut pw = pw_arc.lock().await;
+                pw.build_position_message(&mut server_sequence)
+            };
+
+            if let Some(msg) = msg_opt {
+                // Upgrade room weak pointer to check if room still exists
+                let room_arc = match room_weak.upgrade() {
+                    Some(r) => r,
+                    None => {
+                        info!("[Room:{}] Physics task: room deallocated, stopping", room_id);
+                        return;
+                    }
+                };
+
+                let r = room_arc.read().await;
+                if r.client_count() == 0 {
+                    info!("[Room:{}] Physics task: no clients, stopping", room_id);
+                    return;
+                }
+
+                // Per-client AOI filtering: only send objects within AOI_RADIUS_SQ of player
+                for (&cid, client) in &r.clients {
+                    let player_pos = r.player_positions.get(&cid).copied();
+
+                    match player_pos {
+                        None => {
+                            // No known player position — send everything
+                            send(client, msg.clone()).await;
+                        }
+                        Some(ppos) => {
+                            let filtered = filter_0x0b_by_aoi(&msg, ppos, AOI_RADIUS_SQ, &mut server_sequence);
+                            if let Some(filtered_msg) = filtered {
+                                send(client, filtered_msg).await;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Room liveness check ─────────────────────────────────────────────────
+        if now >= next_check {
+            last_room_check = now;
+
+            let room_arc = match room_weak.upgrade() {
+                Some(r) => r,
+                None => {
+                    info!("[Room:{}] Physics task: room deallocated, stopping", room_id);
+                    return;
+                }
+            };
+
+            if room_arc.read().await.client_count() == 0 {
+                info!("[Room:{}] Physics task: no clients remain, stopping", room_id);
+                return;
+            }
+        }
+    }
+}
+
+/// Filter a 0x0B position message to only include entities within `radius_sq` of `player_pos`.
+/// Returns None if no entities pass the filter.
+/// `server_sequence` is incremented for the new message so the client sees a fresh sequence number.
+fn filter_0x0b_by_aoi(
+    msg: &[u8],
+    player_pos: [f32; 3],
+    radius_sq: f32,
+    server_sequence: &mut u16,
+) -> Option<Vec<u8>> {
+    if msg.len() < 7 {
+        return None;
+    }
+
+    const BYTES_PER_ENTITY: usize = 20;
+    let count = u16::from_le_bytes([msg[5], msg[6]]) as usize;
+
+    let mut filtered: Vec<&[u8]> = Vec::with_capacity(count);
+    let mut offset = 7usize;
+
+    for _ in 0..count {
+        if offset + BYTES_PER_ENTITY > msg.len() {
+            break;
+        }
+        let entity = &msg[offset..offset + BYTES_PER_ENTITY];
+
+        // Entity position is at bytes 2..8 (f16 x, y, z)
+        let ex = read_f16(&entity[2..]);
+        let ey = read_f16(&entity[4..]);
+        let ez = read_f16(&entity[6..]);
+
+        let dx = ex - player_pos[0];
+        let dy = ey - player_pos[1];
+        let dz = ez - player_pos[2];
+        let dist_sq = dx * dx + dy * dy + dz * dz;
+
+        if dist_sq <= radius_sq {
+            filtered.push(entity);
+        }
+
+        offset += BYTES_PER_ENTITY;
+    }
+
+    if filtered.is_empty() {
+        return None;
+    }
+
+    *server_sequence = server_sequence.wrapping_add(1);
+    let seq = *server_sequence;
+
+    let mut out = Vec::with_capacity(7 + filtered.len() * BYTES_PER_ENTITY);
+    out.push(0x0B);
+    push_u16_vec(&mut out, 0); // sender = server
+    push_u16_vec(&mut out, seq);
+    push_u16_vec(&mut out, filtered.len() as u16);
+    for entity in filtered {
+        out.extend_from_slice(entity);
+    }
+
+    Some(out)
+}
+
 /// Handle control messages (0xFF).
 async fn handle_control(
     room: &Arc<RwLock<Room>>,
@@ -238,11 +600,20 @@ async fn handle_control(
     }
     let ctrl = data[1];
 
-    // --- Player position: broadcast as-is ---
+    // --- Player position: broadcast as-is + update server-side position map ---
     if ctrl == CTRL_PLAYER_POSITION {
         if data.len() >= 10 {
-            let room = room.read().await;
-            broadcast_except(&room.clients, client_id, data);
+            let px = read_f16(&data[4..]);
+            let py = read_f16(&data[6..]);
+            let pz = read_f16(&data[8..]);
+
+            {
+                let mut r = room.write().await;
+                if r.physics_mode {
+                    r.player_positions.insert(client_id, [px, py, pz]);
+                }
+                broadcast_except(&r.clients, client_id, data);
+            }
         }
         return;
     }
@@ -258,7 +629,6 @@ async fn handle_control(
 
     // --- Persistence: player identity registration (once per connection only) ---
     if ctrl == CTRL_PLAYER_IDENT {
-        // [0xFF][0x20][u8 len][utf8 uuid...]
         {
             let room_r = room.read().await;
             if room_r.player_ids.contains_key(&client_id) {
@@ -284,14 +654,12 @@ async fn handle_control(
 
     // --- Persistence: write key/value ---
     if ctrl == CTRL_PERSIST_SET {
-        // [0xFF][0x21][u8 ns_len][ns...][u8 key_len][key...][u16 val_len][val...]
         handle_persist_set(room, client, client_id, data, room_id, db).await;
         return;
     }
 
     // --- Persistence: read key ---
     if ctrl == CTRL_PERSIST_GET {
-        // [0xFF][0x22][u16 req_id][u8 ns_len][ns...][u8 key_len][key...]
         handle_persist_get(room, client, client_id, data, room_id, db).await;
         return;
     }
@@ -305,16 +673,34 @@ async fn handle_control(
 
     match ctrl {
         CTRL_CLAIM => {
-            let mut room = room.write().await;
-            room.claimed_objects.insert(obj_id, sender_id);
-            debug!("[Room:{}] Client_{} claimed object {}", room_id, sender_id, obj_id);
-            broadcast_except(&room.clients, client_id, data);
+            let physics_world_opt = {
+                let mut room = room.write().await;
+                room.claimed_objects.insert(obj_id, sender_id);
+                debug!("[Room:{}] Client_{} claimed object {}", room_id, sender_id, obj_id);
+                broadcast_except(&room.clients, client_id, data);
+                room.physics_world.clone()
+            };
+
+            // In physics mode: make the body kinematic
+            if let Some(pw_arc) = physics_world_opt {
+                let mut pw = pw_arc.lock().await;
+                pw.claim(obj_id);
+            }
         }
         CTRL_RELEASE => {
-            let mut room = room.write().await;
-            room.claimed_objects.remove(&obj_id);
-            debug!("[Room:{}] Client_{} released object {}", room_id, sender_id, obj_id);
-            broadcast_except(&room.clients, client_id, data);
+            let physics_world_opt = {
+                let mut room = room.write().await;
+                room.claimed_objects.remove(&obj_id);
+                debug!("[Room:{}] Client_{} released object {}", room_id, sender_id, obj_id);
+                broadcast_except(&room.clients, client_id, data);
+                room.physics_world.clone()
+            };
+
+            // In physics mode: restore body to dynamic with last known velocity
+            if let Some(pw_arc) = physics_world_opt {
+                let mut pw = pw_arc.lock().await;
+                pw.release(obj_id);
+            }
         }
         _ => {}
     }
@@ -329,7 +715,6 @@ async fn handle_persist_set(
     room_id: &str,
     db: &PersistenceDb,
 ) {
-    // [0xFF][0x21][u8 ns_len][ns...][u8 key_len][key...][u16 val_len][val...]
     let mut offset = 2usize;
     if data.len() < offset + 1 { return; }
 
@@ -389,7 +774,6 @@ async fn handle_persist_get(
     room_id: &str,
     db: &PersistenceDb,
 ) {
-    // [0xFF][0x22][u16 req_id][u8 ns_len][ns...][u8 key_len][key...]
     let mut offset = 2usize;
     if data.len() < offset + 2 { return; }
     let req_id = u16::from_le_bytes([data[offset], data[offset + 1]]); offset += 2;
@@ -430,7 +814,6 @@ async fn handle_persist_get(
         None
     };
 
-    // Build response: [0xFF][0x23][u16 req_id][u8 found][u16 val_len][val...]
     let found = value.is_some();
     let val_bytes = value.as_deref().unwrap_or("").as_bytes();
     let mut resp = Vec::with_capacity(7 + val_bytes.len());
@@ -444,30 +827,81 @@ async fn handle_persist_get(
     send(client, resp).await;
 }
 
-/// Handle client disconnect — cleanup and promote new master if needed.
+/// Handle client disconnect — cleanup and promote new master if needed (relay mode only).
 async fn handle_disconnect(room: &Arc<RwLock<Room>>, client_id: u16, room_id: &str) {
-    // Clone the Arc<Client> while holding the write lock, then drop the lock
-    // before awaiting the send. Holding a lock across async I/O would block all
-    // other message handlers for the entire room during network latency.
-    let promotion: Option<(u16, Arc<crate::client::Client>)> = {
+    let (physics_mode, promotion): (bool, Option<(u16, Arc<crate::client::Client>)>) = {
         let mut room_guard = room.write().await;
-        let new_master_id = room_guard.remove_client(client_id);
+        let physics_mode = room_guard.physics_mode;
+
+        // Remove player position tracking
+        room_guard.player_positions.remove(&client_id);
+
+        let new_master_id = if physics_mode {
+            // In physics mode: server is always the authority — just remove the client
+            room_guard.remove_client(client_id);
+            None
+        } else {
+            room_guard.remove_client(client_id)
+        };
+
         info!(
             "[Room:{}] Client_{} disconnected ({} remaining)",
             room_id, client_id, room_guard.client_count()
         );
-        // Clone the Arc while we still have the lock — fast (just a ref-count bump).
-        new_master_id.and_then(|id| {
-            room_guard.clients.get(&id).map(|c| (id, Arc::clone(c)))
-        })
-    }; // write lock dropped here
 
-    if let Some((new_master_id, new_master_client)) = promotion {
-        info!("[Room:{}] Promoting client_{} to master", room_id, new_master_id);
-        send(
-            &new_master_client,
-            ctrl_msg(CTRL_MASTER_CHANGED, &new_master_id.to_le_bytes()),
-        )
-        .await;
+        let promotion = new_master_id.and_then(|id| {
+            room_guard.clients.get(&id).map(|c| (id, Arc::clone(c)))
+        });
+
+        (physics_mode, promotion)
+    };
+
+    // Relay mode only: promote new master
+    if !physics_mode {
+        if let Some((new_master_id, new_master_client)) = promotion {
+            info!("[Room:{}] Promoting client_{} to master", room_id, new_master_id);
+            send(
+                &new_master_client,
+                ctrl_msg(CTRL_MASTER_CHANGED, &new_master_id.to_le_bytes()),
+            )
+            .await;
+        }
     }
+}
+
+// ─── Inline binary helpers used in handler ────────────────────────────────────
+
+#[inline]
+fn read_f16(data: &[u8]) -> f32 {
+    use half::f16;
+    let bits = u16::from_le_bytes([data[0], data[1]]);
+    f16::from_bits(bits).to_f32()
+}
+
+#[inline]
+fn read_rot_u16(data: &[u8]) -> f32 {
+    let raw = u16::from_le_bytes([data[0], data[1]]);
+    raw as f32 * (360.0 / 65535.0)
+}
+
+#[inline]
+fn push_u16_vec(buf: &mut Vec<u8>, v: u16) {
+    buf.push((v & 0xFF) as u8);
+    buf.push((v >> 8) as u8);
+}
+
+#[inline]
+fn push_f16_vec(buf: &mut Vec<u8>, v: f32) {
+    use half::f16;
+    let bits = f16::from_f32(v).to_bits();
+    buf.push((bits & 0xFF) as u8);
+    buf.push((bits >> 8) as u8);
+}
+
+#[inline]
+fn push_rot_u16_vec(buf: &mut Vec<u8>, degrees: f32) {
+    let mut d = degrees % 360.0;
+    if d < 0.0 { d += 360.0; }
+    let encoded = (d * (65535.0 / 360.0)) as u16;
+    push_u16_vec(buf, encoded);
 }

@@ -110,9 +110,15 @@ namespace SomniumSpace.Worlds.bently.networking
 
         [HideInInspector] public bool IsAOIActive = true;
 
-        // Components
+        // Core component
         private Rigidbody _rb;
         private bool      _hasRb;
+
+        // Optional sibling components — cached at Awake to avoid per-message GetComponent calls
+        internal NetworkVariables CachedVariables;
+        internal NetworkEvents    CachedEvents;
+        internal NetworkAnimator  CachedAnimator;
+        internal NetworkRigidbody CachedRigidbody;
 
         // =====================================================================
         // Unity lifecycle
@@ -124,6 +130,12 @@ namespace SomniumSpace.Worlds.bently.networking
             _hasRb = _rb != null;
             if (_hasRb)
                 _rb.isKinematic = true; // freeze until authority is assigned
+
+            // Cache optional sibling components so receivers avoid per-message GetComponent calls
+            CachedVariables = GetComponent<NetworkVariables>();
+            CachedEvents    = GetComponent<NetworkEvents>();
+            CachedAnimator  = GetComponent<NetworkAnimator>();
+            CachedRigidbody = GetComponent<NetworkRigidbody>();
         }
 
         // Update() intentionally removed — NetworkManager calls NetworkUpdate() for all

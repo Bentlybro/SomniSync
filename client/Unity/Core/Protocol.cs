@@ -24,6 +24,8 @@ namespace SomniumSpace.Worlds.bently.networking
         public const byte MSG_SCALED_INTERACTION      = 0x09; // claimed scaled-object updates
         public const byte MSG_SNAPSHOT_SCALED         = 0x0A; // full scaled-object snapshot
         public const byte MSG_POSITION_VELOCITY       = 0x0B; // authority position + velocity (dead reckoning)
+        /// <summary>Client → server: physics scene description. [0x10][u16 count][N × 60B objects]</summary>
+        public const byte MSG_SCENE_INIT              = 0x10;
         public const byte MSG_CONTROL                 = 0xFF;
 
         // =====================================================================
@@ -37,6 +39,8 @@ namespace SomniumSpace.Worlds.bently.networking
         public const byte CTRL_CLAIM             = 0x05;
         public const byte CTRL_RELEASE           = 0x06;
         public const byte CTRL_PLAYER_POSITION   = 0x07;
+        /// <summary>Server → all: server physics mode is now active; clear all StateAuthority. [0xFF][0x08]</summary>
+        public const byte CTRL_PHYSICS_READY     = 0x08;
         /// <summary>
         /// Master → all: assign StateAuthority for a set of objects to one client.
         /// Format: [0xFF][0x0A][u16 clientId][u16 count][u16... objectIds]
@@ -233,6 +237,49 @@ namespace SomniumSpace.Worlds.bently.networking
             float vy = ReadHalf(buf, offset); offset += 2;
             float vz = ReadHalf(buf, offset); offset += 2;
             vel = new Vector3(vx, vy, vz);
+            return offset;
+        }
+
+        // =====================================================================
+        // Physics scene description  (MSG_SCENE_INIT 0x10)
+        // Each object is exactly 60 bytes in the wire format.
+        // =====================================================================
+
+        /// <summary>Body type enum matching the server's Rapier3D body types.</summary>
+        public enum PhysicsBodyType : byte { Dynamic = 0, Fixed = 1, KinematicPosition = 2 }
+
+        /// <summary>Shape type enum matching Rapier3D collider shapes.</summary>
+        public enum PhysicsShapeType : byte { Ball = 0, Cuboid = 1, Capsule = 2 }
+
+        /// <summary>Wire size of one physics object in a SCENE_INIT message (bytes).</summary>
+        public const int BYTES_PER_SCENE_OBJECT = 60;
+
+        /// <summary>
+        /// Write one object's physics description into <paramref name="buf"/> at <paramref name="offset"/>.
+        /// Advances and returns the new offset.
+        /// </summary>
+        public static int WriteSceneObject(byte[] buf, int offset,
+            ushort id, PhysicsBodyType bodyType, PhysicsShapeType shapeType,
+            Vector3 position, Vector3 rotationEuler, Vector3 shapeParams,
+            float mass, float restitution, float friction, float linearDamping, float angularDamping)
+        {
+            WriteU16(buf, offset, id);                          offset += 2;
+            buf[offset] = (byte)bodyType;                       offset += 1;
+            buf[offset] = (byte)shapeType;                      offset += 1;
+            WriteFloat(buf, offset, position.x);                offset += 4;
+            WriteFloat(buf, offset, position.y);                offset += 4;
+            WriteFloat(buf, offset, position.z);                offset += 4;
+            WriteFloat(buf, offset, rotationEuler.x);           offset += 4;
+            WriteFloat(buf, offset, rotationEuler.y);           offset += 4;
+            WriteFloat(buf, offset, rotationEuler.z);           offset += 4;
+            WriteFloat(buf, offset, shapeParams.x);             offset += 4;
+            WriteFloat(buf, offset, shapeParams.y);             offset += 4;
+            WriteFloat(buf, offset, shapeParams.z);             offset += 4;
+            WriteFloat(buf, offset, mass);                      offset += 4;
+            WriteFloat(buf, offset, restitution);               offset += 4;
+            WriteFloat(buf, offset, friction);                  offset += 4;
+            WriteFloat(buf, offset, linearDamping);             offset += 4;
+            WriteFloat(buf, offset, angularDamping);            offset += 4;
             return offset;
         }
     }

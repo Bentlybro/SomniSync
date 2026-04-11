@@ -214,16 +214,8 @@ namespace SomniumSpace.Worlds.bently.networking
         // Authority
         // =====================================================================
 
-        /// <summary>
-        /// Can this client set variables on this object?
-        /// Master can set on unowned objects. Any client can set on objects they've claimed.
-        /// </summary>
-        private bool HasAuthority()
-        {
-            if (NetworkManager.Instance.IsMaster && !_netObj.IsClaimedByRemote) return true;
-            if (_netObj.IsClaimedLocally) return true;
-            return false;
-        }
+        /// <summary>Can this client set variables on this object?</summary>
+        private bool HasAuthority() => _netObj.HasAuthority();
 
         // =====================================================================
         // Serialization — Send

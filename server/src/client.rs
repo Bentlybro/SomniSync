@@ -93,3 +93,13 @@ pub fn broadcast_except(
         }
     }
 }
+
+/// Broadcast a binary message to ALL clients (e.g. server-generated control messages).
+pub fn broadcast_all(clients: &HashMap<u16, Arc<Client>>, data: &[u8]) {
+    let bytes = Bytes::copy_from_slice(data);
+    for client in clients.values() {
+        if client.tx.try_send(ClientMsg::Binary(bytes.clone())).is_err() {
+            // Buffer full — client is lagged, drop this frame silently.
+        }
+    }
+}

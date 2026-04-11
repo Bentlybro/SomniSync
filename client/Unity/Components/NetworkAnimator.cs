@@ -304,11 +304,6 @@ namespace SomniumSpace.Worlds.bently.networking
             }
         }
 
-        private bool HasAuthority()
-        {
-            if (NetworkManager.Instance.IsMaster && !_netObj.IsClaimedByRemote) return true;
-            if (_netObj.IsClaimedLocally) return true;
-            return false;
-        }
+        private bool HasAuthority() => _netObj.HasAuthority();
     }
 }

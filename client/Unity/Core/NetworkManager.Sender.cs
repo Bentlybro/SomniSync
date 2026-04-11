@@ -252,6 +252,102 @@ namespace SomniumSpace.Worlds.bently.networking
         // this AOI tick. Batched into one message instead of one per object.
         // =====================================================================
 
+        // =====================================================================
+        // SCENE_INIT (0x10) — send physics scene description to server
+        // =====================================================================
+
+        /// <summary>
+        /// Inspect all registered NetworkObjects, auto-detect their physics properties from
+        /// Unity components, and send a SCENE_INIT message to the server so it can start
+        /// Rapier3D simulation.
+        ///
+        /// Objects without a Collider are skipped (no shape → can't simulate).
+        /// MeshColliders are also skipped (no analytic Rapier shape available).
+        /// Call this once after the scene is ready and you want the server to take over physics.
+        /// </summary>
+        public void SendSceneInit()
+        {
+            // Header: [0x10][u16 count] = 3 bytes; each object is 60 bytes
+            int maxSize = 3 + _objects.Count * Protocol.BYTES_PER_SCENE_OBJECT;
+            byte[] buf = ArrayPool<byte>.Shared.Rent(maxSize);
+            buf[0] = Protocol.MSG_SCENE_INIT;
+            int offset = 3; // count written after loop
+            int count = 0;
+
+            foreach (var obj in _objects)
+            {
+                var rb  = obj.GetComponent<Rigidbody>();
+                var col = obj.GetComponent<Collider>();
+                if (col == null) continue; // can't simulate without a collider shape
+
+                Protocol.PhysicsBodyType  bodyType;
+                Protocol.PhysicsShapeType shapeType;
+                Vector3 shapeParams;
+
+                if (rb == null || col.gameObject.isStatic)
+                    bodyType = Protocol.PhysicsBodyType.Fixed;
+                else if (rb.isKinematic)
+                    bodyType = Protocol.PhysicsBodyType.KinematicPosition;
+                else
+                    bodyType = Protocol.PhysicsBodyType.Dynamic;
+
+                if (col is SphereCollider sc)
+                {
+                    shapeType = Protocol.PhysicsShapeType.Ball;
+                    float worldRadius = sc.radius * Mathf.Max(
+                        obj.transform.lossyScale.x,
+                        Mathf.Max(obj.transform.lossyScale.y, obj.transform.lossyScale.z));
+                    shapeParams = new Vector3(worldRadius, 0f, 0f);
+                }
+                else if (col is BoxCollider bc)
+                {
+                    shapeType = Protocol.PhysicsShapeType.Cuboid;
+                    // Half-extents in world space
+                    Vector3 worldSize = Vector3.Scale(bc.size, obj.transform.lossyScale) * 0.5f;
+                    shapeParams = worldSize;
+                }
+                else if (col is CapsuleCollider cc)
+                {
+                    shapeType = Protocol.PhysicsShapeType.Capsule;
+                    float worldRadius     = cc.radius * Mathf.Max(obj.transform.lossyScale.x, obj.transform.lossyScale.z);
+                    float worldHalfHeight = cc.height * 0.5f * obj.transform.lossyScale.y;
+                    shapeParams = new Vector3(worldRadius, worldHalfHeight, 0f);
+                }
+                else
+                {
+                    continue; // MeshCollider or unknown — skip
+                }
+
+                float mass           = rb != null ? rb.mass           : 0f;
+                float linearDamping  = rb != null ? rb.linearDamping  : 0f;
+                float angularDamping = rb != null ? rb.angularDamping : 0.05f;
+                float restitution    = 0.3f;
+                float friction       = 0.4f;
+                if (col.sharedMaterial != null)
+                {
+                    restitution = col.sharedMaterial.bounciness;
+                    friction    = col.sharedMaterial.dynamicFriction;
+                }
+
+                offset = Protocol.WriteSceneObject(buf, offset,
+                    obj.LocalId, bodyType, shapeType,
+                    obj.transform.position, obj.transform.eulerAngles, shapeParams,
+                    mass, restitution, friction, linearDamping, angularDamping);
+                count++;
+            }
+
+            if (count == 0)
+            {
+                ArrayPool<byte>.Shared.Return(buf);
+                Debug.LogWarning("[Net] SendSceneInit: no objects with colliders found, nothing sent");
+                return;
+            }
+
+            Protocol.WriteU16(buf, 1, (ushort)count);
+            SendBinaryPooled(buf, offset);
+            Debug.Log($"[Net] Sent SCENE_INIT: {count} physics objects to server");
+        }
+
         /// <summary>
         /// Called once per AOI tick with all objects that just deactivated.
         /// Sends them as a single 0x0B batch with velocity=zero so spectators stop

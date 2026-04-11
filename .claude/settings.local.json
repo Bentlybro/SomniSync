@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:somniumspace.com)",
+      "WebSearch",
+      "WebFetch(domain:incrediworlds.gitbook.io)",
+      "Bash(cargo check:*)"
+    ]
+  }
+}

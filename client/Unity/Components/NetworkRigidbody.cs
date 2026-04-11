@@ -1,5 +1,3 @@
-using System;
-using System.Buffers;
 using UnityEngine;
 
 namespace SomniumSpace.Worlds.bently.networking
@@ -127,26 +125,17 @@ namespace SomniumSpace.Worlds.bently.networking
 
         private void SendVelocity(Vector3 vel, Vector3 angVel)
         {
-            byte[] buf = ArrayPool<byte>.Shared.Rent(MSG_SIZE);
-            try
-            {
-                buf[0] = MSG_RIGIDBODY;
-                Protocol.WriteU16(buf, 1, _netObj.LocalId);
-                Protocol.WriteHalf(buf, 3, vel.x);
-                Protocol.WriteHalf(buf, 5, vel.y);
-                Protocol.WriteHalf(buf, 7, vel.z);
-                Protocol.WriteHalf(buf, 9, angVel.x);
-                Protocol.WriteHalf(buf, 11, angVel.y);
-                Protocol.WriteHalf(buf, 13, angVel.z);
-                // SendBinaryPublic enqueues a copy, so return the pooled buffer immediately after
-                byte[] msg = new byte[MSG_SIZE];
-                System.Buffer.BlockCopy(buf, 0, msg, 0, MSG_SIZE);
-                _manager.SendBinaryPublic(msg);
-            }
-            finally
-            {
-                ArrayPool<byte>.Shared.Return(buf);
-            }
+            // 15 bytes — too small for pool overhead to matter; allocate directly.
+            byte[] msg = new byte[MSG_SIZE];
+            msg[0] = MSG_RIGIDBODY;
+            Protocol.WriteU16(msg, 1, _netObj.LocalId);
+            Protocol.WriteHalf(msg, 3, vel.x);
+            Protocol.WriteHalf(msg, 5, vel.y);
+            Protocol.WriteHalf(msg, 7, vel.z);
+            Protocol.WriteHalf(msg, 9, angVel.x);
+            Protocol.WriteHalf(msg, 11, angVel.y);
+            Protocol.WriteHalf(msg, 13, angVel.z);
+            _manager.SendBinaryPublic(msg);
         }
 
         /// <summary>Called by NetworkManager when a 0x08 message arrives.</summary>

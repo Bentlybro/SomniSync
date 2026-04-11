@@ -2,6 +2,7 @@ mod client;
 mod config;
 mod handler;
 mod persistence;
+mod physics;
 mod protocol;
 mod room;
 
@@ -21,7 +22,8 @@ async fn main() {
 
     let config = ServerConfig::from_args();
 
-    // Open persistence database (creates file if it doesn't exist)
+    // Ensure data directory exists before opening SQLite
+    std::fs::create_dir_all("./data").expect("Failed to create ./data directory");
     let db = Db::open("./data/persistence.db").expect("Failed to open persistence database");
     info!("[Server] Persistence database ready at ./data/persistence.db");
 

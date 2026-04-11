@@ -55,6 +55,13 @@ namespace SomniumSpace.Worlds.bently.networking
                     Debug.Log($"[Net] Assigned as MASTER (client_{ClientId})");
                     AssignAllAuthorityToSelf();
                     SendSnapshot();
+                    // Always send SCENE_INIT so the server can enter physics mode.
+                    // If _sceneReady is already true (normal case — scene collection
+                    // runs in the first Update() well before the network round-trip
+                    // completes), this sends immediately. On localhost the scene may
+                    // not be ready yet, in which case SendSceneInit logs a warning
+                    // and sends 0 objects (server stays in relay mode).
+                    SendSceneInit();
                     NetworkPersistence.OnNetworkReady(this);
                     if (!IsNetworkReady) { IsNetworkReady = true; OnNetworkReady?.Invoke(); }
                     OnBecameMaster?.Invoke();
@@ -135,6 +142,11 @@ namespace SomniumSpace.Worlds.bently.networking
                         _playerPositions[posClientId] = new Vector3(px, py, pz);
                         _playerLastSeen[posClientId]  = Time.time;
                     }
+                    break;
+
+                case 0x08: // Server entered physics mode (CTRL_PHYSICS_READY)
+                    EnterPhysicsMode();
+                    Debug.Log("[Net] Server physics mode active");
                     break;
 
                 case 0xFE: // Server error notification
@@ -350,12 +362,8 @@ namespace SomniumSpace.Worlds.bently.networking
             ushort objId = (ushort)(data[1] | (data[2] << 8));
             int varCount = data[3];
 
-            if (GetObject(objId) is { } netVarObj)
-            {
-                var netVars = netVarObj.GetComponent<NetworkVariables>();
-                if (netVars != null)
-                    netVars.ApplyRemoteUpdate(data, 4, varCount);
-            }
+            if (GetObject(objId) is { } netVarObj && netVarObj.CachedVariables != null)
+                netVarObj.CachedVariables.ApplyRemoteUpdate(data, 4, varCount);
         }
 
         // =====================================================================
@@ -367,12 +375,8 @@ namespace SomniumSpace.Worlds.bently.networking
             if (length < 4) return;
             ushort objId = (ushort)(data[1] | (data[2] << 8));
 
-            if (GetObject(objId) is { } eventObj)
-            {
-                var netEvents = eventObj.GetComponent<NetworkEvents>();
-                if (netEvents != null)
-                    netEvents.ApplyRemoteEvent(data, 3, length);
-            }
+            if (GetObject(objId) is { } eventObj && eventObj.CachedEvents != null)
+                eventObj.CachedEvents.ApplyRemoteEvent(data, 3, length);
         }
 
         // =====================================================================
@@ -384,12 +388,8 @@ namespace SomniumSpace.Worlds.bently.networking
             if (length < 10) return;
             ushort objId = (ushort)(data[1] | (data[2] << 8));
 
-            if (GetObject(objId) is { } animObj)
-            {
-                var netAnim = animObj.GetComponent<NetworkAnimator>();
-                if (netAnim != null)
-                    netAnim.ApplyRemoteState(data, 3);
-            }
+            if (GetObject(objId) is { } animObj && animObj.CachedAnimator != null)
+                animObj.CachedAnimator.ApplyRemoteState(data, 3);
         }
 
         // =====================================================================
@@ -418,12 +418,8 @@ namespace SomniumSpace.Worlds.bently.networking
             if (length < 15) return;
             ushort objId = (ushort)(data[1] | (data[2] << 8));
 
-            if (GetObject(objId) is { } rbObj)
-            {
-                var netRb = rbObj.GetComponent<NetworkRigidbody>();
-                if (netRb != null)
-                    netRb.HandleRigidbodyUpdate(data, 3);
-            }
+            if (GetObject(objId) is { } rbObj && rbObj.CachedRigidbody != null)
+                rbObj.CachedRigidbody.HandleRigidbodyUpdate(data, 3);
         }
     }
 }

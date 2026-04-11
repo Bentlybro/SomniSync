@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 
 use crate::client::Client;
+use crate::physics::PhysicsWorld;
 
 /// All rooms keyed by room_id string.
 pub type RoomMap = Arc<RwLock<HashMap<String, Arc<RwLock<Room>>>>>;
@@ -16,11 +17,24 @@ pub struct Room {
     /// Cached latest snapshot from master (for late-joiner instant sync)
     pub latest_snapshot: Option<Vec<u8>>,
 
+    /// Cached latest scaled-object snapshot (MSG_SNAPSHOT_SCALED 0x0A)
+    pub latest_scaled_snapshot: Option<Vec<u8>>,
+
     /// Object ownership: object_local_id → client_id (only for claimed objects)
     pub claimed_objects: HashMap<u16, u16>,
 
     /// Stable player identity: client_id → Somnium player UUID (or fallback UUID)
     pub player_ids: HashMap<u16, String>,
+
+    /// True when the server is running Rapier3D physics (SCENE_INIT received).
+    pub physics_mode: bool,
+
+    /// Last known player positions for AOI filtering in physics mode.
+    /// client_id → [x, y, z]
+    pub player_positions: HashMap<u16, [f32; 3]>,
+
+    /// The authoritative physics world — present only in physics_mode.
+    pub physics_world: Option<Arc<Mutex<PhysicsWorld>>>,
 }
 
 impl Room {
@@ -30,8 +44,12 @@ impl Room {
             master_id: None,
             next_id: 1,
             latest_snapshot: None,
+            latest_scaled_snapshot: None,
             claimed_objects: HashMap::new(),
             player_ids: HashMap::new(),
+            physics_mode: false,
+            player_positions: HashMap::new(),
+            physics_world: None,
         }
     }
 
@@ -70,6 +88,7 @@ impl Room {
         if self.master_id == Some(id) {
             self.master_id = None;
             self.latest_snapshot = None;
+            self.latest_scaled_snapshot = None;
             if let Some(&new_master) = self.clients.keys().next() {
                 self.master_id = Some(new_master);
                 return Some(new_master);

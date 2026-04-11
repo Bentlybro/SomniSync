@@ -27,6 +27,7 @@ pub const MSG_RIGIDBODY: u8              = 0x08; // velocity sync
 pub const MSG_SCALED_INTERACTION: u8     = 0x09; // claimed scaled objects
 pub const MSG_SNAPSHOT_SCALED: u8        = 0x0A; // full scaled snapshot
 pub const MSG_POSITION_VELOCITY: u8      = 0x0B; // authority position + velocity (dead reckoning)
+pub const MSG_SCENE_INIT: u8             = 0x10; // client→server: physics scene description
 
 // --- Control subtypes (inside 0xFF messages) ---
 pub const CTRL_YOU_ARE_MASTER: u8    = 0x01;
@@ -36,6 +37,7 @@ pub const CTRL_MASTER_CHANGED: u8    = 0x04;
 pub const CTRL_CLAIM: u8             = 0x05;
 pub const CTRL_RELEASE: u8           = 0x06;
 pub const CTRL_PLAYER_POSITION: u8   = 0x07;
+pub const CTRL_PHYSICS_READY: u8     = 0x08; // server→all: physics mode active
 pub const CTRL_AUTHORITY_ASSIGN: u8  = 0x0A; // master → all: [u16 clientId][u16 count][u16... objectIds]
 
 // --- Persistence control subtypes ---
