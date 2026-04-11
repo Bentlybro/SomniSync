@@ -127,23 +127,6 @@ namespace SomniumSpace.Worlds.bently.networking
                     }
                     break;
 
-                case 0x07: // Player position (for AOI)
-                    if (length >= 10)
-                    {
-                        ushort posClientId = BitConverter.ToUInt16(data, 2);
-                        float px = Protocol.ReadHalf(data, 4);
-                        float py = Protocol.ReadHalf(data, 6);
-                        float pz = Protocol.ReadHalf(data, 8);
-                        if (!float.IsFinite(px) || !float.IsFinite(py) || !float.IsFinite(pz))
-                        {
-                            Debug.LogWarning($"[Net] Received invalid player position from client_{posClientId}, ignoring");
-                            break;
-                        }
-                        _playerPositions[posClientId] = new Vector3(px, py, pz);
-                        _playerLastSeen[posClientId]  = Time.time;
-                    }
-                    break;
-
                 case 0x08: // Server entered physics mode (CTRL_PHYSICS_READY)
                     EnterPhysicsMode();
                     Debug.Log("[Net] Server physics mode active");

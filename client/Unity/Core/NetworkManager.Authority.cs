@@ -17,59 +17,7 @@ namespace SomniumSpace.Worlds.bently.networking
         private void AssignAllAuthorityToSelf()
         {
             foreach (var obj in _objects)
-            {
-                obj.IsAOIActive = true;
                 obj.SetStateAuthority(ClientId);
-            }
-        }
-
-        // =====================================================================
-        // Zone-based authority redistribution (master only, runs at AOI rate)
-        // =====================================================================
-
-        private void RecalculateAuthority()
-        {
-            if (!IsMaster) return;
-
-            // Reuse scratch collections — clear instead of allocate
-            _authorityPlayersScratch.Clear();
-            if (_localPlayerTransform != null)
-                _authorityPlayersScratch.Add((ClientId, _localPlayerTransform.position));
-            foreach (var kvp in _playerPositions)
-                _authorityPlayersScratch.Add((kvp.Key, kvp.Value));
-
-            // Nothing to redistribute with only one player
-            if (_authorityPlayersScratch.Count <= 1) return;
-
-            // For each active object, find nearest player; collect assignments that changed
-            // Reuse the dictionary — clear values but keep List<ushort> instances to avoid allocs
-            foreach (var list in _newAssignmentsScratch.Values) list.Clear();
-            _newAssignmentsScratch.Clear();
-
-            foreach (var obj in _objects)
-            {
-                if (obj.IsClaimedByRemote) continue; // never reassign a grabbed object
-                if (!obj.IsAOIActive) continue;       // frozen objects keep current authority
-
-                ushort nearestClient = ClientId;
-                float  nearestDistSq = float.MaxValue;
-
-                foreach (var (cid, pos) in _authorityPlayersScratch)
-                {
-                    float distSq = (obj.transform.position - pos).sqrMagnitude;
-                    if (distSq < nearestDistSq) { nearestDistSq = distSq; nearestClient = cid; }
-                }
-
-                if (obj.StateAuthorityId != nearestClient)
-                {
-                    if (!_newAssignmentsScratch.ContainsKey(nearestClient))
-                        _newAssignmentsScratch[nearestClient] = new List<ushort>();
-                    _newAssignmentsScratch[nearestClient].Add(obj.LocalId);
-                }
-            }
-
-            foreach (var kvp in _newAssignmentsScratch)
-                SendAuthorityAssignment(kvp.Key, kvp.Value);
         }
 
         private void SendAuthorityAssignment(ushort clientId, List<ushort> objectIds)

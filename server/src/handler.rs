@@ -11,7 +11,7 @@ use crate::physics::{parse_scene_init, PhysicsWorld};
 use crate::protocol::{
     ctrl_msg, ctrl_msg_u16, CTRL_AUTHORITY_ASSIGN, CTRL_CLAIM, CTRL_ERROR, CTRL_MASTER_CHANGED,
     CTRL_PERSIST_DATA, CTRL_PERSIST_GET, CTRL_PERSIST_SET, CTRL_PHYSICS_READY,
-    CTRL_PLAYER_IDENT, CTRL_PLAYER_POSITION, CTRL_RELEASE, CTRL_SEND_SNAPSHOT,
+    CTRL_PLAYER_IDENT, CTRL_RELEASE, CTRL_SEND_SNAPSHOT,
     CTRL_YOU_ARE_MASTER, CTRL_YOU_ARE_SPECTATOR, MSG_ANIMATOR, MSG_EVENT, MSG_INTERACTION_UPDATE,
     MSG_POSITION_UPDATE, MSG_POSITION_UPDATE_SCALED, MSG_POSITION_VELOCITY, MSG_RIGIDBODY,
     MSG_SCALED_INTERACTION, MSG_SCENE_INIT, MSG_SNAPSHOT, MSG_SNAPSHOT_SCALED,
@@ -19,9 +19,6 @@ use crate::protocol::{
 };
 use crate::room::Room;
 use crate::room::RoomMap;
-
-/// AOI radius squared for physics-mode position filtering (50 m radius)
-const AOI_RADIUS_SQ: f32 = 2500.0; // 50m²
 
 /// Handle a single client connection (runs in its own task).
 pub async fn handle_connection(
@@ -494,23 +491,7 @@ async fn physics_tick_task(
                     return;
                 }
 
-                // Per-client AOI filtering: only send objects within AOI_RADIUS_SQ of player
-                for (&cid, client) in &r.clients {
-                    let player_pos = r.player_positions.get(&cid).copied();
-
-                    match player_pos {
-                        None => {
-                            // No known player position — send everything
-                            send(client, msg.clone()).await;
-                        }
-                        Some(ppos) => {
-                            let filtered = filter_0x0b_by_aoi(&msg, ppos, AOI_RADIUS_SQ);
-                            if let Some(filtered_msg) = filtered {
-                                send(client, filtered_msg).await;
-                            }
-                        }
-                    }
-                }
+                broadcast_all(&r.clients, &msg);
             }
         }
 
@@ -534,68 +515,6 @@ async fn physics_tick_task(
     }
 }
 
-/// Filter a 0x0B position message to only include entities within `radius_sq` of `player_pos`.
-/// Returns None if no entities pass the filter.
-/// Reuses the same sequence number from the original message so all clients on the same physics
-/// tick share one sequence, preventing the dedup logic from rejecting valid updates.
-fn filter_0x0b_by_aoi(
-    msg: &[u8],
-    player_pos: [f32; 3],
-    radius_sq: f32,
-) -> Option<Vec<u8>> {
-    if msg.len() < 7 {
-        return None;
-    }
-
-    const BYTES_PER_ENTITY: usize = 20;
-    let count = u16::from_le_bytes([msg[5], msg[6]]) as usize;
-
-    let mut filtered: Vec<&[u8]> = Vec::with_capacity(count);
-    let mut offset = 7usize;
-
-    for _ in 0..count {
-        if offset + BYTES_PER_ENTITY > msg.len() {
-            break;
-        }
-        let entity = &msg[offset..offset + BYTES_PER_ENTITY];
-
-        // Entity position is at bytes 2..8 (f16 x, y, z)
-        let ex = read_f16(&entity[2..]);
-        let ey = read_f16(&entity[4..]);
-        let ez = read_f16(&entity[6..]);
-
-        let dx = ex - player_pos[0];
-        let dy = ey - player_pos[1];
-        let dz = ez - player_pos[2];
-        let dist_sq = dx * dx + dy * dy + dz * dz;
-
-        if dist_sq <= radius_sq {
-            filtered.push(entity);
-        }
-
-        offset += BYTES_PER_ENTITY;
-    }
-
-    if filtered.is_empty() {
-        return None;
-    }
-
-    // Reuse the original sequence number from the unfiltered message (bytes 3-4)
-    // so all clients on the same physics tick share the same sequence.
-    let orig_seq = u16::from_le_bytes([msg[3], msg[4]]);
-
-    let mut out = Vec::with_capacity(7 + filtered.len() * BYTES_PER_ENTITY);
-    out.push(0x0B);
-    push_u16_vec(&mut out, 0); // sender = server
-    push_u16_vec(&mut out, orig_seq);
-    push_u16_vec(&mut out, filtered.len() as u16);
-    for entity in filtered {
-        out.extend_from_slice(entity);
-    }
-
-    Some(out)
-}
-
 /// Handle control messages (0xFF).
 async fn handle_control(
     room: &Arc<RwLock<Room>>,
@@ -609,24 +528,6 @@ async fn handle_control(
         return;
     }
     let ctrl = data[1];
-
-    // --- Player position: broadcast as-is + update server-side position map ---
-    if ctrl == CTRL_PLAYER_POSITION {
-        if data.len() >= 10 {
-            let px = read_f16(&data[4..]);
-            let py = read_f16(&data[6..]);
-            let pz = read_f16(&data[8..]);
-
-            {
-                let mut r = room.write().await;
-                if r.physics_mode {
-                    r.player_positions.insert(client_id, [px, py, pz]);
-                }
-                broadcast_except(&r.clients, client_id, data);
-            }
-        }
-        return;
-    }
 
     // --- Authority assignment: broadcast as-is ---
     if ctrl == CTRL_AUTHORITY_ASSIGN {
@@ -842,9 +743,6 @@ async fn handle_disconnect(room: &Arc<RwLock<Room>>, client_id: u16, room_id: &s
     let (physics_mode, promotion): (bool, Option<(u16, Arc<crate::client::Client>)>) = {
         let mut room_guard = room.write().await;
         let physics_mode = room_guard.physics_mode;
-
-        // Remove player position tracking
-        room_guard.player_positions.remove(&client_id);
 
         let new_master_id = if physics_mode {
             // In physics mode: server is always the authority — just remove the client

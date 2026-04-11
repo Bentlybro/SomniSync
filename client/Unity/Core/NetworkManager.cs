@@ -16,7 +16,6 @@ namespace SomniumSpace.Worlds.bently.networking
     ///   NetworkManager.Receiver.cs  — incoming message handlers
     ///   NetworkManager.Sender.cs    — outgoing position/interaction/snapshot senders
     ///   NetworkManager.Authority.cs — StateAuthority assignment and redistribution
-    ///   NetworkManager.AOI.cs       — Area of Interest logic and player position tracking
     /// </summary>
     public partial class NetworkManager : MonoBehaviour
     {
@@ -95,64 +94,21 @@ namespace SomniumSpace.Worlds.bently.networking
         private bool _pushDetectorAttached;
         private float _nextPushDetectorCheckTime;
 
-        // After snapshot, snap first N updates instead of interpolating
-
         // Periodic resync snapshot (master only)
         [Header("Resync")]
         [Tooltip("Seconds between full snapshots to prevent drift (0 = disabled)")]
         public float resyncInterval = 5f;
         private float _nextResyncTime;
 
-        // Area of Interest (AOI) — master only simulates objects near players
-        [Header("Area of Interest")]
-        [Tooltip("Enable AOI — objects far from all players are frozen (master only)")]
-        public bool enableAOI = true;
-        [Tooltip("Radius around each player where objects stay active (meters)")]
-        public float aoiRadius = 50f;
-        [Tooltip("How often to recalculate AOI (times per second)")]
-        public float aoiCheckRate = 2f;
-        [Tooltip("Extra radius before deactivating (prevents flicker at boundary)")]
-        public float aoiHysteresis = 5f;
-        [Tooltip("Override the local player transform used for AOI. If unset, auto-detected (Somnium) or falls back to Camera.main.")]
-        public Transform localPlayerTransformOverride;
-
-        // AOI state (used by NetworkManager.AOI.cs)
-        private float _nextAOICheckTime;
-        private Dictionary<ushort, Vector3> _playerPositions = new Dictionary<ushort, Vector3>();
-        private Dictionary<ushort, float> _playerLastSeen = new Dictionary<ushort, float>();
-        private Transform _localPlayerTransform;
-        private bool _aoiTransformWarningLogged;
-        private float _nextPlayerPosSendTime;
-        private const float PLAYER_POS_SEND_RATE = 5f; // 5Hz
-        private const float PLAYER_TIMEOUT = 5f; // Remove player after 5s of no updates
-
         // Sequence numbers — track per-sender to discard stale 0x0B packets
         private Dictionary<ushort, ushort> _receivedSequences = new Dictionary<ushort, ushort>();
         private ushort _sendSequence;
-
-        // Reusable scratch collections for AOI and authority (avoid per-tick allocations)
-        private readonly List<Vector3> _aoiPlayerPosScratch          = new List<Vector3>(16);
-        private readonly List<(ushort, Vector3)> _authorityPlayersScratch = new List<(ushort, Vector3)>(16);
-        private readonly Dictionary<ushort, List<ushort>> _newAssignmentsScratch = new Dictionary<ushort, List<ushort>>();
-
-        // =====================================================================
-        // Integration hooks — set these in your world's Start() to plug in
-        // a custom identity/transform source (e.g. SomniumBridgeIntegration.cs)
-        // =====================================================================
-
-        /// <summary>
-        /// Override the local player transform used for AOI and player position.
-        /// Set this to: () => SomniumBridge.PlayersContainer?.LocalPlayer?.References?.Body?.Head
-        /// </summary>
-        public static System.Func<Transform> LocalPlayerTransformProvider;
 
         // Stats (public for NetworkStats overlay)
         public static int MessagesSent;
         public static int MessagesReceived;
         public static int BytesSent;
         public static int BytesReceived;
-        public static int ActiveAOIObjects;
-        public static int TotalObjects;
 
         private void Awake()
         {
@@ -227,25 +183,6 @@ namespace SomniumSpace.Worlds.bently.networking
                 SendSnapshot();
             }
 
-            // AOI + authority redistribution: master only, relay mode only.
-            // In physics mode the server handles AOI and there is no authority to redistribute.
-            if (IsMaster && !IsPhysicsMode && enableAOI && Time.time >= _nextAOICheckTime)
-            {
-                _nextAOICheckTime = Time.time + (1f / aoiCheckRate);
-                UpdateAOI();
-                RecalculateAuthority();
-            }
-
-            // Player position: spectators → master (relay mode), all clients → server (physics mode).
-            // In physics mode every client's position is needed for server-side AOI filtering.
-            bool shouldSendPos = IsPhysicsMode
-                ? IsNetworkReady
-                : (!IsMaster && IsNetworkReady && enableAOI);
-            if (shouldSendPos && Time.time >= _nextPlayerPosSendTime)
-            {
-                _nextPlayerPosSendTime = Time.time + (1f / PLAYER_POS_SEND_RATE);
-                SendPlayerPosition();
-            }
         }
 
         // =====================================================================

@@ -104,12 +104,6 @@ namespace SomniumSpace.Worlds.bently.networking
         private float _lastReleaseTime;
         private bool  _autoClaimedByPush;
 
-        // =====================================================================
-        // AOI state (managed by NetworkManager)
-        // =====================================================================
-
-        [HideInInspector] public bool IsAOIActive = true;
-
         // Core component
         private Rigidbody _rb;
         private bool      _hasRb;
@@ -272,30 +266,5 @@ namespace SomniumSpace.Worlds.bently.networking
         /// </summary>
         public bool IsSleeping => _hasRb && !_rb.isKinematic && _rb.IsSleeping();
 
-        // =====================================================================
-        // AOI (managed by NetworkManager)
-        // =====================================================================
-
-        public void AOIDeactivate()
-        {
-            if (!IsAOIActive) return;
-            // Don't freeze objects that are still in motion (e.g. thrown) — let them land first
-            if (_hasRb && !_rb.isKinematic && _rb.linearVelocity.sqrMagnitude > 0.5f) return;
-            IsAOIActive = false;
-            if (_hasRb && !_rb.isKinematic)
-            {
-                _rb.linearVelocity  = Vector3.zero;
-                _rb.angularVelocity = Vector3.zero;
-                _rb.isKinematic     = true;
-            }
-        }
-
-        public void AOIActivate()
-        {
-            if (IsAOIActive) return;
-            IsAOIActive = true;
-            if (HasStateAuthority && !IsClaimedByRemote && _hasRb)
-                _rb.isKinematic = false;
-        }
     }
 }

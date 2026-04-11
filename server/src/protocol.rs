@@ -36,7 +36,6 @@ pub const CTRL_SEND_SNAPSHOT: u8     = 0x03;
 pub const CTRL_MASTER_CHANGED: u8    = 0x04;
 pub const CTRL_CLAIM: u8             = 0x05;
 pub const CTRL_RELEASE: u8           = 0x06;
-pub const CTRL_PLAYER_POSITION: u8   = 0x07;
 pub const CTRL_PHYSICS_READY: u8     = 0x08; // server→all: physics mode active
 pub const CTRL_AUTHORITY_ASSIGN: u8  = 0x0A; // master → all: [u16 clientId][u16 count][u16... objectIds]
 

@@ -38,7 +38,6 @@ namespace SomniumSpace.Worlds.bently.networking
         public const byte CTRL_MASTER_CHANGED    = 0x04;
         public const byte CTRL_CLAIM             = 0x05;
         public const byte CTRL_RELEASE           = 0x06;
-        public const byte CTRL_PLAYER_POSITION   = 0x07;
         /// <summary>Server → all: server physics mode is now active; clear all StateAuthority. [0xFF][0x08]</summary>
         public const byte CTRL_PHYSICS_READY     = 0x08;
         /// <summary>

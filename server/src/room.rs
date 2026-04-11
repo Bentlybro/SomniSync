@@ -29,10 +29,6 @@ pub struct Room {
     /// True when the server is running Rapier3D physics (SCENE_INIT received).
     pub physics_mode: bool,
 
-    /// Last known player positions for AOI filtering in physics mode.
-    /// client_id → [x, y, z]
-    pub player_positions: HashMap<u16, [f32; 3]>,
-
     /// The authoritative physics world — present only in physics_mode.
     pub physics_world: Option<Arc<Mutex<PhysicsWorld>>>,
 }
@@ -48,7 +44,6 @@ impl Room {
             claimed_objects: HashMap::new(),
             player_ids: HashMap::new(),
             physics_mode: false,
-            player_positions: HashMap::new(),
             physics_world: None,
         }
     }

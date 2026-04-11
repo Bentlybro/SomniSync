@@ -43,7 +43,6 @@ namespace SomniumSpace.Worlds.bently.networking
             {
                 var obj = _objects[i];
                 if (!obj.HasStateAuthority)                              continue;
-                if (!obj.IsAOIActive)                                    continue;
                 if (obj.IsClaimedByRemote)                               continue;
                 if (obj.IsRigidbody != rigidbodies)                      continue;
                 if (obj.IsSleeping)                                      continue;
@@ -416,35 +415,5 @@ namespace SomniumSpace.Worlds.bently.networking
             return false;
         }
 
-        /// <summary>
-        /// Called once per AOI tick with all objects that just deactivated.
-        /// Sends them as a single 0x0B batch with velocity=zero so spectators stop
-        /// dead-reckoning immediately. The old per-object SendAOIFarewellUpdate()
-        /// sent N separate messages which could flood the send queue during mass
-        /// deactivation (e.g. all spheres leaving the AOI zone at once).
-        /// </summary>
-        internal void SendAOIFarewellBatch(System.Collections.Generic.List<NetworkObject> objs)
-        {
-            if (objs.Count == 0) return;
-
-            int size = 7 + objs.Count * Protocol.BYTES_PER_ENTITY_VELOCITY;
-            byte[] buf = ArrayPool<byte>.Shared.Rent(size);
-
-            buf[0] = Protocol.MSG_POSITION_VELOCITY;
-            Protocol.WriteU16(buf, 1, ClientId);
-            _sendSequence++;
-            Protocol.WriteU16(buf, 3, _sendSequence);
-            Protocol.WriteU16(buf, 5, (ushort)objs.Count);
-
-            int offset = 7;
-            for (int i = 0; i < objs.Count; i++)
-            {
-                var obj = objs[i];
-                offset = Protocol.WriteEntityVelocity(buf, offset, obj.LocalId,
-                    obj.transform.position, obj.transform.eulerAngles, Vector3.zero);
-            }
-
-            SendBinaryPooled(buf, offset);
-        }
     }
 }
