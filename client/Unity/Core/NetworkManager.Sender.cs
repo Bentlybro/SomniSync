@@ -257,28 +257,35 @@ namespace SomniumSpace.Worlds.bently.networking
         // =====================================================================
 
         /// <summary>
-        /// Inspect all registered NetworkObjects, auto-detect their physics properties from
-        /// Unity components, and send a SCENE_INIT message to the server so it can start
-        /// Rapier3D simulation.
+        /// Scan the scene and send all physics-relevant colliders to the server so it can
+        /// start Rapier3D simulation.
         ///
-        /// Objects without a Collider are skipped (no shape → can't simulate).
-        /// MeshColliders are also skipped (no analytic Rapier shape available).
-        /// Call this once after the scene is ready and you want the server to take over physics.
+        /// Two passes:
+        ///   1. Registered NetworkObjects — may be Dynamic, Kinematic, or Fixed.
+        ///   2. Static world geometry (floors, walls, terrain) that have a Collider but
+        ///      no NetworkObject. These are sent as Fixed bodies so Rapier knows about them
+        ///      even though the server never sends position updates for them.
+        ///
+        /// MeshColliders are skipped (no analytic Rapier shape). Call once after the scene
+        /// is ready and you want the server to take over physics.
         /// </summary>
         public void SendSceneInit()
         {
-            // Header: [0x10][u16 count] = 3 bytes; each object is 60 bytes
-            int maxSize = 3 + _objects.Count * Protocol.BYTES_PER_SCENE_OBJECT;
+            var allColliders = FindObjectsByType<Collider>(FindObjectsSortMode.None);
+            int maxObjects = _objects.Count + allColliders.Length;
+            int maxSize = 3 + maxObjects * Protocol.BYTES_PER_SCENE_OBJECT;
+
             byte[] buf = ArrayPool<byte>.Shared.Rent(maxSize);
             buf[0] = Protocol.MSG_SCENE_INIT;
-            int offset = 3; // count written after loop
-            int count = 0;
+            int offset = 3;
+            int count  = 0;
 
+            // === Pass 1: NetworkObjects (Dynamic / Kinematic / Fixed) ===
             foreach (var obj in _objects)
             {
                 var rb  = obj.GetComponent<Rigidbody>();
                 var col = obj.GetComponent<Collider>();
-                if (col == null) continue; // can't simulate without a collider shape
+                if (col == null) continue;
 
                 Protocol.PhysicsBodyType  bodyType;
                 Protocol.PhysicsShapeType shapeType;
@@ -291,32 +298,8 @@ namespace SomniumSpace.Worlds.bently.networking
                 else
                     bodyType = Protocol.PhysicsBodyType.Dynamic;
 
-                if (col is SphereCollider sc)
-                {
-                    shapeType = Protocol.PhysicsShapeType.Ball;
-                    float worldRadius = sc.radius * Mathf.Max(
-                        obj.transform.lossyScale.x,
-                        Mathf.Max(obj.transform.lossyScale.y, obj.transform.lossyScale.z));
-                    shapeParams = new Vector3(worldRadius, 0f, 0f);
-                }
-                else if (col is BoxCollider bc)
-                {
-                    shapeType = Protocol.PhysicsShapeType.Cuboid;
-                    // Half-extents in world space
-                    Vector3 worldSize = Vector3.Scale(bc.size, obj.transform.lossyScale) * 0.5f;
-                    shapeParams = worldSize;
-                }
-                else if (col is CapsuleCollider cc)
-                {
-                    shapeType = Protocol.PhysicsShapeType.Capsule;
-                    float worldRadius     = cc.radius * Mathf.Max(obj.transform.lossyScale.x, obj.transform.lossyScale.z);
-                    float worldHalfHeight = cc.height * 0.5f * obj.transform.lossyScale.y;
-                    shapeParams = new Vector3(worldRadius, worldHalfHeight, 0f);
-                }
-                else
-                {
-                    continue; // MeshCollider or unknown — skip
-                }
+                if (!TryGetColliderShape(col, obj.transform, out shapeType, out shapeParams))
+                    continue;
 
                 float mass           = rb != null ? rb.mass           : 0f;
                 float linearDamping  = rb != null ? rb.linearDamping  : 0f;
@@ -329,23 +312,108 @@ namespace SomniumSpace.Worlds.bently.networking
                     friction    = col.sharedMaterial.dynamicFriction;
                 }
 
+                // Use the collider's world-space centre so BoxCollider.center offsets are respected
+                Vector3 worldPos = GetColliderWorldCenter(col, obj.transform);
+
                 offset = Protocol.WriteSceneObject(buf, offset,
                     obj.LocalId, bodyType, shapeType,
-                    obj.transform.position, obj.transform.eulerAngles, shapeParams,
+                    worldPos, obj.transform.eulerAngles, shapeParams,
                     mass, restitution, friction, linearDamping, angularDamping);
+                count++;
+            }
+
+            // === Pass 2: Static world geometry without NetworkObject (floors, walls, etc.) ===
+            // IDs start after the registered NetworkObject range so they never collide.
+            ushort staticId = (ushort)_objects.Count;
+            foreach (var col in allColliders)
+            {
+                if (col == null) continue;
+                if (col.GetComponent<NetworkObject>() != null) continue; // handled in Pass 1
+                if (col is MeshCollider) continue;
+
+                var rb = col.GetComponent<Rigidbody>();
+                // Only include static GameObjects or trigger-less colliders without a Rigidbody
+                bool isStatic = col.gameObject.isStatic || rb == null;
+                if (!isStatic) continue;
+                if (col.isTrigger) continue;
+                if (staticId >= ushort.MaxValue - 1)
+                {
+                    Debug.LogWarning("[Net] SendSceneInit: static collider count exceeded ID space, some skipped");
+                    break;
+                }
+
+                Protocol.PhysicsShapeType shapeType;
+                Vector3 shapeParams;
+                if (!TryGetColliderShape(col, col.transform, out shapeType, out shapeParams))
+                    continue;
+
+                float restitution = col.sharedMaterial != null ? col.sharedMaterial.bounciness      : 0.3f;
+                float friction    = col.sharedMaterial != null ? col.sharedMaterial.dynamicFriction  : 0.4f;
+                Vector3 worldPos  = GetColliderWorldCenter(col, col.transform);
+
+                offset = Protocol.WriteSceneObject(buf, offset,
+                    staticId++, Protocol.PhysicsBodyType.Fixed, shapeType,
+                    worldPos, col.transform.eulerAngles, shapeParams,
+                    0f, restitution, friction, 0f, 0.05f);
                 count++;
             }
 
             if (count == 0)
             {
                 ArrayPool<byte>.Shared.Return(buf);
-                Debug.LogWarning("[Net] SendSceneInit: no objects with colliders found, nothing sent");
+                Debug.LogWarning("[Net] SendSceneInit: no physics-relevant colliders found, nothing sent");
                 return;
             }
 
             Protocol.WriteU16(buf, 1, (ushort)count);
             SendBinaryPooled(buf, offset);
-            Debug.Log($"[Net] Sent SCENE_INIT: {count} physics objects to server");
+            int netObjs = Mathf.Min(_objects.Count, count);
+            Debug.Log($"[Net] Sent SCENE_INIT: {count} objects ({netObjs} networked + {count - netObjs} static) to server");
+        }
+
+        /// <summary>Returns the world-space centre of a collider (respects the local center offset).</summary>
+        private static Vector3 GetColliderWorldCenter(Collider col, Transform t)
+        {
+            if (col is BoxCollider    bc) return t.TransformPoint(bc.center);
+            if (col is SphereCollider sc) return t.TransformPoint(sc.center);
+            if (col is CapsuleCollider cc) return t.TransformPoint(cc.center);
+            return t.position;
+        }
+
+        /// <summary>
+        /// Converts a Unity Collider to a Rapier shape type + parameters.
+        /// Returns false for MeshCollider and any unknown collider types.
+        /// </summary>
+        private static bool TryGetColliderShape(Collider col, Transform t,
+            out Protocol.PhysicsShapeType shapeType, out Vector3 shapeParams)
+        {
+            if (col is SphereCollider sc)
+            {
+                shapeType = Protocol.PhysicsShapeType.Ball;
+                float r = sc.radius * Mathf.Max(t.lossyScale.x, Mathf.Max(t.lossyScale.y, t.lossyScale.z));
+                shapeParams = new Vector3(r, 0f, 0f);
+                return true;
+            }
+            if (col is BoxCollider bc)
+            {
+                shapeType = Protocol.PhysicsShapeType.Cuboid;
+                // Half-extents in world space
+                shapeParams = Vector3.Scale(bc.size, t.lossyScale) * 0.5f;
+                return true;
+            }
+            if (col is CapsuleCollider cc)
+            {
+                shapeType = Protocol.PhysicsShapeType.Capsule;
+                float worldRadius = cc.radius * Mathf.Max(t.lossyScale.x, t.lossyScale.z);
+                // Unity cc.height = total height (cylinder + 2 hemispheres).
+                // Rapier capsule_y(half_height, radius): half_height is cylindrical section only.
+                float worldHalfHeight = Mathf.Max(0f, cc.height * 0.5f * t.lossyScale.y - worldRadius);
+                shapeParams = new Vector3(worldRadius, worldHalfHeight, 0f);
+                return true;
+            }
+            shapeType   = default;
+            shapeParams = default;
+            return false;
         }
 
         /// <summary>

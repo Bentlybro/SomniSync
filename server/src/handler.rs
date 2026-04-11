@@ -495,7 +495,7 @@ async fn physics_tick_task(
                             send(client, msg.clone()).await;
                         }
                         Some(ppos) => {
-                            let filtered = filter_0x0b_by_aoi(&msg, ppos, AOI_RADIUS_SQ, &mut server_sequence);
+                            let filtered = filter_0x0b_by_aoi(&msg, ppos, AOI_RADIUS_SQ);
                             if let Some(filtered_msg) = filtered {
                                 send(client, filtered_msg).await;
                             }
@@ -527,12 +527,12 @@ async fn physics_tick_task(
 
 /// Filter a 0x0B position message to only include entities within `radius_sq` of `player_pos`.
 /// Returns None if no entities pass the filter.
-/// `server_sequence` is incremented for the new message so the client sees a fresh sequence number.
+/// Reuses the same sequence number from the original message so all clients on the same physics
+/// tick share one sequence, preventing the dedup logic from rejecting valid updates.
 fn filter_0x0b_by_aoi(
     msg: &[u8],
     player_pos: [f32; 3],
     radius_sq: f32,
-    server_sequence: &mut u16,
 ) -> Option<Vec<u8>> {
     if msg.len() < 7 {
         return None;
@@ -571,13 +571,14 @@ fn filter_0x0b_by_aoi(
         return None;
     }
 
-    *server_sequence = server_sequence.wrapping_add(1);
-    let seq = *server_sequence;
+    // Reuse the original sequence number from the unfiltered message (bytes 3-4)
+    // so all clients on the same physics tick share the same sequence.
+    let orig_seq = u16::from_le_bytes([msg[3], msg[4]]);
 
     let mut out = Vec::with_capacity(7 + filtered.len() * BYTES_PER_ENTITY);
     out.push(0x0B);
     push_u16_vec(&mut out, 0); // sender = server
-    push_u16_vec(&mut out, seq);
+    push_u16_vec(&mut out, orig_seq);
     push_u16_vec(&mut out, filtered.len() as u16);
     for entity in filtered {
         out.extend_from_slice(entity);
