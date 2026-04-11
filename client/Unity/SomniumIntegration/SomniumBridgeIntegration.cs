@@ -10,8 +10,6 @@ namespace SomniumSpace.Worlds.bently.networking
     /// transform without any additional setup.
     ///
     /// What it does:
-    ///   - NetworkManager.LocalPlayerTransformProvider → player's Head transform
-    ///     (used for AOI distance checks and player position sync)
     ///   - NetworkPersistence.PlayerIdProvider → player's Somnium account UUID
     ///     (used as the persistence key so data follows the player's account)
     ///
@@ -22,14 +20,8 @@ namespace SomniumSpace.Worlds.bently.networking
     {
         private void Start()
         {
-            NetworkManager.LocalPlayerTransformProvider = GetLocalPlayerTransform;
             NetworkPersistence.PlayerIdProvider = GetPlayerId;
-            Debug.Log("[SomniumBridge] Integration active — using Somnium player identity and head transform.");
-        }
-
-        private Transform GetLocalPlayerTransform()
-        {
-            return SomniumBridge.PlayersContainer?.LocalPlayer?.References?.Body?.Head;
+            Debug.Log("[SomniumBridge] Integration active — using Somnium player identity.");
         }
 
         private string GetPlayerId()
