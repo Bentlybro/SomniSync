@@ -231,8 +231,8 @@ impl PhysicsWorld {
         }
     }
 
-    /// Build a 0x0B position+velocity message from all current DYNAMIC body positions.
-    /// Returns `None` if there are no dynamic (non-kinematic, non-fixed) bodies.
+    /// Build a 0x0B position+velocity message from all current DYNAMIC, AWAKE body positions.
+    /// Returns `None` if there are no dynamic bodies that need broadcasting (all sleeping or empty).
     ///
     /// Message format:
     /// ```text
@@ -246,66 +246,63 @@ impl PhysicsWorld {
     ///   [f16 vx][f16 vy][f16 vz]
     /// ```
     pub fn build_position_message(&mut self, server_sequence: &mut u16) -> Option<Vec<u8>> {
-        // Collect dynamic bodies first (can't borrow self mutably and immutably at the same time)
-        let dynamic_entries: Vec<(u16, [f32; 3], [f32; 3], [f32; 3])> = self
-            .object_to_body
-            .iter()
-            .filter_map(|(&obj_id, &handle)| {
-                // Exclude claimed (kinematic) objects
-                if self.claimed.contains_key(&obj_id) {
-                    return None;
-                }
-                let rb = self.rigid_bodies.get(handle)?;
-                // Only include Dynamic bodies
-                if rb.body_type() != RigidBodyType::Dynamic {
-                    return None;
-                }
-                let pos = *rb.translation();
-                let rot = rb.rotation();
-                let vel = *rb.linvel();
-
-                // Euler angles from quaternion (nalgebra)
-                let (roll, pitch, yaw) = rot.euler_angles();
-                let rx_deg = roll.to_degrees();
-                let ry_deg = pitch.to_degrees();
-                let rz_deg = yaw.to_degrees();
-
-                Some((
-                    obj_id,
-                    [pos.x, pos.y, pos.z],
-                    [rx_deg, ry_deg, rz_deg],
-                    [vel.x, vel.y, vel.z],
-                ))
-            })
-            .collect();
-
-        if dynamic_entries.is_empty() {
-            return None;
-        }
-
         *server_sequence = server_sequence.wrapping_add(1);
         let seq = *server_sequence;
 
-        // Header: 1 + 2 + 2 + 2 = 7 bytes; per entity: 20 bytes
-        let mut buf = Vec::with_capacity(7 + dynamic_entries.len() * 20);
+        // Header: 1 + 2 + 2 + 2 = 7 bytes; per entity: 20 bytes.
+        // Pre-allocate for the worst case; actual length is patched in below.
+        let mut buf = Vec::with_capacity(7 + self.object_to_body.len() * 20);
 
         buf.push(0x0B); // MSG_POSITION_VELOCITY
         push_u16(&mut buf, 0); // sender_id = 0 (server)
         push_u16(&mut buf, seq);
-        push_u16(&mut buf, dynamic_entries.len() as u16);
+        push_u16(&mut buf, 0); // count placeholder — patched at offset 5-6 after the loop
 
-        for (obj_id, pos, rot_deg, vel) in &dynamic_entries {
-            push_u16(&mut buf, *obj_id);
-            push_f16(&mut buf, pos[0]);
-            push_f16(&mut buf, pos[1]);
-            push_f16(&mut buf, pos[2]);
-            push_rot_u16(&mut buf, rot_deg[0]);
-            push_rot_u16(&mut buf, rot_deg[1]);
-            push_rot_u16(&mut buf, rot_deg[2]);
-            push_f16(&mut buf, vel[0]);
-            push_f16(&mut buf, vel[1]);
-            push_f16(&mut buf, vel[2]);
+        let mut count: u16 = 0;
+
+        for (&obj_id, &handle) in &self.object_to_body {
+            // Exclude claimed (kinematic) objects — they are relayed separately.
+            if self.claimed.contains_key(&obj_id) {
+                continue;
+            }
+            let rb = match self.rigid_bodies.get(handle) {
+                Some(r) => r,
+                None => continue,
+            };
+            // Only broadcast Dynamic bodies.
+            if rb.body_type() != RigidBodyType::Dynamic {
+                continue;
+            }
+            // Skip sleeping bodies — they haven't moved; broadcasting them wastes bandwidth.
+            if rb.is_sleeping() {
+                continue;
+            }
+
+            let pos = *rb.translation();
+            let rot = rb.rotation();
+            let vel = *rb.linvel();
+            let (roll, pitch, yaw) = rot.euler_angles();
+
+            push_u16(&mut buf, obj_id);
+            push_f16(&mut buf, pos.x);
+            push_f16(&mut buf, pos.y);
+            push_f16(&mut buf, pos.z);
+            push_rot_u16(&mut buf, roll.to_degrees());
+            push_rot_u16(&mut buf, pitch.to_degrees());
+            push_rot_u16(&mut buf, yaw.to_degrees());
+            push_f16(&mut buf, vel.x);
+            push_f16(&mut buf, vel.y);
+            push_f16(&mut buf, vel.z);
+            count += 1;
         }
+
+        if count == 0 {
+            return None;
+        }
+
+        // Patch actual count into the header placeholder.
+        buf[5] = (count & 0xFF) as u8;
+        buf[6] = (count >> 8) as u8;
 
         Some(buf)
     }

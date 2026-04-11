@@ -452,22 +452,31 @@ async fn physics_tick_task(
         }
 
         let now = Instant::now();
+        let do_physics   = now >= next_physics;
+        let do_broadcast = now >= next_broadcast;
 
-        // ── Physics step ────────────────────────────────────────────────────────
-        if now >= next_physics {
-            last_physics = now;
+        // ── Physics step + optional broadcast build (single mutex lock) ─────────
+        // Acquiring the physics mutex once per tick avoids the overhead of a
+        // second async lock/await when both the step and broadcast happen to
+        // fire in the same loop iteration (which occurs ~40% of ticks).
+        let msg_opt: Option<Vec<u8>> = if do_physics || do_broadcast {
             let mut pw = pw_arc.lock().await;
-            pw.step();
-        }
+            if do_physics {
+                last_physics = now;
+                pw.step();
+            }
+            if do_broadcast {
+                last_broadcast = now;
+                pw.build_position_message(&mut server_sequence)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
 
         // ── Broadcast position message ──────────────────────────────────────────
-        if now >= next_broadcast {
-            last_broadcast = now;
-
-            let msg_opt = {
-                let mut pw = pw_arc.lock().await;
-                pw.build_position_message(&mut server_sequence)
-            };
+        if do_broadcast {
 
             if let Some(msg) = msg_opt {
                 // Upgrade room weak pointer to check if room still exists
