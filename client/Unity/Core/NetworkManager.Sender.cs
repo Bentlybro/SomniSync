@@ -183,7 +183,7 @@ namespace SomniumSpace.Worlds.bently.networking
 
                 if (rb == null || col.gameObject.isStatic)
                     bodyType = Protocol.PhysicsBodyType.Fixed;
-                else if (rb.isKinematic)
+                else if (!obj.WantsDynamicPhysics)
                     bodyType = Protocol.PhysicsBodyType.KinematicPosition;
                 else
                     bodyType = Protocol.PhysicsBodyType.Dynamic;

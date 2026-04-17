@@ -93,6 +93,15 @@ namespace SomniumSpace.Worlds.bently.networking
         // Core component
         private Rigidbody _rb;
         private bool      _hasRb;
+        private bool      _wasKinematicAtAwake;
+
+        /// <summary>
+        /// True when the user configured this object as a Dynamic rigidbody in
+        /// the inspector. We force isKinematic = true at Awake (so local physics
+        /// doesn't diverge before the server is ready), so SendSceneInit can't
+        /// rely on the current isKinematic flag — it must use this instead.
+        /// </summary>
+        public bool WantsDynamicPhysics => _hasRb && !_wasKinematicAtAwake;
 
         // Optional sibling components — cached at Awake to avoid per-message GetComponent calls
         internal NetworkVariables CachedVariables;
@@ -107,10 +116,15 @@ namespace SomniumSpace.Worlds.bently.networking
         {
             _rb    = GetComponent<Rigidbody>();
             _hasRb = _rb != null;
-            // Server is always the physics authority. Local rigidbody stays kinematic
-            // until the local player grabs this object.
             if (_hasRb)
+            {
+                // Capture the inspector-set kinematic flag as the user's intent, then
+                // force kinematic so local physics doesn't run before connect (which
+                // would desync every client to a different position). The server is
+                // the physics authority once SCENE_INIT goes up.
+                _wasKinematicAtAwake = _rb.isKinematic;
                 _rb.isKinematic = true;
+            }
 
             CachedVariables = GetComponent<NetworkVariables>();
             CachedEvents    = GetComponent<NetworkEvents>();
