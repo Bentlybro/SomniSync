@@ -212,13 +212,16 @@ async fn handle_binary(
 /// Handle an interaction-update (0x03 or 0x09) for a held object.
 /// The server parses each entity, updates the kinematic body in Rapier, and
 /// relays only the entities the sender actually owns.
+///
+/// Entity wire format:
+///   compact  (0x03): 22 bytes — [u16 id][f32 x/y/z][i16 qx/qy/qz/qw]
+///   scaled   (0x09): 28 bytes — compact + [f16 sx/sy/sz]
 async fn handle_held_object_update(room: &Arc<RwLock<Room>>, client_id: u16, data: &[u8]) {
-    // Header: [type][u16 count] = 3 bytes
     if data.len() < 3 {
         return;
     }
     let is_scaled = data[0] == MSG_SCALED_INTERACTION;
-    let bytes_per_entity = if is_scaled { 20 } else { 14 };
+    let bytes_per_entity = if is_scaled { 28 } else { 22 };
     let count = u16::from_le_bytes([data[1], data[2]]) as usize;
     if data.len() < 3 + count * bytes_per_entity {
         return;
@@ -229,7 +232,6 @@ async fn handle_held_object_update(room: &Arc<RwLock<Room>>, client_id: u16, dat
         (r.claimed_objects.clone(), r.physics_world.clone())
     };
 
-    // Parse, filter, update physics, and build relay buffer in one pass.
     let mut relay = Vec::with_capacity(data.len());
     relay.push(data[0]);
     relay.extend_from_slice(&[0, 0]); // count placeholder
@@ -247,17 +249,17 @@ async fn handle_held_object_update(room: &Arc<RwLock<Room>>, client_id: u16, dat
             continue;
         }
 
-        // Update physics (single lock for the whole batch).
         if let Some(pw) = pw_guard.as_deref_mut() {
-            let px = read_f16(&data[offset + 2..]);
-            let py = read_f16(&data[offset + 4..]);
-            let pz = read_f16(&data[offset + 6..]);
-            let rx = read_rot_u16(&data[offset + 8..]);
-            let ry = read_rot_u16(&data[offset + 10..]);
-            let rz = read_rot_u16(&data[offset + 12..]);
+            let px = read_f32(data, offset + 2);
+            let py = read_f32(data, offset + 6);
+            let pz = read_f32(data, offset + 10);
+            let qx = read_i16(data, offset + 14) as f32 / 32767.0;
+            let qy = read_i16(data, offset + 16) as f32 / 32767.0;
+            let qz = read_i16(data, offset + 18) as f32 / 32767.0;
+            let qw = read_i16(data, offset + 20) as f32 / 32767.0;
             // Velocity isn't on this wire format; pass zero (server uses cached
             // velocity on release for momentum transfer).
-            pw.update_claimed(obj_id, px, py, pz, rx, ry, rz, 0.0, 0.0, 0.0);
+            pw.update_claimed(obj_id, px, py, pz, qx, qy, qz, qw, 0.0, 0.0, 0.0);
         }
 
         relay.extend_from_slice(&data[offset..offset + bytes_per_entity]);
@@ -773,19 +775,11 @@ async fn handle_disconnect(room: &Arc<RwLock<Room>>, client_id: u16, room_id: &s
 // ─── Inline binary helpers ────────────────────────────────────────────────────
 
 #[inline]
-fn read_f16(data: &[u8]) -> f32 {
-    use half::f16;
-    let bits = u16::from_le_bytes([data[0], data[1]]);
-    f16::from_bits(bits).to_f32()
-}
-
-#[inline]
-fn read_rot_u16(data: &[u8]) -> f32 {
-    let raw = u16::from_le_bytes([data[0], data[1]]);
-    raw as f32 * (360.0 / 65535.0)
-}
-
-#[inline]
 fn read_f32(data: &[u8], offset: usize) -> f32 {
     f32::from_le_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]])
+}
+
+#[inline]
+fn read_i16(data: &[u8], offset: usize) -> i16 {
+    i16::from_le_bytes([data[offset], data[offset + 1]])
 }

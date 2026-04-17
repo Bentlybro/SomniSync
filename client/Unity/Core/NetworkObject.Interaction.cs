@@ -34,7 +34,7 @@ namespace SomniumSpace.Worlds.bently.networking
 
             NetworkManager.Instance.SendClaim(LocalId);
             _lastSentPos = transform.position;
-            _lastSentRot = transform.eulerAngles;
+            _lastSentRot = transform.rotation;
         }
 
         public void Release()
@@ -56,7 +56,7 @@ namespace SomniumSpace.Worlds.bently.networking
                 // incoming server position updates.
                 _rb.isKinematic = true;
                 _fromPos = _toPos = transform.position;
-                _fromRot = _toRot = transform.eulerAngles;
+                _fromRot = _toRot = transform.rotation;
                 _interpT = 1f;
             }
 

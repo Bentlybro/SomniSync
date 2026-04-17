@@ -213,21 +213,17 @@ impl PhysicsWorld {
         &mut self,
         obj_id: u16,
         px: f32, py: f32, pz: f32,
-        rx_deg: f32, ry_deg: f32, rz_deg: f32,
+        qx: f32, qy: f32, qz: f32, qw: f32,
         vx: f32, vy: f32, vz: f32,
     ) {
         if let Some(&handle) = self.object_to_body.get(&obj_id) {
             if let Some(rb) = self.rigid_bodies.get_mut(handle) {
                 rb.set_next_kinematic_translation(vector![px, py, pz]);
-                let rot = nalgebra::UnitQuaternion::from_euler_angles(
-                    rx_deg.to_radians(),
-                    ry_deg.to_radians(),
-                    rz_deg.to_radians(),
-                );
+                let q = nalgebra::Quaternion::new(qw, qx, qy, qz);
+                let rot = nalgebra::UnitQuaternion::from_quaternion(q);
                 rb.set_next_kinematic_rotation(rot);
             }
         }
-        // Always update cached velocity even if body lookup failed (for late claims)
         if self.claimed.contains_key(&obj_id) {
             self.claimed.insert(obj_id, [vx, vy, vz]);
         }
@@ -254,11 +250,10 @@ impl PhysicsWorld {
             let pos = *rb.translation();
             let rot = rb.rotation();
             let vel = *rb.linvel();
-            let (roll, pitch, yaw) = rot.euler_angles();
             out.push(DynamicSnapshot {
                 obj_id,
                 pos: [pos.x, pos.y, pos.z],
-                rot_deg: [roll.to_degrees(), pitch.to_degrees(), yaw.to_degrees()],
+                quat: [rot.i, rot.j, rot.k, rot.w],
                 vel: [vel.x, vel.y, vel.z],
             });
         }
@@ -266,12 +261,13 @@ impl PhysicsWorld {
     }
 }
 
-/// Per-tick snapshot of one dynamic body.
+/// Per-tick snapshot of one dynamic body. Rotation is stored as a quaternion
+/// (x, y, z, w) — avoids Euler-angle gimbal instability on the wire.
 #[derive(Clone)]
 pub struct DynamicSnapshot {
     pub obj_id: u16,
     pub pos: [f32; 3],
-    pub rot_deg: [f32; 3],
+    pub quat: [f32; 4],
     pub vel: [f32; 3],
 }
 
@@ -311,7 +307,8 @@ pub fn build_filtered_message(
         return None;
     }
 
-    let mut buf = Vec::with_capacity(7 + snapshot.len() * 20);
+    // 7-byte header + 28 bytes per velocity entity.
+    let mut buf = Vec::with_capacity(7 + snapshot.len() * 28);
     buf.push(MSG_POSITION_VELOCITY);
     push_u16(&mut buf, 0);
     push_u16(&mut buf, seq);
@@ -343,12 +340,10 @@ pub fn build_filtered_message(
         }
 
         push_u16(&mut buf, entry.obj_id);
-        push_f16(&mut buf, entry.pos[0]);
-        push_f16(&mut buf, entry.pos[1]);
-        push_f16(&mut buf, entry.pos[2]);
-        push_rot_u16(&mut buf, entry.rot_deg[0]);
-        push_rot_u16(&mut buf, entry.rot_deg[1]);
-        push_rot_u16(&mut buf, entry.rot_deg[2]);
+        push_f32(&mut buf, entry.pos[0]);
+        push_f32(&mut buf, entry.pos[1]);
+        push_f32(&mut buf, entry.pos[2]);
+        push_quat(&mut buf, entry.quat);
         push_f16(&mut buf, entry.vel[0]);
         push_f16(&mut buf, entry.vel[1]);
         push_f16(&mut buf, entry.vel[2]);
@@ -379,15 +374,19 @@ fn push_f16(buf: &mut Vec<u8>, v: f32) {
     buf.push((bits >> 8) as u8);
 }
 
-/// Encode a rotation in degrees as a u16 in range [0, 65535] mapping to [0°, 360°).
 #[inline]
-fn push_rot_u16(buf: &mut Vec<u8>, degrees: f32) {
-    let mut d = degrees % 360.0;
-    if d < 0.0 {
-        d += 360.0;
+fn push_f32(buf: &mut Vec<u8>, v: f32) {
+    buf.extend_from_slice(&v.to_le_bytes());
+}
+
+/// Encode a unit quaternion as 4 × i16 quantized to [-1, 1].
+/// Precision ≈ 3e-5 per component, free of Euler gimbal artifacts.
+#[inline]
+fn push_quat(buf: &mut Vec<u8>, q: [f32; 4]) {
+    for &c in &q {
+        let scaled = (c.clamp(-1.0, 1.0) * 32767.0).round() as i16;
+        buf.extend_from_slice(&scaled.to_le_bytes());
     }
-    let encoded = (d * (65535.0 / 360.0)) as u16;
-    push_u16(buf, encoded);
 }
 
 // ─── SCENE_INIT parser ────────────────────────────────────────────────────────

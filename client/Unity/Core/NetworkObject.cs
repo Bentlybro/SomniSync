@@ -61,7 +61,7 @@ namespace SomniumSpace.Worlds.bently.networking
         // =====================================================================
 
         private Vector3 _fromPos, _toPos;
-        private Vector3 _fromRot, _toRot;
+        private Quaternion _fromRot, _toRot;
         private Vector3 _fromScale, _toScale;
         private float _interpT        = 1f;
         private float _interpDuration = 0.016f;
@@ -77,7 +77,7 @@ namespace SomniumSpace.Worlds.bently.networking
         // =====================================================================
 
         private Vector3 _lastSentPos;
-        private Vector3 _lastSentRot;
+        private Quaternion _lastSentRot;
         private Vector3 _lastSentScale;
 
         // =====================================================================
@@ -144,14 +144,13 @@ namespace SomniumSpace.Worlds.bently.networking
                     _interpT += deltaTime / _interpDuration;
                     if (_interpT > 1f) _interpT = 1f;
 
-                    transform.position    = Vector3.Lerp(_fromPos, _toPos, _interpT);
-                    transform.eulerAngles = LerpAngles(_fromRot, _toRot, _interpT);
+                    transform.position = Vector3.Lerp(_fromPos, _toPos, _interpT);
+                    transform.rotation = Quaternion.Slerp(_fromRot, _toRot, _interpT);
                     if (syncScale)
                         transform.localScale = Vector3.Lerp(_fromScale, _toScale, _interpT);
                 }
                 else if (_deadReckoning)
                 {
-                    // Extrapolate using last known velocity (capped at 1s)
                     float dt = Mathf.Min(currentTime - _drBaseTime, 1f);
                     transform.position = _drBasePos + _drVelocity * dt;
                 }
@@ -178,9 +177,7 @@ namespace SomniumSpace.Worlds.bently.networking
         public bool HasMoved(float posThreshold, float rotThreshold)
         {
             float posDist = (transform.position - _lastSentPos).sqrMagnitude;
-            float rotDist = Quaternion.Angle(
-                Quaternion.Euler(_lastSentRot),
-                Quaternion.Euler(transform.eulerAngles));
+            float rotDist = Quaternion.Angle(_lastSentRot, transform.rotation);
             if (posDist > posThreshold * posThreshold || rotDist > rotThreshold)
                 return true;
             if (syncScale && (transform.localScale - _lastSentScale).sqrMagnitude > 0.0001f)
@@ -191,7 +188,7 @@ namespace SomniumSpace.Worlds.bently.networking
         public void MarkSent()
         {
             _lastSentPos = transform.position;
-            _lastSentRot = transform.eulerAngles;
+            _lastSentRot = transform.rotation;
             if (syncScale) _lastSentScale = transform.localScale;
         }
 

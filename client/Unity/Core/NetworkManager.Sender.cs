@@ -48,13 +48,13 @@ namespace SomniumSpace.Worlds.bently.networking
                 if (obj.syncScale)
                 {
                     scalOffset = Protocol.WriteEntityScaled(scalBuf, scalOffset, obj.LocalId,
-                        obj.transform.position, obj.transform.eulerAngles, obj.transform.localScale);
+                        obj.transform.position, obj.transform.rotation, obj.transform.localScale);
                     scalCount++;
                 }
                 else
                 {
-                    offset = WriteEntityCompact(buf, offset, obj.LocalId,
-                        obj.transform.position, obj.transform.eulerAngles);
+                    offset = Protocol.WriteEntityCompact(buf, offset, obj.LocalId,
+                        obj.transform.position, obj.transform.rotation);
                     count++;
                 }
                 obj.MarkSent();
@@ -89,7 +89,7 @@ namespace SomniumSpace.Worlds.bently.networking
                 buf[0] = Protocol.MSG_SCALED_INTERACTION;
                 WriteU16(buf, 1, 1);
                 Protocol.WriteEntityScaled(buf, 3, obj.LocalId,
-                    obj.transform.position, obj.transform.eulerAngles, obj.transform.localScale);
+                    obj.transform.position, obj.transform.rotation, obj.transform.localScale);
                 obj.MarkSent();
                 SendBinaryPooled(buf, size);
             }
@@ -99,8 +99,8 @@ namespace SomniumSpace.Worlds.bently.networking
                 byte[] buf = ArrayPool<byte>.Shared.Rent(size);
                 buf[0] = Protocol.MSG_INTERACTION_UPDATE;
                 WriteU16(buf, 1, 1);
-                WriteEntityCompact(buf, 3, obj.LocalId,
-                    obj.transform.position, obj.transform.eulerAngles);
+                Protocol.WriteEntityCompact(buf, 3, obj.LocalId,
+                    obj.transform.position, obj.transform.rotation);
                 obj.MarkSent();
                 SendBinaryPooled(buf, size);
             }

@@ -58,14 +58,14 @@ namespace SomniumSpace.Worlds.bently.networking
         // Size constants
         // =====================================================================
 
-        /// <summary>14 bytes: [u16 id][half x/y/z][u16 rx/ry/rz]</summary>
-        public const int BYTES_PER_ENTITY = 14;
+        /// <summary>22 bytes: [u16 id][f32 x/y/z][i16 qx/qy/qz/qw]</summary>
+        public const int BYTES_PER_ENTITY = 22;
 
-        /// <summary>20 bytes: compact + [half sx/sy/sz]</summary>
-        public const int BYTES_PER_ENTITY_SCALED = 20;
+        /// <summary>28 bytes: compact + [half sx/sy/sz]</summary>
+        public const int BYTES_PER_ENTITY_SCALED = 28;
 
-        /// <summary>20 bytes: compact + [half vx/vy/vz] for dead reckoning.</summary>
-        public const int BYTES_PER_ENTITY_VELOCITY = 20;
+        /// <summary>28 bytes: compact + [half vx/vy/vz] for dead reckoning.</summary>
+        public const int BYTES_PER_ENTITY_VELOCITY = 28;
 
         // =====================================================================
         // Basic types
@@ -142,59 +142,76 @@ namespace SomniumSpace.Worlds.bently.networking
         }
 
         // =====================================================================
-        // Quantized rotation  0-360° → u16 0-65535, precision ≈ 0.005°
+        // Quantized quaternion — 4 × i16 in [-1, 1]  = 8 bytes
+        // Precision ≈ 3e-5 per component, far tighter than half-float rotation
+        // and free of Euler gimbal-lock artifacts.
         // =====================================================================
 
-        public static void WriteRotU16(byte[] buf, int offset, float degrees)
+        private const float QUAT_SCALE = 32767f;
+
+        public static void WriteQuat(byte[] buf, int offset, Quaternion q)
         {
-            degrees = degrees % 360f;
-            if (degrees < 0) degrees += 360f;
-            ushort val = (ushort)(degrees * (65535f / 360f));
-            buf[offset]     = (byte)(val & 0xFF);
-            buf[offset + 1] = (byte)(val >> 8);
+            WriteI16(buf, offset,     (short)Mathf.Clamp(Mathf.Round(q.x * QUAT_SCALE), -32768, 32767));
+            WriteI16(buf, offset + 2, (short)Mathf.Clamp(Mathf.Round(q.y * QUAT_SCALE), -32768, 32767));
+            WriteI16(buf, offset + 4, (short)Mathf.Clamp(Mathf.Round(q.z * QUAT_SCALE), -32768, 32767));
+            WriteI16(buf, offset + 6, (short)Mathf.Clamp(Mathf.Round(q.w * QUAT_SCALE), -32768, 32767));
         }
 
-        public static float ReadRotU16(byte[] buf, int offset)
+        public static Quaternion ReadQuat(byte[] buf, int offset)
         {
-            ushort val = (ushort)(buf[offset] | (buf[offset + 1] << 8));
-            return val * (360f / 65535f);
+            float x = ReadI16(buf, offset)     / QUAT_SCALE;
+            float y = ReadI16(buf, offset + 2) / QUAT_SCALE;
+            float z = ReadI16(buf, offset + 4) / QUAT_SCALE;
+            float w = ReadI16(buf, offset + 6) / QUAT_SCALE;
+            // Renormalize — quantization + drift can take |q| slightly off 1.
+            float mag = Mathf.Sqrt(x * x + y * y + z * z + w * w);
+            if (mag < 1e-6f) return Quaternion.identity;
+            float inv = 1f / mag;
+            return new Quaternion(x * inv, y * inv, z * inv, w * inv);
         }
 
+        public static void WriteI16(byte[] buf, int offset, short value)
+        {
+            buf[offset]     = (byte)(value & 0xFF);
+            buf[offset + 1] = (byte)((value >> 8) & 0xFF);
+        }
+
+        public static short ReadI16(byte[] buf, int offset)
+            => (short)(buf[offset] | (buf[offset + 1] << 8));
+
         // =====================================================================
-        // Compact entity   [u16 id][half x/y/z][u16 rx/ry/rz] = 14 bytes
+        // Compact entity   [u16 id][f32 x/y/z][i16 qx/qy/qz/qw] = 22 bytes
         // =====================================================================
 
-        public static int WriteEntityCompact(byte[] buf, int offset, ushort id, Vector3 pos, Vector3 rot)
+        public static int WriteEntityCompact(byte[] buf, int offset, ushort id, Vector3 pos, Quaternion rot)
         {
             WriteU16(buf, offset, id);       offset += 2;
-            WriteHalf(buf, offset, pos.x);   offset += 2;
-            WriteHalf(buf, offset, pos.y);   offset += 2;
-            WriteHalf(buf, offset, pos.z);   offset += 2;
-            WriteRotU16(buf, offset, rot.x); offset += 2;
-            WriteRotU16(buf, offset, rot.y); offset += 2;
-            WriteRotU16(buf, offset, rot.z); offset += 2;
+            WriteFloat(buf, offset, pos.x);  offset += 4;
+            WriteFloat(buf, offset, pos.y);  offset += 4;
+            WriteFloat(buf, offset, pos.z);  offset += 4;
+            WriteQuat(buf, offset, rot);     offset += 8;
             return offset;
         }
 
-        public static int ReadEntityCompact(byte[] buf, int offset, out ushort id, out Vector3 pos, out Vector3 rot)
+        public static int ReadEntityCompact(byte[] buf, int offset, out ushort id, out Vector3 pos, out Quaternion rot)
         {
             id = ReadU16(buf, offset); offset += 2;
-            float px = ReadHalf(buf, offset);   offset += 2;
-            float py = ReadHalf(buf, offset);   offset += 2;
-            float pz = ReadHalf(buf, offset);   offset += 2;
-            float rx = ReadRotU16(buf, offset); offset += 2;
-            float ry = ReadRotU16(buf, offset); offset += 2;
-            float rz = ReadRotU16(buf, offset); offset += 2;
+            float px = ReadFloat(buf, offset); offset += 4;
+            float py = ReadFloat(buf, offset); offset += 4;
+            float pz = ReadFloat(buf, offset); offset += 4;
+            rot = ReadQuat(buf, offset);       offset += 8;
             pos = new Vector3(px, py, pz);
-            rot = new Vector3(rx, ry, rz);
             return offset;
         }
 
+        public static float ReadFloat(byte[] buf, int offset)
+            => BitConverter.ToSingle(buf, offset);
+
         // =====================================================================
-        // Scaled entity   compact + [half sx/sy/sz] = 20 bytes
+        // Scaled entity   compact + [half sx/sy/sz] = 28 bytes
         // =====================================================================
 
-        public static int WriteEntityScaled(byte[] buf, int offset, ushort id, Vector3 pos, Vector3 rot, Vector3 scale)
+        public static int WriteEntityScaled(byte[] buf, int offset, ushort id, Vector3 pos, Quaternion rot, Vector3 scale)
         {
             offset = WriteEntityCompact(buf, offset, id, pos, rot);
             WriteHalf(buf, offset, scale.x); offset += 2;
@@ -203,7 +220,7 @@ namespace SomniumSpace.Worlds.bently.networking
             return offset;
         }
 
-        public static int ReadEntityScaled(byte[] buf, int offset, out ushort id, out Vector3 pos, out Vector3 rot, out Vector3 scale)
+        public static int ReadEntityScaled(byte[] buf, int offset, out ushort id, out Vector3 pos, out Quaternion rot, out Vector3 scale)
         {
             offset = ReadEntityCompact(buf, offset, out id, out pos, out rot);
             float sx = ReadHalf(buf, offset); offset += 2;
@@ -214,11 +231,11 @@ namespace SomniumSpace.Worlds.bently.networking
         }
 
         // =====================================================================
-        // Velocity entity   compact + [half vx/vy/vz] = 20 bytes
+        // Velocity entity   compact + [half vx/vy/vz] = 28 bytes
         // Used by MSG_POSITION_VELOCITY (0x0B) for dead reckoning.
         // =====================================================================
 
-        public static int ReadEntityVelocity(byte[] buf, int offset, out ushort id, out Vector3 pos, out Vector3 rot, out Vector3 vel)
+        public static int ReadEntityVelocity(byte[] buf, int offset, out ushort id, out Vector3 pos, out Quaternion rot, out Vector3 vel)
         {
             offset = ReadEntityCompact(buf, offset, out id, out pos, out rot);
             float vx = ReadHalf(buf, offset); offset += 2;

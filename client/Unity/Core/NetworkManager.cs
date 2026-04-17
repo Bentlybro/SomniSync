@@ -441,11 +441,5 @@ namespace SomniumSpace.Worlds.bently.networking
 
         private static void WriteU16(byte[] buf, int offset, ushort value)
             => Protocol.WriteU16(buf, offset, value);
-
-        private static int WriteEntityCompact(byte[] buf, int offset, ushort id, Vector3 pos, Vector3 rot)
-            => Protocol.WriteEntityCompact(buf, offset, id, pos, rot);
-
-        private static int ReadEntityCompact(byte[] buf, int offset, out ushort id, out Vector3 pos, out Vector3 rot)
-            => Protocol.ReadEntityCompact(buf, offset, out id, out pos, out rot);
     }
 }

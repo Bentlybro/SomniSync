@@ -134,7 +134,7 @@ namespace SomniumSpace.Worlds.bently.networking
             if (_receivedSequences.TryGetValue(senderClientId, out ushort lastSeq))
             {
                 ushort diff = unchecked((ushort)(sequence - lastSeq));
-                if (diff == 0 || diff > 32768) return; // duplicate or out-of-order
+                if (diff == 0 || diff > 32768) return;
             }
             _receivedSequences[senderClientId] = sequence;
 
@@ -144,13 +144,12 @@ namespace SomniumSpace.Worlds.bently.networking
             for (int i = 0; i < count && offset + Protocol.BYTES_PER_ENTITY_VELOCITY <= length; i++)
             {
                 ushort localId;
-                Vector3 pos, rot, vel;
+                Vector3 pos, vel;
+                Quaternion rot;
                 offset = Protocol.ReadEntityVelocity(data, offset, out localId, out pos, out rot, out vel);
 
                 if (GetObject(localId) is { } obj)
                 {
-                    // Skip updates for objects we ourselves are holding — our local
-                    // physics is the source of truth while grabbed.
                     if (obj.IsClaimedLocally) continue;
                     obj.ApplyUpdate(pos, rot, vel);
                 }
@@ -171,8 +170,9 @@ namespace SomniumSpace.Worlds.bently.networking
             for (int i = 0; i < count && offset + Protocol.BYTES_PER_ENTITY <= length; i++)
             {
                 ushort localId;
-                Vector3 pos, rot;
-                offset = ReadEntityCompact(data, offset, out localId, out pos, out rot);
+                Vector3 pos;
+                Quaternion rot;
+                offset = Protocol.ReadEntityCompact(data, offset, out localId, out pos, out rot);
 
                 if (GetObject(localId) is { } obj)
                 {
@@ -196,7 +196,8 @@ namespace SomniumSpace.Worlds.bently.networking
             for (int i = 0; i < count && offset + Protocol.BYTES_PER_ENTITY_SCALED <= length; i++)
             {
                 ushort localId;
-                Vector3 pos, rot, scale;
+                Vector3 pos, scale;
+                Quaternion rot;
                 offset = Protocol.ReadEntityScaled(data, offset, out localId, out pos, out rot, out scale);
 
                 if (GetObject(localId) is { } obj)
