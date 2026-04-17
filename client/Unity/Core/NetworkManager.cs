@@ -44,6 +44,12 @@ namespace SomniumSpace.Worlds.bently.networking
         [Tooltip("Minimum rotation (degrees) before a held object is included in an update")]
         public float rotationThreshold = 1f;
 
+        [Header("Local Player")]
+        [Tooltip("Your player transform. If set, this is used for server-side AOI and push detection. Leave empty to auto-detect Somnium Space rigs.")]
+        public Transform localPlayer;
+        [Tooltip("Auto-attach PlayerPushDetector to whatever local player is detected. Turn off if you don't want push-to-grab on walkthrough.")]
+        public bool autoAttachPushDetector = true;
+
         // State
         public bool IsConnected { get; private set; }
         public ushort ClientId { get; private set; }
@@ -97,10 +103,10 @@ namespace SomniumSpace.Worlds.bently.networking
         private float _playerPosInterval;
         private float _nextSendTime;
         private float _nextPlayerPosTime;
-        private bool _pushDetectorAttached;
         private float _nextPushDetectorCheckTime;
 
-        // Tracks the local player transform (populated by SomniumBridgeIntegration or a user script)
+        // Resolved local player transform. Priority: `localPlayer` inspector
+        // override > SetLocalPlayer() call > auto-detected Somnium rig.
         private Transform _localPlayerTransform;
 
         // Sequence numbers — track per-sender to discard stale 0x0B packets
@@ -153,10 +159,12 @@ namespace SomniumSpace.Worlds.bently.networking
             for (int i = 0; i < _objects.Count; i++)
                 _objects[i].NetworkUpdate(dt, t);
 
-            if (!_pushDetectorAttached && Time.time >= _nextPushDetectorCheckTime)
+            // Resolve the local player transform once per half-second until we find
+            // something — handles async-spawned Somnium rigs without scanning every frame.
+            if (_localPlayerTransform == null && Time.time >= _nextPushDetectorCheckTime)
             {
                 _nextPushDetectorCheckTime = Time.time + 0.5f;
-                AttachPushDetector();
+                ResolveLocalPlayer();
             }
 
             // Send held-object updates (locally claimed objects only — the server owns everything else).
@@ -175,30 +183,51 @@ namespace SomniumSpace.Worlds.bently.networking
         }
 
         // =====================================================================
-        // Push Detector (attach to local player at runtime)
+        // Local player resolution + push detector auto-attach
         // =====================================================================
 
-        private void AttachPushDetector()
+        /// <summary>
+        /// Resolve the local player transform. Priority:
+        ///   1. `localPlayer` inspector field set by the user
+        ///   2. A transform handed in via <see cref="SetLocalPlayer"/>
+        ///      (<see cref="SomniumBridgeIntegration"/> does this)
+        ///   3. Somnium-Space-specific auto-detection: look for the body under an
+        ///      "Original Player:" root GameObject.
+        /// </summary>
+        private void ResolveLocalPlayer()
         {
+            if (localPlayer != null)
+            {
+                _localPlayerTransform = localPlayer;
+                AutoAttachPushDetector(localPlayer.gameObject);
+                return;
+            }
+
+            // Somnium-specific fallback — look for SomniumBridge's player rig.
             foreach (var cc in FindObjectsByType<CharacterController>(FindObjectsSortMode.None))
             {
-                string name = cc.gameObject.name;
-                if (name != "NonXR.Body" && name != "XR.Body") continue;
+                string n = cc.gameObject.name;
+                if (n != "NonXR.Body" && n != "XR.Body") continue;
 
                 Transform root = cc.transform;
                 while (root.parent != null) root = root.parent;
                 if (!root.name.StartsWith("Original Player:")) continue;
 
-                if (cc.GetComponent<PlayerPushDetector>() == null)
-                {
-                    cc.gameObject.AddComponent<PlayerPushDetector>();
-                    Debug.Log($"[Net] Push detector attached to {cc.gameObject.name}");
-                }
-                // Also capture this transform for player-position broadcast.
                 _localPlayerTransform = cc.transform;
-                _pushDetectorAttached = true;
+                AutoAttachPushDetector(cc.gameObject);
                 return;
             }
+        }
+
+        private void AutoAttachPushDetector(GameObject target)
+        {
+            if (!autoAttachPushDetector) return;
+            if (target == null) return;
+            if (target.GetComponent<PlayerPushDetector>() != null) return;
+            // PlayerPushDetector uses OnCollisionEnter, which requires a Collider.
+            if (target.GetComponent<Collider>() == null) return;
+            target.AddComponent<PlayerPushDetector>();
+            Debug.Log($"[Net] Push detector attached to {target.name}");
         }
 
         // =====================================================================
@@ -309,7 +338,17 @@ namespace SomniumSpace.Worlds.bently.networking
             IsPhysicsReady = false;
             _sceneInitSent = false;
             _needsSceneInit = false;
-            _pushDetectorAttached = false;
+            // Keep _localPlayerTransform — it's a scene reference, still valid on
+            // reconnect. No need to re-resolve.
+            // Clear per-sender sequence dedup — on reconnect the server starts at
+            // seq=1, which would otherwise be rejected as "older" than the cached
+            // high value from the previous session and silently drop updates.
+            _receivedSequences.Clear();
+            // Release any objects we were holding so reconnect doesn't leave the
+            // client stuck believing it still owns objects the server has long
+            // since returned to Dynamic.
+            for (int i = 0; i < _objects.Count; i++)
+                _objects[i].ResetClaimStateOnDisconnect();
             NetworkPersistence.ClearPending();
 
             while (_sendQueue.TryDequeue(out QueuedMessage stale))

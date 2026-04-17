@@ -100,6 +100,20 @@ namespace SomniumSpace.Worlds.bently.networking
                 _rb.isKinematic = true;
         }
 
+        /// <summary>
+        /// Called by NetworkManager on disconnect. Clears claim state so the
+        /// reconnecting client doesn't think it still owns objects the server
+        /// has long since returned to Dynamic.
+        /// </summary>
+        internal void ResetClaimStateOnDisconnect()
+        {
+            IsClaimedLocally   = false;
+            ClaimedByClient    = 0;
+            _autoClaimedByPush = false;
+            if (_hasRb)
+                _rb.isKinematic = true;
+        }
+
         // =====================================================================
         // Push detection (called by PlayerPushDetector)
         // =====================================================================
