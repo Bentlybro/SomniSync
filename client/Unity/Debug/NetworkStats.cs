@@ -53,8 +53,8 @@ namespace SomniumSpace.Worlds.bently.networking
             var nm = NetworkManager.Instance;
             string status = nm == null ? "No Manager" :
                 !nm.IsConnected ? "Disconnected" :
-                nm.IsMaster ? $"MASTER (client_{nm.ClientId})" :
-                $"SPECTATOR (client_{nm.ClientId})";
+                !nm.IsPhysicsReady ? $"Connected (awaiting physics) client_{nm.ClientId}" :
+                $"Connected client_{nm.ClientId}";
 
             string text = $"FPS: {_fps:F0}\n" +
                           $"Status: {status}\n" +

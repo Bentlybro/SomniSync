@@ -6,6 +6,12 @@ namespace SomniumSpace.Worlds.bently.networking
     /// <summary>
     /// Shared binary encoding/decoding helpers for the network protocol.
     /// Used by NetworkManager and any component that serializes data.
+    ///
+    /// Architecture: server-authoritative. Clients never send authoritative
+    /// position updates — those come from the server (0x0B) based on its own
+    /// Rapier3D simulation. Clients only send: SCENE_INIT (bootstrap), player
+    /// position (for AOI), held-object updates (0x03/0x09), variables, events,
+    /// animator state, and control messages.
     /// </summary>
     public static class Protocol
     {
@@ -13,17 +19,14 @@ namespace SomniumSpace.Worlds.bently.networking
         // Message types
         // =====================================================================
 
-        public const byte MSG_POSITION_UPDATE         = 0x01; // legacy master-only batch (kept for compat)
-        public const byte MSG_SNAPSHOT                = 0x02; // full world state (master → all)
-        public const byte MSG_INTERACTION_UPDATE      = 0x03; // claimed-object updates (any client)
-        public const byte MSG_VARIABLE_UPDATE         = 0x04; // NetworkVariables
-        public const byte MSG_POSITION_UPDATE_SCALED  = 0x05; // scaled objects batch
-        public const byte MSG_EVENT                   = 0x06; // fire-and-forget RPCs
-        public const byte MSG_ANIMATOR                = 0x07; // animator state
-        public const byte MSG_RIGIDBODY               = 0x08; // velocity sync
-        public const byte MSG_SCALED_INTERACTION      = 0x09; // claimed scaled-object updates
-        public const byte MSG_SNAPSHOT_SCALED         = 0x0A; // full scaled-object snapshot
-        public const byte MSG_POSITION_VELOCITY       = 0x0B; // authority position + velocity (dead reckoning)
+        public const byte MSG_INTERACTION_UPDATE      = 0x03; // client → server: held-object position
+        public const byte MSG_VARIABLE_UPDATE         = 0x04; // NetworkVariables (any → others)
+        public const byte MSG_EVENT                   = 0x06; // fire-and-forget RPCs (any → others)
+        public const byte MSG_ANIMATOR                = 0x07; // animator state (any → others)
+        public const byte MSG_SCALED_INTERACTION      = 0x09; // scaled held-object position
+        public const byte MSG_POSITION_VELOCITY       = 0x0B; // server → clients: authoritative position + velocity
+        /// <summary>Client → server: local player position (for server-side AOI). [0x0C][f32 x][f32 y][f32 z]</summary>
+        public const byte MSG_PLAYER_POS              = 0x0C;
         /// <summary>Client → server: physics scene description. [0x10][u16 count][N × 60B objects]</summary>
         public const byte MSG_SCENE_INIT              = 0x10;
         public const byte MSG_CONTROL                 = 0xFF;
@@ -32,19 +35,14 @@ namespace SomniumSpace.Worlds.bently.networking
         // Control subtypes  (second byte inside 0xFF messages)
         // =====================================================================
 
-        public const byte CTRL_YOU_ARE_MASTER    = 0x01;
-        public const byte CTRL_YOU_ARE_SPECTATOR = 0x02;
-        public const byte CTRL_SEND_SNAPSHOT     = 0x03;
-        public const byte CTRL_MASTER_CHANGED    = 0x04;
+        /// <summary>Server → client on connect: [u16 client_id][u8 needs_scene_init]</summary>
+        public const byte CTRL_WELCOME           = 0x01;
         public const byte CTRL_CLAIM             = 0x05;
         public const byte CTRL_RELEASE           = 0x06;
-        /// <summary>Server → all: server physics mode is now active; clear all StateAuthority. [0xFF][0x08]</summary>
+        /// <summary>Server → requester: the claim was rejected (someone else owns the object). [0xFF][0x07][u16 obj_id]</summary>
+        public const byte CTRL_CLAIM_REJECTED    = 0x07;
+        /// <summary>Server → all: physics sim is now live. Stop any local simulation.</summary>
         public const byte CTRL_PHYSICS_READY     = 0x08;
-        /// <summary>
-        /// Master → all: assign StateAuthority for a set of objects to one client.
-        /// Format: [0xFF][0x0A][u16 clientId][u16 count][u16... objectIds]
-        /// </summary>
-        public const byte CTRL_AUTHORITY_ASSIGN  = 0x0A;
 
         // --- Persistence control subtypes ---
         /// <summary>Client → server: register stable player UUID. [0xFF][0x20][u8 len][utf8 uuid...]</summary>
@@ -219,15 +217,6 @@ namespace SomniumSpace.Worlds.bently.networking
         // Velocity entity   compact + [half vx/vy/vz] = 20 bytes
         // Used by MSG_POSITION_VELOCITY (0x0B) for dead reckoning.
         // =====================================================================
-
-        public static int WriteEntityVelocity(byte[] buf, int offset, ushort id, Vector3 pos, Vector3 rot, Vector3 vel)
-        {
-            offset = WriteEntityCompact(buf, offset, id, pos, rot);
-            WriteHalf(buf, offset, vel.x); offset += 2;
-            WriteHalf(buf, offset, vel.y); offset += 2;
-            WriteHalf(buf, offset, vel.z); offset += 2;
-            return offset;
-        }
 
         public static int ReadEntityVelocity(byte[] buf, int offset, out ushort id, out Vector3 pos, out Vector3 rot, out Vector3 vel)
         {

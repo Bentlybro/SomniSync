@@ -4,100 +4,39 @@ using UnityEngine;
 namespace SomniumSpace.Worlds.bently.networking
 {
     /// <summary>
-    /// Handles all outgoing position, interaction, and snapshot messages.
+    /// Handles all outgoing messages from the client.
     ///
-    /// Allocation strategy: every method rents a buffer from ArrayPool, writes into it,
-    /// then passes ownership to SendBinaryPooled(). The async send loop returns the buffer
-    /// to the pool after the WebSocket send completes — zero heap allocations in hot paths.
-    /// If nothing is queued (count == 0), the buffer is returned immediately.
+    /// Architecture: server-authoritative. Clients only send:
+    ///   - SCENE_INIT (one-shot, by the first connecting client)
+    ///   - Held-object position updates (while grabbing)
+    ///   - Player position (for server-side AOI)
+    ///   - Claim/release for grabs
+    ///   - Events, variables, animator state (still relayed through server to others)
+    ///
+    /// Allocation strategy: buffers are rented from ArrayPool. Ownership transfers
+    /// to the send loop via SendBinaryPooled which returns the buffer after send.
     /// </summary>
     public partial class NetworkManager
     {
         // =====================================================================
-        // Authority position updates (0x0B) — any client, for owned objects
-        // Format: [0x0B][u16 senderClientId][u16 sequence][u16 count][20B entities...]
-        // rigidbodies=true  → only physics objects (20Hz)
-        // rigidbodies=false → only non-physics objects (60Hz)
-        // =====================================================================
-
-        private void SendAuthorityPositionUpdates(bool rigidbodies)
-        {
-            if (_objects.Count == 0) return;
-
-            int maxVelSize    = 7 + _objects.Count * Protocol.BYTES_PER_ENTITY_VELOCITY;
-            int maxScaledSize = 3 + _objects.Count * Protocol.BYTES_PER_ENTITY_SCALED;
-
-            byte[] velBuf    = ArrayPool<byte>.Shared.Rent(maxVelSize);
-            byte[] scaledBuf = ArrayPool<byte>.Shared.Rent(maxScaledSize);
-
-            velBuf[0]    = Protocol.MSG_POSITION_VELOCITY;
-            scaledBuf[0] = Protocol.MSG_POSITION_UPDATE_SCALED;
-            Protocol.WriteU16(velBuf, 1, ClientId);
-
-            int velOffset    = 7; // [type][sender u16][seq u16][count u16] written below
-            int scaledOffset = 3;
-            int velCount     = 0;
-            int scaledCount  = 0;
-
-            for (int i = 0; i < _objects.Count; i++)
-            {
-                var obj = _objects[i];
-                if (!obj.HasStateAuthority)                              continue;
-                if (obj.IsClaimedByRemote)                               continue;
-                if (obj.IsRigidbody != rigidbodies)                      continue;
-                if (obj.IsSleeping)                                      continue;
-                if (!obj.HasMoved(positionThreshold, rotationThreshold)) continue;
-
-                if (obj.syncScale)
-                {
-                    scaledOffset = Protocol.WriteEntityScaled(scaledBuf, scaledOffset, obj.LocalId,
-                        obj.transform.position, obj.transform.eulerAngles, obj.transform.localScale);
-                    scaledCount++;
-                }
-                else
-                {
-                    velOffset = Protocol.WriteEntityVelocity(velBuf, velOffset, obj.LocalId,
-                        obj.transform.position, obj.transform.eulerAngles, obj.GetCurrentVelocity());
-                    velCount++;
-                }
-                obj.MarkSent();
-            }
-
-            if (velCount > 0)
-            {
-                _sendSequence++;
-                Protocol.WriteU16(velBuf, 3, _sendSequence);
-                Protocol.WriteU16(velBuf, 5, (ushort)velCount);
-                SendBinaryPooled(velBuf, velOffset); // ownership transferred
-                velBuf = null;
-            }
-            if (velBuf != null) ArrayPool<byte>.Shared.Return(velBuf);
-
-            if (scaledCount > 0)
-            {
-                WriteU16(scaledBuf, 1, (ushort)scaledCount);
-                SendBinaryPooled(scaledBuf, scaledOffset); // ownership transferred
-                scaledBuf = null;
-            }
-            if (scaledBuf != null) ArrayPool<byte>.Shared.Return(scaledBuf);
-        }
-
-        // =====================================================================
         // Interaction updates (batch, called each frame)
+        // Only includes locally-claimed (grabbed) objects.
         // =====================================================================
 
         private void SendInteractionUpdates()
         {
+            if (_objects.Count == 0) return;
+
             int maxSize = 3 + _objects.Count * Protocol.BYTES_PER_ENTITY_SCALED;
 
-            byte[] buf    = ArrayPool<byte>.Shared.Rent(maxSize);
+            byte[] buf     = ArrayPool<byte>.Shared.Rent(maxSize);
             byte[] scalBuf = ArrayPool<byte>.Shared.Rent(maxSize);
 
-            buf[0]     = 0x03;
-            scalBuf[0] = 0x09;
-            int offset    = 3;
+            buf[0]     = Protocol.MSG_INTERACTION_UPDATE;
+            scalBuf[0] = Protocol.MSG_SCALED_INTERACTION;
+            int offset     = 3;
             int scalOffset = 3;
-            int count     = 0;
+            int count      = 0;
             int scalCount  = 0;
 
             for (int i = 0; i < _objects.Count; i++)
@@ -147,7 +86,7 @@ namespace SomniumSpace.Worlds.bently.networking
             {
                 int size = 3 + Protocol.BYTES_PER_ENTITY_SCALED;
                 byte[] buf = ArrayPool<byte>.Shared.Rent(size);
-                buf[0] = 0x09;
+                buf[0] = Protocol.MSG_SCALED_INTERACTION;
                 WriteU16(buf, 1, 1);
                 Protocol.WriteEntityScaled(buf, 3, obj.LocalId,
                     obj.transform.position, obj.transform.eulerAngles, obj.transform.localScale);
@@ -158,7 +97,7 @@ namespace SomniumSpace.Worlds.bently.networking
             {
                 int size = 3 + Protocol.BYTES_PER_ENTITY;
                 byte[] buf = ArrayPool<byte>.Shared.Rent(size);
-                buf[0] = 0x03;
+                buf[0] = Protocol.MSG_INTERACTION_UPDATE;
                 WriteU16(buf, 1, 1);
                 WriteEntityCompact(buf, 3, obj.LocalId,
                     obj.transform.position, obj.transform.eulerAngles);
@@ -171,7 +110,7 @@ namespace SomniumSpace.Worlds.bently.networking
         public void SendClaim(ushort objectId)
         {
             byte[] buf = new byte[6];
-            buf[0] = 0xFF; buf[1] = 0x05;
+            buf[0] = 0xFF; buf[1] = Protocol.CTRL_CLAIM;
             WriteU16(buf, 2, objectId);
             WriteU16(buf, 4, ClientId);
             SendBinary(buf);
@@ -181,75 +120,29 @@ namespace SomniumSpace.Worlds.bently.networking
         public void SendRelease(ushort objectId)
         {
             byte[] buf = new byte[6];
-            buf[0] = 0xFF; buf[1] = 0x06;
+            buf[0] = 0xFF; buf[1] = Protocol.CTRL_RELEASE;
             WriteU16(buf, 2, objectId);
             WriteU16(buf, 4, ClientId);
             SendBinary(buf);
         }
 
         // =====================================================================
-        // Snapshot (0x02) — full state for new clients
+        // Player position (0x0C) — local player head/body for server-side AOI
+        // Format: [0x0C][f32 x][f32 y][f32 z] = 13 bytes
         // =====================================================================
 
-        private void SendSnapshot()
+        private void SendPlayerPosition()
         {
-            if (_objects.Count == 0) return;
+            if (_localPlayerTransform == null) return;
 
-            int maxNormal = 3 + _objects.Count * Protocol.BYTES_PER_ENTITY;
-            int maxScaled = 3 + _objects.Count * Protocol.BYTES_PER_ENTITY_SCALED;
-
-            byte[] normBuf = ArrayPool<byte>.Shared.Rent(maxNormal);
-            byte[] scalBuf = ArrayPool<byte>.Shared.Rent(maxScaled);
-
-            normBuf[0] = Protocol.MSG_SNAPSHOT;
-            scalBuf[0] = Protocol.MSG_SNAPSHOT_SCALED;
-            int normOffset = 3;
-            int scalOffset = 3;
-            int normCount  = 0;
-            int scalCount  = 0;
-
-            for (int i = 0; i < _objects.Count; i++)
-            {
-                var obj = _objects[i];
-                // ALL objects — see comment in original: snapshots are authoritative world state,
-                // skipping sleeping objects causes spectators to miss final resting positions.
-                if (obj.syncScale)
-                {
-                    scalOffset = Protocol.WriteEntityScaled(scalBuf, scalOffset, obj.LocalId,
-                        obj.transform.position, obj.transform.eulerAngles, obj.transform.localScale);
-                    scalCount++;
-                }
-                else
-                {
-                    normOffset = WriteEntityCompact(normBuf, normOffset, obj.LocalId,
-                        obj.transform.position, obj.transform.eulerAngles);
-                    normCount++;
-                }
-            }
-
-            if (normCount > 0)
-            {
-                WriteU16(normBuf, 1, (ushort)normCount);
-                SendBinaryPooled(normBuf, normOffset);
-                normBuf = null;
-            }
-            if (normBuf != null) ArrayPool<byte>.Shared.Return(normBuf);
-
-            if (scalCount > 0)
-            {
-                WriteU16(scalBuf, 1, (ushort)scalCount);
-                SendBinaryPooled(scalBuf, scalOffset);
-                scalBuf = null;
-            }
-            if (scalBuf != null) ArrayPool<byte>.Shared.Return(scalBuf);
-
-            Debug.Log($"[Net] Sending snapshot: {normCount} normal + {scalCount} scaled objects");
+            Vector3 p = _localPlayerTransform.position;
+            byte[] buf = new byte[13];
+            buf[0] = Protocol.MSG_PLAYER_POS;
+            Protocol.WriteFloat(buf, 1, p.x);
+            Protocol.WriteFloat(buf, 5, p.y);
+            Protocol.WriteFloat(buf, 9, p.z);
+            SendBinary(buf);
         }
-
-        // =====================================================================
-        // AOI farewell batch — zero-velocity updates for all objects deactivated
-        // this AOI tick. Batched into one message instead of one per object.
-        // =====================================================================
 
         // =====================================================================
         // SCENE_INIT (0x10) — send physics scene description to server
@@ -261,12 +154,10 @@ namespace SomniumSpace.Worlds.bently.networking
         ///
         /// Two passes:
         ///   1. Registered NetworkObjects — may be Dynamic, Kinematic, or Fixed.
-        ///   2. Static world geometry (floors, walls, terrain) that have a Collider but
-        ///      no NetworkObject. These are sent as Fixed bodies so Rapier knows about them
-        ///      even though the server never sends position updates for them.
+        ///   2. Static world geometry (floors, walls, terrain) with a Collider but
+        ///      no NetworkObject. Sent as Fixed bodies so Rapier knows about them.
         ///
-        /// MeshColliders are skipped (no analytic Rapier shape). Call once after the scene
-        /// is ready and you want the server to take over physics.
+        /// MeshColliders are skipped (no analytic Rapier shape).
         /// </summary>
         public void SendSceneInit()
         {
@@ -311,7 +202,6 @@ namespace SomniumSpace.Worlds.bently.networking
                     friction    = col.sharedMaterial.dynamicFriction;
                 }
 
-                // Use the collider's world-space centre so BoxCollider.center offsets are respected
                 Vector3 worldPos = GetColliderWorldCenter(col, obj.transform);
 
                 offset = Protocol.WriteSceneObject(buf, offset,
@@ -321,17 +211,15 @@ namespace SomniumSpace.Worlds.bently.networking
                 count++;
             }
 
-            // === Pass 2: Static world geometry without NetworkObject (floors, walls, etc.) ===
-            // IDs start after the registered NetworkObject range so they never collide.
+            // === Pass 2: Static world geometry without NetworkObject ===
             ushort staticId = (ushort)_objects.Count;
             foreach (var col in allColliders)
             {
                 if (col == null) continue;
-                if (col.GetComponent<NetworkObject>() != null) continue; // handled in Pass 1
+                if (col.GetComponent<NetworkObject>() != null) continue;
                 if (col is MeshCollider) continue;
 
                 var rb = col.GetComponent<Rigidbody>();
-                // Only include static GameObjects or trigger-less colliders without a Rigidbody
                 bool isStatic = col.gameObject.isStatic || rb == null;
                 if (!isStatic) continue;
                 if (col.isTrigger) continue;
@@ -347,7 +235,7 @@ namespace SomniumSpace.Worlds.bently.networking
                     continue;
 
                 float restitution = col.sharedMaterial != null ? col.sharedMaterial.bounciness      : 0.3f;
-                float friction    = col.sharedMaterial != null ? col.sharedMaterial.dynamicFriction  : 0.4f;
+                float friction    = col.sharedMaterial != null ? col.sharedMaterial.dynamicFriction : 0.4f;
                 Vector3 worldPos  = GetColliderWorldCenter(col, col.transform);
 
                 offset = Protocol.WriteSceneObject(buf, offset,
@@ -373,8 +261,8 @@ namespace SomniumSpace.Worlds.bently.networking
         /// <summary>Returns the world-space centre of a collider (respects the local center offset).</summary>
         private static Vector3 GetColliderWorldCenter(Collider col, Transform t)
         {
-            if (col is BoxCollider    bc) return t.TransformPoint(bc.center);
-            if (col is SphereCollider sc) return t.TransformPoint(sc.center);
+            if (col is BoxCollider     bc) return t.TransformPoint(bc.center);
+            if (col is SphereCollider  sc) return t.TransformPoint(sc.center);
             if (col is CapsuleCollider cc) return t.TransformPoint(cc.center);
             return t.position;
         }
@@ -396,7 +284,6 @@ namespace SomniumSpace.Worlds.bently.networking
             if (col is BoxCollider bc)
             {
                 shapeType = Protocol.PhysicsShapeType.Cuboid;
-                // Half-extents in world space
                 shapeParams = Vector3.Scale(bc.size, t.lossyScale) * 0.5f;
                 return true;
             }
@@ -404,8 +291,6 @@ namespace SomniumSpace.Worlds.bently.networking
             {
                 shapeType = Protocol.PhysicsShapeType.Capsule;
                 float worldRadius = cc.radius * Mathf.Max(t.lossyScale.x, t.lossyScale.z);
-                // Unity cc.height = total height (cylinder + 2 hemispheres).
-                // Rapier capsule_y(half_height, radius): half_height is cylindrical section only.
                 float worldHalfHeight = Mathf.Max(0f, cc.height * 0.5f * t.lossyScale.y - worldRadius);
                 shapeParams = new Vector3(worldRadius, worldHalfHeight, 0f);
                 return true;
@@ -414,6 +299,5 @@ namespace SomniumSpace.Worlds.bently.networking
             shapeParams = default;
             return false;
         }
-
     }
 }

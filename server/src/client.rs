@@ -70,6 +70,13 @@ pub async fn send(client: &Client, data: Vec<u8>) {
     }
 }
 
+/// Non-blocking send to a single client. Drops the message if the buffer is
+/// full. Use for per-tick broadcasts (position updates) where stale data is
+/// worse than no data.
+pub fn send_try(client: &Client, data: Bytes) {
+    let _ = client.tx.try_send(ClientMsg::Binary(data));
+}
+
 /// Broadcast a binary message to all clients except the sender.
 ///
 /// Uses `try_send` (non-blocking) — if a client's buffer is full the message is dropped

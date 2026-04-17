@@ -6,10 +6,9 @@ namespace SomniumSpace.Worlds.bently.networking
     /// Attach to any GameObject that should be synced across the network.
     /// Single component — drag it on, done.
     ///
-    /// Authority model: every object has a StateAuthorityId (which client simulates it).
-    /// The master starts as authority for everything and redistributes to nearby clients
-    /// automatically via RecalculateAuthority(). Any client can also claim objects by
-    /// grabbing them regardless of StateAuthority.
+    /// Architecture: the server owns physics. The local client only simulates
+    /// an object while it is grabbed locally (IsClaimedLocally). At all other
+    /// times the object is kinematic and driven by server position broadcasts.
     ///
     /// Split into partial classes:
     ///   NetworkObject.Interpolation.cs — ApplyUpdate, SnapTo, smoothing helpers
@@ -40,35 +39,22 @@ namespace SomniumSpace.Worlds.bently.networking
         [HideInInspector] public ushort LocalId;
 
         // =====================================================================
-        // Authority
-        // =====================================================================
-
-        /// <summary>
-        /// Which client is currently responsible for simulating this object.
-        /// 0 = unassigned (master owns by default on first connect).
-        /// </summary>
-        [HideInInspector] public ushort StateAuthorityId;
-
-        /// <summary>True when this client simulates and sends updates for this object.</summary>
-        public bool HasStateAuthority
-            => NetworkManager.Instance != null
-            && StateAuthorityId == NetworkManager.Instance.ClientId;
-
-        /// <summary>True if local client has control (authority or local claim).</summary>
-        public bool HasAuthority()
-        {
-            if (IsClaimedLocally) return true;
-            if (IsClaimedByRemote) return false;
-            return HasStateAuthority;
-        }
-
-        // =====================================================================
         // Claim state
         // =====================================================================
 
         public bool IsClaimedLocally  { get; private set; }
         public ushort ClaimedByClient { get; private set; }
         public bool IsClaimedByRemote => ClaimedByClient != 0 && !IsClaimedLocally;
+
+        /// <summary>
+        /// True if this client is allowed to write sibling-component state
+        /// (NetworkVariables, NetworkAnimator, NetworkTimer, NetworkEvents).
+        ///
+        /// Rule: yes if we hold this object, or nobody does. That way grabbed
+        /// items are written by the grabber, and free-floating objects (NPCs,
+        /// ambient props) accept writes from any client — the server just relays.
+        /// </summary>
+        public bool HasAuthority() => IsClaimedLocally || !IsClaimedByRemote;
 
         // =====================================================================
         // Interpolation + dead reckoning (used by NetworkObject.Interpolation.cs)
@@ -87,7 +73,7 @@ namespace SomniumSpace.Worlds.bently.networking
         private bool    _deadReckoning;
 
         // =====================================================================
-        // Delta tracking (for deciding when to send)
+        // Delta tracking for held-object sends
         // =====================================================================
 
         private Vector3 _lastSentPos;
@@ -95,7 +81,7 @@ namespace SomniumSpace.Worlds.bently.networking
         private Vector3 _lastSentScale;
 
         // =====================================================================
-        // Auto-claim / push state (used by NetworkObject.Interaction.cs)
+        // Auto-claim / push state
         // =====================================================================
 
         private const float AUTO_RELEASE_DELAY = 1.0f;
@@ -112,7 +98,6 @@ namespace SomniumSpace.Worlds.bently.networking
         internal NetworkVariables CachedVariables;
         internal NetworkEvents    CachedEvents;
         internal NetworkAnimator  CachedAnimator;
-        internal NetworkRigidbody CachedRigidbody;
 
         // =====================================================================
         // Unity lifecycle
@@ -122,19 +107,15 @@ namespace SomniumSpace.Worlds.bently.networking
         {
             _rb    = GetComponent<Rigidbody>();
             _hasRb = _rb != null;
+            // Server is always the physics authority. Local rigidbody stays kinematic
+            // until the local player grabs this object.
             if (_hasRb)
-                _rb.isKinematic = true; // freeze until authority is assigned
+                _rb.isKinematic = true;
 
-            // Cache optional sibling components so receivers avoid per-message GetComponent calls
             CachedVariables = GetComponent<NetworkVariables>();
             CachedEvents    = GetComponent<NetworkEvents>();
             CachedAnimator  = GetComponent<NetworkAnimator>();
-            CachedRigidbody = GetComponent<NetworkRigidbody>();
         }
-
-        // Update() intentionally removed — NetworkManager calls NetworkUpdate() for all
-        // objects in a single loop, eliminating 1000 separate MonoBehaviour.Update()
-        // dispatch calls per frame (each of which crosses the native/managed boundary).
 
         /// <summary>
         /// Called once per frame by NetworkManager for every registered object.
@@ -154,9 +135,9 @@ namespace SomniumSpace.Worlds.bently.networking
                     if (syncScale)
                         transform.localScale = Vector3.Lerp(_fromScale, _toScale, _interpT);
                 }
-                else if (_deadReckoning && !HasStateAuthority)
+                else if (_deadReckoning)
                 {
-                    // Lerp finished — extrapolate using last known velocity (capped at 1s)
+                    // Extrapolate using last known velocity (capped at 1s)
                     float dt = Mathf.Min(currentTime - _drBaseTime, 1f);
                     transform.position = _drBasePos + _drVelocity * dt;
                 }
@@ -177,60 +158,7 @@ namespace SomniumSpace.Worlds.bently.networking
         }
 
         // =====================================================================
-        // Authority management (called by NetworkManager)
-        // =====================================================================
-
-        /// <summary>
-        /// Assign StateAuthority to the given client.
-        /// Automatically enables/disables physics on the local machine.
-        /// </summary>
-        public void SetStateAuthority(ushort clientId)
-        {
-            bool wasAuthority = HasStateAuthority;
-            StateAuthorityId  = clientId;
-            bool nowAuthority = HasStateAuthority;
-
-            if (!wasAuthority && nowAuthority)
-            {
-                // Gained authority: take over physics from dead reckoning
-                _deadReckoning = false;
-                _interpT = 1f;
-                if (_hasRb && !IsClaimedByRemote)
-                {
-                    _rb.isKinematic    = false;
-                    _rb.linearVelocity = _drVelocity; // continue from last known velocity
-                }
-                _lastSentPos = transform.position;
-                _lastSentRot = transform.eulerAngles;
-            }
-            else if (wasAuthority && !nowAuthority)
-            {
-                // Lost authority: hand off to incoming dead reckoning
-                if (_hasRb)
-                {
-                    _drVelocity     = _rb.isKinematic ? Vector3.zero : _rb.linearVelocity;
-                    _rb.isKinematic = true;
-                }
-            }
-        }
-
-        // =====================================================================
-        // Physics helper (called on initial connection)
-        // =====================================================================
-
-        public void SetPhysics(bool enable)
-        {
-            if (!_hasRb) return;
-            _rb.isKinematic = !enable;
-            if (enable)
-            {
-                _lastSentPos = transform.position;
-                _lastSentRot = transform.eulerAngles;
-            }
-        }
-
-        // =====================================================================
-        // Movement detection
+        // Movement detection (used by held-object send path)
         // =====================================================================
 
         public bool HasMoved(float posThreshold, float rotThreshold)
@@ -253,18 +181,7 @@ namespace SomniumSpace.Worlds.bently.networking
             if (syncScale) _lastSentScale = transform.localScale;
         }
 
-        /// <summary>Returns the current rigidbody velocity, or zero for static objects.</summary>
-        public Vector3 GetCurrentVelocity()
-            => (_hasRb && !_rb.isKinematic) ? _rb.linearVelocity : Vector3.zero;
-
-        /// <summary>True if this object has a Rigidbody (used to split send rates).</summary>
+        /// <summary>True if this object has a Rigidbody.</summary>
         public bool IsRigidbody => _hasRb;
-
-        /// <summary>
-        /// True if the rigidbody has come to rest and needs no update.
-        /// Non-rigidbody objects are never considered sleeping.
-        /// </summary>
-        public bool IsSleeping => _hasRb && !_rb.isKinematic && _rb.IsSleeping();
-
     }
 }

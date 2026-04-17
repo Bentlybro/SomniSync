@@ -4,6 +4,13 @@ namespace SomniumSpace.Worlds.bently.networking
 {
     /// <summary>
     /// Handles grab/release, remote claim notifications, and push-to-claim for NetworkObject.
+    ///
+    /// Claim flow under server-authoritative physics:
+    ///   - Grab: local rigidbody becomes non-kinematic (client simulates locally for
+    ///     instant feel), server is notified and flips its Rapier body to Kinematic
+    ///     and accepts client-driven position updates.
+    ///   - Release: local rigidbody returns to kinematic, server switches its body
+    ///     back to Dynamic with the last known linear velocity.
     /// </summary>
     public partial class NetworkObject
     {
@@ -16,12 +23,14 @@ namespace SomniumSpace.Worlds.bently.networking
             if (!grabbable) return;
             if (NetworkManager.Instance == null || !NetworkManager.Instance.IsConnected) return;
             if (IsClaimedLocally) return;
+            if (IsClaimedByRemote) return;
 
             IsClaimedLocally = true;
             ClaimedByClient  = NetworkManager.Instance.ClientId;
 
-            if (!HasStateAuthority && _hasRb)
-                _rb.isKinematic = false; // enable physics for local movement
+            // Enable local physics so the grabber gets instant response.
+            if (_hasRb)
+                _rb.isKinematic = false;
 
             NetworkManager.Instance.SendClaim(LocalId);
             _lastSentPos = transform.position;
@@ -33,16 +42,18 @@ namespace SomniumSpace.Worlds.bently.networking
             if (NetworkManager.Instance == null || !NetworkManager.Instance.IsConnected) return;
             if (!IsClaimedLocally) return;
 
+            // Send a final position so the server's Rapier body matches our last frame
+            // before switching back to Dynamic.
             NetworkManager.Instance.SendInteractionUpdate(this);
 
             IsClaimedLocally = false;
             ClaimedByClient  = 0;
             _lastReleaseTime = Time.time;
 
-            if (!HasStateAuthority && _hasRb)
+            if (_hasRb)
             {
-                // Don't zero velocity here — the authority client will resume physics
-                // from the position sent by SendInteractionUpdate and apply dead-reckoning.
+                // Server is the authority again. Stop simulating locally and wait for
+                // incoming server position updates.
                 _rb.isKinematic = true;
                 _fromPos = _toPos = transform.position;
                 _fromRot = _toRot = transform.eulerAngles;
@@ -59,19 +70,34 @@ namespace SomniumSpace.Worlds.bently.networking
         public void OnRemoteClaim(ushort clientId)
         {
             ClaimedByClient = clientId;
-            if (HasStateAuthority && _hasRb)
-                _rb.isKinematic = true; // pause our physics while remote holds it
+            // A remote client is simulating this object; ours must stay kinematic
+            // so server position updates aren't fought by our local rigidbody.
+            if (_hasRb)
+                _rb.isKinematic = true;
         }
 
         public void OnRemoteRelease()
         {
             ClaimedByClient = 0;
-            if (HasStateAuthority && _hasRb)
-            {
-                _rb.isKinematic     = false;
-                _rb.linearVelocity  = Vector3.zero;
-                _rb.angularVelocity = Vector3.zero;
-            }
+            // Server takes over again. Keep the rigidbody kinematic and let server
+            // broadcasts drive the object.
+            if (_hasRb)
+                _rb.isKinematic = true;
+        }
+
+        /// <summary>
+        /// Server refused our optimistic claim (e.g. someone else held the object
+        /// when our claim arrived). Undo the local grab so server broadcasts take
+        /// over again.
+        /// </summary>
+        public void OnClaimRejected()
+        {
+            if (!IsClaimedLocally) return;
+            IsClaimedLocally = false;
+            ClaimedByClient  = 0;
+            _autoClaimedByPush = false;
+            if (_hasRb)
+                _rb.isKinematic = true;
         }
 
         // =====================================================================

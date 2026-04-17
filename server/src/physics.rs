@@ -8,6 +8,8 @@ use rapier3d::prelude::{
     RigidBodyBuilder, RigidBodyHandle, RigidBodySet, RigidBodyType, vector,
 };
 
+use crate::protocol::MSG_POSITION_VELOCITY;
+
 /// Description of one physics object sent in a SCENE_INIT message.
 pub struct ObjectDesc {
     pub id: u16,
@@ -231,37 +233,11 @@ impl PhysicsWorld {
         }
     }
 
-    /// Build a 0x0B position+velocity message from all current DYNAMIC, AWAKE body positions.
-    /// Returns `None` if there are no dynamic bodies that need broadcasting (all sleeping or empty).
-    ///
-    /// Message format:
-    /// ```text
-    /// [0x0B]           1 byte  MSG_POSITION_VELOCITY
-    /// [u16 sender=0]   2 bytes (server)
-    /// [u16 sequence]   2 bytes
-    /// [u16 count]      2 bytes
-    /// Per entity (20 bytes):
-    ///   [u16 local_id] [f16 px][f16 py][f16 pz]
-    ///   [u16 rx][u16 ry][u16 rz]
-    ///   [f16 vx][f16 vy][f16 vz]
-    /// ```
-    pub fn build_position_message(&mut self, server_sequence: &mut u16) -> Option<Vec<u8>> {
-        *server_sequence = server_sequence.wrapping_add(1);
-        let seq = *server_sequence;
-
-        // Header: 1 + 2 + 2 + 2 = 7 bytes; per entity: 20 bytes.
-        // Pre-allocate for the worst case; actual length is patched in below.
-        let mut buf = Vec::with_capacity(7 + self.object_to_body.len() * 20);
-
-        buf.push(0x0B); // MSG_POSITION_VELOCITY
-        push_u16(&mut buf, 0); // sender_id = 0 (server)
-        push_u16(&mut buf, seq);
-        push_u16(&mut buf, 0); // count placeholder — patched at offset 5-6 after the loop
-
-        let mut count: u16 = 0;
-
+    /// Snapshot every dynamic, awake body that could be broadcast this tick.
+    /// Taken once per tick and reused to build per-client filtered messages.
+    pub fn snapshot_dynamic(&self) -> Vec<DynamicSnapshot> {
+        let mut out = Vec::with_capacity(self.object_to_body.len());
         for (&obj_id, &handle) in &self.object_to_body {
-            // Exclude claimed (kinematic) objects — they are relayed separately.
             if self.claimed.contains_key(&obj_id) {
                 continue;
             }
@@ -269,43 +245,123 @@ impl PhysicsWorld {
                 Some(r) => r,
                 None => continue,
             };
-            // Only broadcast Dynamic bodies.
             if rb.body_type() != RigidBodyType::Dynamic {
                 continue;
             }
-            // Skip sleeping bodies — they haven't moved; broadcasting them wastes bandwidth.
             if rb.is_sleeping() {
                 continue;
             }
-
             let pos = *rb.translation();
             let rot = rb.rotation();
             let vel = *rb.linvel();
             let (roll, pitch, yaw) = rot.euler_angles();
-
-            push_u16(&mut buf, obj_id);
-            push_f16(&mut buf, pos.x);
-            push_f16(&mut buf, pos.y);
-            push_f16(&mut buf, pos.z);
-            push_rot_u16(&mut buf, roll.to_degrees());
-            push_rot_u16(&mut buf, pitch.to_degrees());
-            push_rot_u16(&mut buf, yaw.to_degrees());
-            push_f16(&mut buf, vel.x);
-            push_f16(&mut buf, vel.y);
-            push_f16(&mut buf, vel.z);
-            count += 1;
+            out.push(DynamicSnapshot {
+                obj_id,
+                pos: [pos.x, pos.y, pos.z],
+                rot_deg: [roll.to_degrees(), pitch.to_degrees(), yaw.to_degrees()],
+                vel: [vel.x, vel.y, vel.z],
+            });
         }
-
-        if count == 0 {
-            return None;
-        }
-
-        // Patch actual count into the header placeholder.
-        buf[5] = (count & 0xFF) as u8;
-        buf[6] = (count >> 8) as u8;
-
-        Some(buf)
+        out
     }
+}
+
+/// Per-tick snapshot of one dynamic body.
+#[derive(Clone)]
+pub struct DynamicSnapshot {
+    pub obj_id: u16,
+    pub pos: [f32; 3],
+    pub rot_deg: [f32; 3],
+    pub vel: [f32; 3],
+}
+
+// ─── AOI + LOD tuning ─────────────────────────────────────────────────────────
+//
+// Objects within AOI_NEAR: broadcast every tick.
+// Between near and mid: every LOD_MID_SKIP ticks.
+// Between mid and far: every LOD_FAR_SKIP ticks.
+// Beyond far: not broadcast at all.
+//
+// Spread over time using `(tick + obj_id) % N` so far objects don't arrive in
+// one giant packet — different objects hit different phase offsets.
+
+pub const AOI_NEAR_RADIUS: f32 = 25.0;
+pub const AOI_MID_RADIUS: f32 = 60.0;
+pub const AOI_FAR_RADIUS: f32 = 150.0;
+
+const AOI_NEAR_SQ: f32 = AOI_NEAR_RADIUS * AOI_NEAR_RADIUS;
+const AOI_MID_SQ: f32 = AOI_MID_RADIUS * AOI_MID_RADIUS;
+const AOI_FAR_SQ: f32 = AOI_FAR_RADIUS * AOI_FAR_RADIUS;
+
+const LOD_MID_SKIP: u32 = 3;
+const LOD_FAR_SKIP: u32 = 10;
+
+/// Build a 0x0B position+velocity message filtered to what this client needs
+/// to see this tick. Returns None if nothing is eligible.
+///
+/// If `player_pos` is None, the client has not yet reported a position — send
+/// everything so visuals aren't empty during the first few frames.
+pub fn build_filtered_message(
+    snapshot: &[DynamicSnapshot],
+    player_pos: Option<[f32; 3]>,
+    tick: u32,
+    seq: u16,
+) -> Option<Vec<u8>> {
+    if snapshot.is_empty() {
+        return None;
+    }
+
+    let mut buf = Vec::with_capacity(7 + snapshot.len() * 20);
+    buf.push(MSG_POSITION_VELOCITY);
+    push_u16(&mut buf, 0);
+    push_u16(&mut buf, seq);
+    push_u16(&mut buf, 0);
+
+    let mut count: u16 = 0;
+
+    for entry in snapshot {
+        if let Some(pp) = player_pos {
+            let dx = entry.pos[0] - pp[0];
+            let dy = entry.pos[1] - pp[1];
+            let dz = entry.pos[2] - pp[2];
+            let d_sq = dx * dx + dy * dy + dz * dz;
+
+            if d_sq > AOI_FAR_SQ {
+                continue;
+            }
+
+            let phase = tick.wrapping_add(entry.obj_id as u32);
+            if d_sq > AOI_MID_SQ {
+                if phase % LOD_FAR_SKIP != 0 {
+                    continue;
+                }
+            } else if d_sq > AOI_NEAR_SQ {
+                if phase % LOD_MID_SKIP != 0 {
+                    continue;
+                }
+            }
+        }
+
+        push_u16(&mut buf, entry.obj_id);
+        push_f16(&mut buf, entry.pos[0]);
+        push_f16(&mut buf, entry.pos[1]);
+        push_f16(&mut buf, entry.pos[2]);
+        push_rot_u16(&mut buf, entry.rot_deg[0]);
+        push_rot_u16(&mut buf, entry.rot_deg[1]);
+        push_rot_u16(&mut buf, entry.rot_deg[2]);
+        push_f16(&mut buf, entry.vel[0]);
+        push_f16(&mut buf, entry.vel[1]);
+        push_f16(&mut buf, entry.vel[2]);
+        count += 1;
+    }
+
+    if count == 0 {
+        return None;
+    }
+
+    buf[5] = (count & 0xFF) as u8;
+    buf[6] = (count >> 8) as u8;
+    Some(buf)
 }
 
 // ─── Binary encoding helpers ──────────────────────────────────────────────────

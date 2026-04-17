@@ -8,28 +8,32 @@ use crate::physics::PhysicsWorld;
 /// All rooms keyed by room_id string.
 pub type RoomMap = Arc<RwLock<HashMap<String, Arc<RwLock<Room>>>>>;
 
-/// Room state — tracks all connected clients, master, ownership, and snapshots.
+/// Room state — tracks connected clients, ownership of grabbed objects, player
+/// positions (for AOI), and the authoritative physics world.
+///
+/// There is no master/spectator distinction: the server is always the physics
+/// authority. The first client to send a SCENE_INIT bootstraps the Rapier world;
+/// every client after that just receives updates.
 pub struct Room {
     pub clients: HashMap<u16, Arc<Client>>,
-    pub master_id: Option<u16>,
     next_id: u16,
 
-    /// Cached latest snapshot from master (for late-joiner instant sync)
-    pub latest_snapshot: Option<Vec<u8>>,
-
-    /// Cached latest scaled-object snapshot (MSG_SNAPSHOT_SCALED 0x0A)
-    pub latest_scaled_snapshot: Option<Vec<u8>>,
-
-    /// Object ownership: object_local_id → client_id (only for claimed objects)
+    /// Object ownership: object_local_id → client_id. Held objects ("grabs")
+    /// are driven by that client; the server makes their physics body kinematic
+    /// while claimed.
     pub claimed_objects: HashMap<u16, u16>,
 
     /// Stable player identity: client_id → Somnium player UUID (or fallback UUID)
     pub player_ids: HashMap<u16, String>,
 
-    /// True when the server is running Rapier3D physics (SCENE_INIT received).
-    pub physics_mode: bool,
+    /// Latest known player head/body position per client. Used by server AOI to
+    /// filter outgoing position broadcasts. Absent until the client reports one.
+    pub player_positions: HashMap<u16, [f32; 3]>,
 
-    /// The authoritative physics world — present only in physics_mode.
+    /// True once the physics world has been initialized by a SCENE_INIT.
+    pub physics_ready: bool,
+
+    /// The authoritative physics world — present only after SCENE_INIT.
     pub physics_world: Option<Arc<Mutex<PhysicsWorld>>>,
 }
 
@@ -37,59 +41,53 @@ impl Room {
     pub fn new() -> Self {
         Self {
             clients: HashMap::new(),
-            master_id: None,
             next_id: 1,
-            latest_snapshot: None,
-            latest_scaled_snapshot: None,
             claimed_objects: HashMap::new(),
             player_ids: HashMap::new(),
-            physics_mode: false,
+            player_positions: HashMap::new(),
+            physics_ready: false,
             physics_world: None,
         }
     }
 
-    /// Add a client to the room. Returns (client_id, is_master).
+    /// Add a client to the room. Returns the client_id.
     /// IDs are assigned from 1..=65535 with wraparound, skipping any ID still in use.
-    pub fn add_client(&mut self, client: Arc<Client>) -> (u16, bool) {
+    pub fn add_client(&mut self, client: Arc<Client>) -> u16 {
         let start = self.next_id;
         loop {
             self.next_id = self.next_id.wrapping_add(1);
             if self.next_id == 0 {
-                self.next_id = 1; // skip 0 — reserved as "no client"
+                self.next_id = 1; // skip 0 — reserved as "server"
             }
             if !self.clients.contains_key(&self.next_id) {
                 break;
             }
             if self.next_id == start {
-                // All 65535 slots occupied — practically impossible, but don't spin forever.
+                // All 65535 slots occupied — practically impossible.
                 break;
             }
         }
         let id = self.next_id;
-        let is_master = self.master_id.is_none();
-        if is_master {
-            self.master_id = Some(id);
-        }
         self.clients.insert(id, client);
-        (id, is_master)
+        id
     }
 
-    /// Remove a client. Returns the new master id if promotion happened.
-    pub fn remove_client(&mut self, id: u16) -> Option<u16> {
+    /// Remove a client. Returns any object IDs that were released as a result
+    /// so the caller can tell Rapier to switch them back to Dynamic.
+    pub fn remove_client(&mut self, id: u16) -> Vec<u16> {
         self.clients.remove(&id);
-        self.claimed_objects.retain(|_, owner| *owner != id);
         self.player_ids.remove(&id);
+        self.player_positions.remove(&id);
 
-        if self.master_id == Some(id) {
-            self.master_id = None;
-            self.latest_snapshot = None;
-            self.latest_scaled_snapshot = None;
-            if let Some(&new_master) = self.clients.keys().next() {
-                self.master_id = Some(new_master);
-                return Some(new_master);
-            }
+        let released: Vec<u16> = self
+            .claimed_objects
+            .iter()
+            .filter_map(|(&obj, &owner)| if owner == id { Some(obj) } else { None })
+            .collect();
+        for obj in &released {
+            self.claimed_objects.remove(obj);
         }
-        None
+        released
     }
 
     /// Number of connected clients.
