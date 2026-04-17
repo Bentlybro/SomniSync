@@ -26,6 +26,7 @@ namespace SomniumSpace.Worlds.bently.networking
                 return;
             }
 
+            float duration = AdaptiveDuration(baseDuration);
             _lastUpdateReceivedTime = Time.time;
             _fromPos = transform.position;
             _fromRot = transform.rotation;
@@ -33,7 +34,7 @@ namespace SomniumSpace.Worlds.bently.networking
             _toRot   = rot;
             if (syncScale && scale.HasValue) { _fromScale = transform.localScale; _toScale = scale.Value; }
             _interpT        = 0f;
-            _interpDuration = baseDuration;
+            _interpDuration = duration;
             _deadReckoning  = false;
         }
 
@@ -44,12 +45,9 @@ namespace SomniumSpace.Worlds.bently.networking
         public void ApplyUpdate(Vector3 pos, Quaternion rot, Vector3 velocity, Vector3? scale = null)
         {
             // Velocity is still read off the wire in case future features want it,
-            // but we no longer extrapolate with it. Extrapolation assumed linear
-            // motion and visibly punched objects through the floor on bounce:
-            // server sends `pos=0.3, vel=-10` 50ms before a floor bounce; client
-            // was lerping toward `pos + vel*0.05 = -0.2` (below the floor),
-            // then snapping back up when the bounce packet arrived. The server
-            // is the physics truth — just render what it sends.
+            // but we no longer extrapolate with it — the server's Rapier sim is
+            // the physics truth, and linear extrapolation punched bouncing objects
+            // through the floor before bounce packets arrived.
             _drVelocity    = velocity;
             _deadReckoning = false;
 
@@ -63,6 +61,7 @@ namespace SomniumSpace.Worlds.bently.networking
                 return;
             }
 
+            float duration = AdaptiveDuration(baseDuration);
             _lastUpdateReceivedTime = Time.time;
             _fromPos = transform.position;
             _fromRot = transform.rotation;
@@ -70,7 +69,7 @@ namespace SomniumSpace.Worlds.bently.networking
             _toRot   = rot;
             if (syncScale && scale.HasValue) { _fromScale = transform.localScale; _toScale = scale.Value; }
             _interpT        = 0f;
-            _interpDuration = baseDuration;
+            _interpDuration = duration;
         }
 
         // =====================================================================
@@ -107,6 +106,27 @@ namespace SomniumSpace.Worlds.bently.networking
                 case SmoothingMode.High:   return 0.1f;
                 default:                   return 0.05f;
             }
+        }
+
+        /// <summary>
+        /// Decide how long the next lerp should take. The server's per-client AOI
+        /// sends objects at different rates depending on distance (every tick,
+        /// every 3rd, every 10th). A fixed 50ms lerp on a mid-tier object means
+        /// we glide smoothly for 50ms then sit still for 100ms — visually a big
+        /// step every ~150ms. Matching the lerp to the measured inter-packet gap
+        /// turns stepping back into continuous motion.
+        ///
+        /// Clamped between the configured smoothing floor and 0.6s so a one-off
+        /// long gap (AOI re-entry after hiding behind terrain) doesn't hang the
+        /// object mid-lerp forever.
+        /// </summary>
+        private float AdaptiveDuration(float baseDuration)
+        {
+            if (_lastUpdateReceivedTime < 0f)
+                return baseDuration; // first update — no gap to measure
+
+            float gap = Time.time - _lastUpdateReceivedTime;
+            return Mathf.Clamp(gap, baseDuration, 0.6f);
         }
     }
 }
