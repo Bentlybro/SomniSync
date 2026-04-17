@@ -133,27 +133,19 @@ namespace SomniumSpace.Worlds.bently.networking
 
         /// <summary>
         /// Called once per frame by NetworkManager for every registered object.
-        /// Handles interpolation, dead reckoning, and auto-release in one pass.
+        /// Handles interpolation and auto-release in one pass.
         /// </summary>
         internal void NetworkUpdate(float deltaTime, float currentTime)
         {
-            if (!IsClaimedLocally)
+            if (!IsClaimedLocally && _interpT < 1f)
             {
-                if (_interpT < 1f)
-                {
-                    _interpT += deltaTime / _interpDuration;
-                    if (_interpT > 1f) _interpT = 1f;
+                _interpT += deltaTime / _interpDuration;
+                if (_interpT > 1f) _interpT = 1f;
 
-                    transform.position = Vector3.Lerp(_fromPos, _toPos, _interpT);
-                    transform.rotation = Quaternion.Slerp(_fromRot, _toRot, _interpT);
-                    if (syncScale)
-                        transform.localScale = Vector3.Lerp(_fromScale, _toScale, _interpT);
-                }
-                else if (_deadReckoning)
-                {
-                    float dt = Mathf.Min(currentTime - _drBaseTime, 1f);
-                    transform.position = _drBasePos + _drVelocity * dt;
-                }
+                transform.position = Vector3.Lerp(_fromPos, _toPos, _interpT);
+                transform.rotation = Quaternion.Slerp(_fromRot, _toRot, _interpT);
+                if (syncScale)
+                    transform.localScale = Vector3.Lerp(_fromScale, _toScale, _interpT);
             }
 
             // Auto-release when push-grabbed object settles

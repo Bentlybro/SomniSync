@@ -38,17 +38,20 @@ namespace SomniumSpace.Worlds.bently.networking
         }
 
         // =====================================================================
-        // Receive — position + velocity update (0x0B, dead reckoning)
+        // Receive — position + velocity update (0x0B)
         // =====================================================================
 
         public void ApplyUpdate(Vector3 pos, Quaternion rot, Vector3 velocity, Vector3? scale = null)
         {
+            // Velocity is still read off the wire in case future features want it,
+            // but we no longer extrapolate with it. Extrapolation assumed linear
+            // motion and visibly punched objects through the floor on bounce:
+            // server sends `pos=0.3, vel=-10` 50ms before a floor bounce; client
+            // was lerping toward `pos + vel*0.05 = -0.2` (below the floor),
+            // then snapping back up when the bounce packet arrived. The server
+            // is the physics truth — just render what it sends.
             _drVelocity    = velocity;
-            _drBasePos     = pos;
-            _drBaseTime    = Time.time;
-            // Higher threshold than before — below this, DR toggling at low
-            // speeds caused sub-cm wobble on slow-moving objects.
-            _deadReckoning = velocity.sqrMagnitude > 0.01f;
+            _deadReckoning = false;
 
             float baseDuration = GetSmoothingDuration();
             if (baseDuration <= 0f)
@@ -63,9 +66,7 @@ namespace SomniumSpace.Worlds.bently.networking
             _lastUpdateReceivedTime = Time.time;
             _fromPos = transform.position;
             _fromRot = transform.rotation;
-            // Lerp to where dead reckoning will be when the lerp finishes — the
-            // lerp lands exactly where DR picks up, so no jump at the handoff.
-            _toPos   = pos + velocity * baseDuration;
+            _toPos   = pos;
             _toRot   = rot;
             if (syncScale && scale.HasValue) { _fromScale = transform.localScale; _toScale = scale.Value; }
             _interpT        = 0f;
