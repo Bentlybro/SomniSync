@@ -34,8 +34,8 @@ namespace SomniumSpace.Worlds.bently.networking
     public class NetworkDebug : MonoBehaviour
     {
         [Header("Logging")]
-        [Tooltip("Master on/off for this dump.")]
-        public bool enableLogging = true;
+        [Tooltip("Master on/off for this dump. Off by default — flip it on only when you're actively chasing a desync, otherwise it floods the console every interval.")]
+        public bool enableLogging = false;
         [Tooltip("Short identifier for this client (e.g. \"A\" / \"B\"). Included in every log line so you can tell clients apart when merging logs.")]
         public string clientTag = "?";
         [Tooltip("Seconds between state dumps.")]

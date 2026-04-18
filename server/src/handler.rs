@@ -5,7 +5,7 @@ use tokio::sync::RwLock;
 use tokio::time::Duration;
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::client::{broadcast_except, new_client, send, Client, ClientMsg};
+use crate::client::{broadcast_except, new_client, redact_peer, send, Client, ClientMsg};
 use crate::persistence::PersistenceDb;
 use crate::protocol::{
     ctrl_msg, read_f32, read_i16, read_u16, read_u64, CTRL_CLAIM, CTRL_CLAIM_REJECTED,
@@ -43,7 +43,7 @@ pub async fn handle_connection(
     let ws = match tokio_tungstenite::accept_hdr_async(stream, callback).await {
         Ok(ws) => ws,
         Err(e) => {
-            error!("[Server] WebSocket handshake failed for {}: {}", addr, e);
+            error!("[Server] WebSocket handshake failed for {}: {}", redact_peer(addr), e);
             return;
         }
     };
@@ -74,7 +74,7 @@ pub async fn handle_connection(
         let needs_init = !physics_active;
         info!(
             "[Room:{}] Client {} connected: client_{} ({} total)",
-            room_id, addr, id, r.client_count()
+            room_id, redact_peer(addr), id, r.client_count()
         );
         (id, needs_init, physics_active, r.scene_ready_ms)
     };

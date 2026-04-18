@@ -200,7 +200,10 @@ pub fn register_client(cid: u16, addr: SocketAddr, room: &str) {
             .unwrap_or(0);
         let info = Arc::new(ClientInfo {
             cid,
-            addr: addr.to_string(),
+            // Store the redacted form — this is what the dashboard reads,
+            // and keeping the raw IP anywhere in the metrics path is a
+            // needless privacy regression.
+            addr: crate::client::redact_peer(addr),
             room: room.to_string(),
             connected_at_ms,
             msgs_rx: AtomicU64::new(0),

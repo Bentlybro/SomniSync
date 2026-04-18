@@ -1,6 +1,7 @@
 use bytes::Bytes;
 use log::warn;
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -8,6 +9,21 @@ use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::stats;
+
+/// Redact a peer address for log + dashboard output.
+///
+/// Leaking raw client IPs to the metrics dashboard (or the in-memory log
+/// tail it exposes) is a user-privacy regression — anyone who can reach
+/// the dashboard learns every connected player's public IP. We replace
+/// the IP portion with a short hash of itself so admins can still
+/// correlate "peer-a3f2 keeps disconnecting" across log lines without
+/// learning the actual address. Port is preserved because it's an
+/// ephemeral per-session value, not identifying.
+pub fn redact_peer(addr: SocketAddr) -> String {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    addr.ip().hash(&mut h);
+    format!("peer-{:04x}:{}", h.finish() & 0xFFFF, addr.port())
+}
 
 pub type Tx = futures_util::stream::SplitSink<
     tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
@@ -78,14 +94,14 @@ fn spawn_send_task(mut sink: Tx, mut rx: mpsc::Receiver<ClientMsg>, addr: Socket
             match tokio::time::timeout(SEND_TIMEOUT, sink.send(ws_msg)).await {
                 Ok(Ok(())) => {}
                 Ok(Err(e)) => {
-                    warn!("[Send] Error to {}: {}", addr, e);
+                    warn!("[Send] Error to {}: {}", redact_peer(addr), e);
                     break;
                 }
                 Err(_) => {
                     warn!(
                         "[Send] Timeout (>{}s) sending to {} — peer TCP stalled, killing client",
                         SEND_TIMEOUT.as_secs(),
-                        addr
+                        redact_peer(addr)
                     );
                     break;
                 }
@@ -103,7 +119,7 @@ fn spawn_send_task(mut sink: Tx, mut rx: mpsc::Receiver<ClientMsg>, addr: Socket
 pub async fn send(client: &Client, data: Vec<u8>) {
     let len = data.len();
     if client.tx.send(ClientMsg::Binary(Bytes::from(data))).await.is_err() {
-        warn!("[Room] Client {} disconnected, dropping send", client.addr);
+        warn!("[Room] Client {} disconnected, dropping send", redact_peer(client.addr));
         stats::bump_dropped();
     } else {
         stats::bump_tx(len);

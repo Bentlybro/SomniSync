@@ -70,7 +70,7 @@ async fn main() {
                 // Disable Nagle's algorithm — game updates are small and latency-sensitive.
                 // Without this, the kernel may buffer small packets for up to 40 ms.
                 if let Err(e) = stream.set_nodelay(true) {
-                    log::warn!("[Server] TCP_NODELAY failed for {}: {}", addr, e);
+                    log::warn!("[Server] TCP_NODELAY failed for {}: {}", client::redact_peer(addr), e);
                 }
                 let rooms = rooms.clone();
                 let db = db.clone();
