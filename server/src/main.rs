@@ -1,10 +1,12 @@
 mod client;
 mod config;
 mod handler;
+mod metrics_server;
 mod persistence;
 mod physics;
 mod protocol;
 mod room;
+mod stats;
 
 use log::info;
 use std::collections::HashMap;
@@ -18,7 +20,11 @@ use room::RoomMap;
 
 #[tokio::main]
 async fn main() {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    // Stats lifetime is the whole process — set up before the logger so the
+    // tee-logger has a ring buffer to push into from the very first log line.
+    let stats = stats::Stats::new();
+    stats::init(stats.clone());
+    stats::install_logger(stats.clone());
 
     let config = ServerConfig::from_args();
 
@@ -36,6 +42,21 @@ async fn main() {
     info!("[Server] Ready for connections...");
 
     let rooms: RoomMap = Arc::new(RwLock::new(HashMap::new()));
+
+    // Background: refresh CPU% / RSS at 1 Hz for the dashboard.
+    tokio::spawn(stats::sysinfo_loop(stats.clone()));
+
+    // Background: HTTP dashboard on a second port. If it fails to bind we
+    // log and keep running — game traffic shouldn't die because the
+    // dashboard port was taken.
+    {
+        let metrics_stats = stats.clone();
+        let metrics_rooms = rooms.clone();
+        let metrics_addr = config.metrics_addr.clone();
+        tokio::spawn(async move {
+            metrics_server::serve(metrics_addr, metrics_stats, metrics_rooms).await;
+        });
+    }
 
     let shutdown = tokio::signal::ctrl_c();
     tokio::pin!(shutdown);

@@ -6,6 +6,8 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
 
+use crate::stats;
+
 pub type Tx = futures_util::stream::SplitSink<
     tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
     Message,
@@ -65,8 +67,12 @@ fn spawn_send_task(mut sink: Tx, mut rx: mpsc::Receiver<ClientMsg>, addr: Socket
 /// Send a reliable message to a single client (control messages, role assignment, etc.).
 /// Awaits if the send buffer is full — for control messages we never want to drop.
 pub async fn send(client: &Client, data: Vec<u8>) {
+    let len = data.len();
     if client.tx.send(ClientMsg::Binary(Bytes::from(data))).await.is_err() {
         warn!("[Room] Client {} disconnected, dropping send", client.addr);
+        stats::bump_dropped();
+    } else {
+        stats::bump_tx(len);
     }
 }
 
@@ -74,7 +80,12 @@ pub async fn send(client: &Client, data: Vec<u8>) {
 /// full. Use for per-tick broadcasts (position updates) where stale data is
 /// worse than no data.
 pub fn send_try(client: &Client, data: Bytes) {
-    let _ = client.tx.try_send(ClientMsg::Binary(data));
+    let len = data.len();
+    if client.tx.try_send(ClientMsg::Binary(data)).is_ok() {
+        stats::bump_tx(len);
+    } else {
+        stats::bump_dropped();
+    }
 }
 
 /// Broadcast a binary message to all clients except the sender.
@@ -91,22 +102,36 @@ pub fn broadcast_except(
     data: &[u8],
 ) {
     let bytes = Bytes::copy_from_slice(data);
+    let len = data.len();
+    let mut delivered: u64 = 0;
+    let mut dropped: u64 = 0;
     for (&id, client) in clients {
         if id != sender_id {
             // O(1) Arc reference-count bump — no memory copy per recipient.
-            if client.tx.try_send(ClientMsg::Binary(bytes.clone())).is_err() {
-                // Buffer full — client is lagged, drop this frame silently.
+            if client.tx.try_send(ClientMsg::Binary(bytes.clone())).is_ok() {
+                delivered += 1;
+            } else {
+                dropped += 1;
             }
         }
     }
+    stats::bump_tx_batch(len, delivered);
+    for _ in 0..dropped { stats::bump_dropped(); }
 }
 
 /// Broadcast a binary message to ALL clients (e.g. server-generated control messages).
 pub fn broadcast_all(clients: &HashMap<u16, Arc<Client>>, data: &[u8]) {
     let bytes = Bytes::copy_from_slice(data);
+    let len = data.len();
+    let mut delivered: u64 = 0;
+    let mut dropped: u64 = 0;
     for client in clients.values() {
-        if client.tx.try_send(ClientMsg::Binary(bytes.clone())).is_err() {
-            // Buffer full — client is lagged, drop this frame silently.
+        if client.tx.try_send(ClientMsg::Binary(bytes.clone())).is_ok() {
+            delivered += 1;
+        } else {
+            dropped += 1;
         }
     }
+    stats::bump_tx_batch(len, delivered);
+    for _ in 0..dropped { stats::bump_dropped(); }
 }

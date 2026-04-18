@@ -17,6 +17,7 @@ use crate::protocol::{
 };
 use crate::room::Room;
 use crate::room::RoomMap;
+use crate::stats;
 
 /// Handle a single client connection (runs in its own task).
 pub async fn handle_connection(
@@ -63,6 +64,7 @@ pub async fn handle_connection(
 
     let (ws_tx, mut rx) = futures_util::StreamExt::split(ws);
     let client = new_client(addr, ws_tx);
+    stats::bump_client_connected();
 
     // Register client and decide whether this is the one that bootstraps physics.
     let (client_id, needs_scene_init, physics_already_active, scene_ready_ms) = {
@@ -153,6 +155,7 @@ pub async fn handle_connection(
     }
 
     handle_disconnect(&room, client_id, &room_id).await;
+    stats::bump_client_disconnected();
 
     {
         let r = room.read().await;
@@ -178,6 +181,7 @@ async fn handle_binary(
     room_id: &str,
     db: &PersistenceDb,
 ) {
+    stats::bump_rx(data.len());
     let msg_type = data[0];
 
     match msg_type {
@@ -465,7 +469,12 @@ async fn physics_tick_task(
             let mut pw = pw_arc.lock().await;
             if do_physics {
                 last_physics = now;
+                let t0 = Instant::now();
                 pw.step();
+                let us = t0.elapsed().as_micros() as u64;
+                if let Some(s) = crate::stats::get() {
+                    s.record_physics_tick(us);
+                }
             }
             if do_broadcast {
                 last_broadcast = now;
@@ -510,6 +519,7 @@ async fn physics_tick_task(
                 )
             };
 
+            let bc_start = Instant::now();
             for (cid, client) in &clients_clone {
                 let pp = player_pos_clone.get(cid).copied();
                 if let Some(msg) = build_filtered_message(
@@ -521,6 +531,9 @@ async fn physics_tick_task(
                 ) {
                     send_try(client, bytes::Bytes::from(msg));
                 }
+            }
+            if let Some(s) = crate::stats::get() {
+                s.record_physics_broadcast(bc_start.elapsed().as_micros() as u64);
             }
         }
 
