@@ -34,8 +34,9 @@ namespace SomniumSpace.Worlds.bently.networking
     [DefaultExecutionOrder(-100)] // run Awake before NetworkObject captures state
     public class NetworkNPC : MonoBehaviour
     {
-        [Header("Wander (0 = don't wander)")]
-        [Tooltip("Maximum distance from the spawn position to drift to while idle. Set to 0 for a stationary NPC.")]
+        [Tooltip("Enable wandering behaviour. When off the NPC stays put unless chased or grabbed.")]
+        public bool canWander = true;
+        [Tooltip("Maximum distance from the spawn position to drift to while idle.")]
         public float wanderRadius = 8f;
         [Tooltip("Wander movement speed (m/s).")]
         public float wanderSpeed = 2f;
@@ -44,29 +45,26 @@ namespace SomniumSpace.Worlds.bently.networking
         [Tooltip("Longest pause at each wander waypoint (seconds).")]
         public float pauseMax = 2.5f;
 
-        [Header("Chase (0 = don't chase)")]
-        [Tooltip("Become aggro'd when the local player is closer than this (meters). 0 disables chasing entirely.")]
-        public float aggroRadius = 0f;
+        [Tooltip("Enable chasing the local player when they come near.")]
+        public bool canChase = false;
+        [Tooltip("Become aggro'd when the local player is closer than this (meters).")]
+        public float aggroRadius = 10f;
         [Tooltip("Release when the local player gets farther than this. Must be > aggroRadius — the gap is hysteresis so the NPC doesn't flicker at the boundary.")]
         public float deaggroRadius = 14f;
         [Tooltip("Chase speed (m/s). Usually faster than wanderSpeed.")]
         public float chaseSpeed = 4f;
         [Tooltip("Stop this close to the player — prevents the NPC climbing into them.")]
         public float minContactDistance = 0.8f;
+        [Tooltip("If our aggro claim is rejected (another client grabbed first), wait this long before trying again.")]
+        public float reclaimCooldown = 1.5f;
 
-        [Header("Facing")]
         [Tooltip("Rotate to face the direction of motion (wander) or the target (chase).")]
         public bool faceDirection = true;
         [Tooltip("Turn speed in degrees/second. 0 = instant.")]
         public float turnSpeed = 540f;
 
-        [Header("Determinism")]
         [Tooltip("Random seed for the wander path. -1 uses NetworkObject.LocalId so every NPC has a unique path that every client computes identically.")]
         public int seedOverride = -1;
-
-        [Header("Claim Retry")]
-        [Tooltip("If our aggro claim is rejected (another client grabbed first), wait this long before trying again.")]
-        public float reclaimCooldown = 1.5f;
 
         private NetworkObject _netObj;
 
@@ -106,7 +104,7 @@ namespace SomniumSpace.Worlds.bently.networking
             bool claimedByUs    = _netObj.IsClaimedLocally;
 
             // ── Chase (if enabled) ────────────────────────────────────────
-            if (aggroRadius > 0f && mgr.LocalPlayer != null)
+            if (canChase && mgr.LocalPlayer != null)
             {
                 Transform target = mgr.LocalPlayer;
                 Vector3 toTarget = target.position - transform.position;
@@ -161,7 +159,7 @@ namespace SomniumSpace.Worlds.bently.networking
                 _wasClaimed = false;
             }
 
-            if (wanderRadius <= 0f) return; // static sentinel
+            if (!canWander) return;
 
             int seed = seedOverride >= 0 ? seedOverride : _netObj.LocalId;
             double t = mgr.ServerTime - _wanderEpoch;
@@ -256,13 +254,13 @@ namespace SomniumSpace.Worlds.bently.networking
 
         private void OnDrawGizmosSelected()
         {
-            if (wanderRadius > 0f)
+            if (canWander && wanderRadius > 0f)
             {
                 Gizmos.color = new Color(0.3f, 1f, 0.6f, 0.4f);
                 Vector3 o = Application.isPlaying ? _origin : transform.position;
                 Gizmos.DrawWireSphere(o, wanderRadius);
             }
-            if (aggroRadius > 0f)
+            if (canChase && aggroRadius > 0f)
             {
                 Gizmos.color = new Color(1f, 0.4f, 0.4f, 0.8f);
                 Gizmos.DrawWireSphere(transform.position, aggroRadius);
