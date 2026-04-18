@@ -1,60 +1,217 @@
 # NetworkManager
 
-The central networking component. One per scene.
+The root of the networking system. One per scene. Handles the WebSocket connection, deterministic object registration, shared clock, local-player tracking, runtime spawn / despawn.
 
-## Inspector Properties
+Drop a NetworkManager on any scene GameObject; set `Server URL` and `Room ID` in the inspector; everything else happens automatically.
 
-| Property | Type | Default | Description |
-|----------|------|---------|-------------|
-| `serverUrl` | string | `ws://localhost:9090` | WebSocket server URL |
-| `roomId` | string | `""` | Room name; clients in the same room share a physics world. Empty = `default`. |
-| `sendRate` | int | `60` | Held-object position updates per second |
-| `playerPosSendRate` | int | `10` | Local player-position send rate for server-side AOI |
-| `positionThreshold` | float | `0.01` | Min position change (m) to include a held object in an update |
-| `rotationThreshold` | float | `1` | Min rotation change (°) to include a held object in an update |
-| `localPlayer` | Transform | *auto* | Your player transform; left blank auto-detects Somnium rig |
-| `autoAttachPushDetector` | bool | `false` | Attach `PlayerPushDetector` on contact with the resolved local player |
-| `networkedPrefabs` | List<GameObject> | `[]` | Prefabs eligible for runtime spawn via `CTRL_SPAWN` — order = prefab index |
+## Inspector properties
 
-## Key Properties (Code)
+### Connection
+
+| Property | Default | Description |
+|---|---|---|
+| `serverUrl` | `ws://localhost:9090` | Relay endpoint. No trailing room — that's set below. |
+| `roomId` | `""` → `default` | Clients in the same room share a physics world. Use per-dungeon / per-lobby rooms for isolation. |
+| `reconnectDelay` | `3` s | How long to wait before retrying after a disconnect. |
+
+### Sync rates
+
+| Property | Default | Description |
+|---|---|---|
+| `sendRate` | `60` Hz | Held-object position send rate. Only fires for objects this client owns. |
+| `playerPosSendRate` | `10` Hz | `MSG_PLAYER_POS` rate — drives server-side AOI filtering. |
+| `positionThreshold` | `0.01` m | Minimum pose delta before a held-object update is included. |
+| `rotationThreshold` | `1°` | Same for rotation. |
+
+### Local player
+
+| Property | Default | Description |
+|---|---|---|
+| `localPlayer` | *none* | Your local player transform. If empty, auto-detected from Somnium rig (`Original Player: ...`). |
+| `autoAttachPushDetector` | `false` | Add `PlayerPushDetector` to the resolved local player. The server's Rapier capsule handles continuous push physics from normal movement; enable this only if you specifically want one-shot impulses on contact. |
+
+### Runtime spawning
+
+| Property | Default | Description |
+|---|---|---|
+| `networkedPrefabs` | `[]` | Prefabs eligible for runtime spawn via `CTRL_SPAWN`. Order = prefab index. **Must be the same on every client.** |
+
+## Runtime API
+
+### Singleton + state
 
 ```csharp
-// Singleton access
-NetworkManager.Instance
+public static NetworkManager Instance { get; }    // null until Awake
 
-// Connection state
-bool IsConnected
-bool IsNetworkReady    // handshake done, safe to use network features
-bool IsPhysicsReady    // server physics is live (first SCENE_INIT landed)
-ushort ClientId        // assigned by server (1..65535)
-
-// Shared clock — same value across all clients in the room
-double ServerTime             // seconds, NTP-refined via 1 Hz ping/pong + EMA
-ulong  SceneReadyServerMs     // unix ms when physics went live in this room
-
-// Runtime spawn callbacks
-event Action<NetworkObject, int> OnObjectSpawned
-event Action<NetworkObject>      OnObjectDespawned
-
-// Lifecycle events
-event Action OnNetworkReady
-event Action OnDisconnected
+public bool    IsConnected      { get; }
+public bool    IsNetworkReady   { get; }          // welcome received, safe to send
+public bool    IsPhysicsReady   { get; }          // server Rapier world is live
+public ushort  ClientId         { get; }          // assigned by server (1..65535)
+public Transform LocalPlayer    { get; }          // resolved local player, if any
 ```
 
-## How It Works
+### Shared clock
 
-1. On `Start()`, NetworkManager connects to the WebSocket at `serverUrl/roomId`.
-2. It collects every `NetworkObject` in the scene and sorts them deterministically — every client gets the same local IDs.
-3. The server replies with `CTRL_WELCOME` containing the client ID, server unix time, and the room's shared `scene_ready_ms`.
-4. **If we're the first client in an empty room**, the welcome has `needs_scene_init = 1`; NetworkManager replies with `MSG_SCENE_INIT` describing every `NetworkObject`'s physics properties. The server builds its Rapier world from that and broadcasts `CTRL_PHYSICS_READY`.
-5. From there the server is authoritative. We send: player position (10 Hz AOI), held-object updates (60 Hz while grabbing), events / variables / animator state, time-sync pings.
-6. We receive: `MSG_POSITION_VELOCITY` (20 Hz authoritative positions), claim / release broadcasts, spawns / despawns, event relays.
+```csharp
+public double  ServerTime           { get; }   // seconds, NTP-refined, shared across room
+public ulong   SceneReadyServerMs   { get; }   // unix ms when physics went live
+```
 
-No master/spectator distinction — the server is always the authority. Clients come and go without handoffs.
+`ServerTime` converges within a few ms across all clients in the room. Use it for any deterministic timing you need to agree on (NPC wander, synced animations, countdowns).
 
-## Auto-behaviours
+`SceneReadyServerMs` is the shared "scene epoch" — broadcast in `CTRL_WELCOME` and `CTRL_PHYSICS_READY`. Scene-baked `NetworkObject`s derive their `SpawnServerMs` from it.
 
-- **Local player resolution** — priority is `localPlayer` field → `SetLocalPlayer()` call (e.g. from `SomniumBridgeIntegration`) → auto-detection of Somnium rigs (`Original Player:` root with `NonXR.Body` / `XR.Body` character controllers).
-- **Optional PlayerPushDetector** — auto-attaches when `autoAttachPushDetector` is true. Off by default; the server's Rapier player capsule already handles continuous push physics from normal movement.
-- **NTP-style clock sync** — pings every 1 s, blends each sample into the offset via EMA (α = 0.35). Handles server-side clock drift / NTP adjustments without ever locking onto a stale sample.
-- **Reconnect** — on disconnect, in-flight claims are released, scene-ready state is cleared, and the connection loop retries every `reconnectDelay` seconds.
+### Events
+
+```csharp
+public event Action                          OnNetworkReady;
+public event Action                          OnDisconnected;
+public event Action<NetworkObject, int>      OnObjectSpawned;   // obj, prefabIdx
+public event Action<NetworkObject>           OnObjectDespawned;
+```
+
+### Methods
+
+```csharp
+// Override the local player transform. Called automatically by
+// SomniumBridgeIntegration; call manually if you have a custom rig.
+void SetLocalPlayer(Transform t);
+
+// Ship raw bytes over the websocket. Low-level escape hatch — you
+// almost never need this.
+void SendBinaryPublic(byte[] data);
+```
+
+## Common patterns
+
+### Minimum scene setup
+
+```
+Scene
+├── "Networking"              (empty GameObject)
+│   ├── NetworkManager        (serverUrl, roomId)
+│   └── SomniumBridgeIntegration
+├── "Floor"                   (static)
+├── "Cube"
+│   ├── Rigidbody
+│   └── NetworkObject
+└── "Player"                  (your rig)
+```
+
+That's a complete networked scene. Cube syncs automatically.
+
+### Wait for the network, then do something
+
+```csharp
+public class SpawnOnReady : MonoBehaviour
+{
+    public GameObject prefab;
+
+    void Start()
+    {
+        var net = NetworkManager.Instance;
+        if (net == null) return;
+
+        if (net.IsNetworkReady) OnReady();
+        else                    net.OnNetworkReady += OnReady;
+    }
+
+    void OnReady()
+    {
+        Debug.Log($"I'm client {NetworkManager.Instance.ClientId}");
+        // safe to send variables / events / etc.
+    }
+}
+```
+
+### Runtime-spawned prefabs
+
+Runtime spawns require the prefab to be listed on every client's NetworkManager. Order defines the `prefabIdx` the server sends.
+
+```csharp
+// Any client can request a spawn. Server assigns the id and broadcasts.
+void SpawnBarrel(Vector3 where)
+{
+    var net = NetworkManager.Instance;
+    byte prefabIdx = 2;  // whichever slot "barrel" sits in networkedPrefabs
+
+    // The lowest-level way: build a CTRL_SPAWN_REQUEST manually.
+    // (A helper wrapper is on the roadmap — for now this is what it looks like.)
+    // See the NetworkManager.Sender partial for the helper once it lands.
+}
+
+// React to spawns anywhere in your scene
+void OnEnable()
+{
+    NetworkManager.Instance.OnObjectSpawned += HandleSpawned;
+}
+void OnDisable()
+{
+    if (NetworkManager.Instance != null)
+        NetworkManager.Instance.OnObjectSpawned -= HandleSpawned;
+}
+void HandleSpawned(NetworkObject obj, int prefabIdx)
+{
+    if (prefabIdx == 2)
+        obj.GetComponent<NetworkVariables>()?.Set("spawnedBy", "dungeon-event");
+}
+```
+
+### Using the shared clock
+
+```csharp
+// Every client reads the same value at the same wall-clock instant (±few ms).
+double nowSec = NetworkManager.Instance.ServerTime;
+
+// Scene-relative time: how long since physics came up in this room?
+ulong sceneMs = NetworkManager.Instance.SceneReadyServerMs;
+if (sceneMs != 0)
+{
+    double sinceSceneReady = NetworkManager.Instance.ServerTime - sceneMs / 1000.0;
+    // ...drive a deterministic clock hand, door schedule, boss phase timer, etc.
+}
+```
+
+### Reconnect awareness
+
+```csharp
+void OnEnable()
+{
+    NetworkManager.Instance.OnDisconnected += () => UiBanner.Show("Reconnecting…");
+    NetworkManager.Instance.OnNetworkReady += () => UiBanner.Hide();
+}
+```
+
+On disconnect, in-flight claims are released automatically and the connect loop retries every `reconnectDelay` seconds. You just need to re-show UI if you care.
+
+## Extending NetworkManager
+
+`Awake`, `Start`, `OnDestroy`, and `Update` are all `protected virtual`. Subclass if you want a drop-in replacement with extra behaviour:
+
+```csharp
+public class MyNetworkManager : NetworkManager
+{
+    protected override void Start()
+    {
+        base.Start();
+        SomniumBridge.PlayersContainer.LocalPlayerJoined += _ =>
+            Debug.Log("Local player joined — Somnium bridge resolved");
+    }
+}
+```
+
+Since it's a `partial` class split across Receiver / Sender, your subclass stays in its own file and doesn't conflict with the partials.
+
+## Don't
+
+- **Don't** put two NetworkManagers in a scene. The singleton kicks the second one out but now nothing is set up right.
+- **Don't** assume `Instance` is non-null in your own `Awake` — execution order isn't guaranteed. Either use the `OnNetworkReady` event or check `Instance != null`.
+- **Don't** call `SendBinaryPublic` with hand-built messages unless you know the protocol spec. There are per-component senders for the common cases.
+- **Don't** change `networkedPrefabs` order after building. Prefab indices are implicit — shuffling them breaks every client's view of existing spawns.
+
+## Related
+
+- [**NetworkObject**](./network-object) — what you attach to the things NetworkManager registers
+- [**SomniumBridgeIntegration**](./) — auto-hooks the Somnium rig + account UUID into NetworkManager
+- [**NetworkPersistence**](./network-persistence) — per-player save/load that piggybacks on NetworkManager's connection
+- [Protocol overview](../protocol/overview) — what's actually going over the wire

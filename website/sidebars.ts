@@ -9,6 +9,7 @@ const sidebars: SidebarsConfig = {
       items: [
         'getting-started/setup',
         'getting-started/which-components',
+        'getting-started/extending-components',
       ],
     },
     {

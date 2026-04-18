@@ -1,75 +1,212 @@
 # NetworkObject
 
-Add to any GameObject you want synced across clients. Handles position/rotation sync, ownership, and interaction.
+Required on every GameObject you want synced across the network. Handles position / rotation / scale sync, ownership (claim/release), and player interaction.
 
-## Inspector Properties
+**One rule:** if a client *holds* an object, their `NetworkObject` is the authority for its pose. Otherwise the server is. Held-object updates go out at your `NetworkManager.sendRate` (default 60 Hz); server broadcasts come back at 20 Hz.
+
+```
+GameObject "Sword"
+├── Rigidbody              (any config — kinematic gets auto-set at Awake so local physics doesn't drift)
+├── Collider               (for interaction + server physics)
+├── NetworkObject          ← required
+└── <optional components>  NetworkVariables, NetworkAnimator, ...
+```
+
+## Inspector properties
 
 | Property | Type | Default | Description |
-|----------|------|---------|-------------|
-| `entityType` | string | `""` | Type identifier used for deterministic sorting (e.g. `"cube"`, `"ball"`, `"door"`) |
-| `pushable` | bool | `true` | Allow players to push/move this object by walking into it |
-| `grabbable` | bool | `true` | Allow players to grab this object (for custom grab systems) |
-| `smoothing` | SmoothingMode | `Medium` | Interpolation smoothing for spectators |
+|---|---|---|---|
+| `entityType` | string | `"object"` | Category tag used for deterministic sorting across clients. Pick something stable like `"cube"`, `"sword"`, `"door"`. |
+| `syncScale` | bool | `false` | Sync `transform.localScale` in addition to pos/rot. Adds 6 B per update. Off unless you need it. |
+| `pushable` | bool | `true` | Players walking into this object can push it (via `PlayerPushDetector`). |
+| `grabbable` | bool | `true` | Players can grab this object for custom grab systems. |
+| `smoothing` | enum | `Medium` | Interpolation aggressiveness. See table below. |
 
-### Smoothing Modes
+### Smoothing modes
 
-| Mode | Duration | Use Case |
-|------|----------|----------|
-| `None` | 0ms | Snap to position (teleporting objects) |
-| `Low` | 33ms | Fast-moving objects (projectiles) |
-| `Medium` | 50ms | General purpose (default) |
-| `High` | 100ms | Slow-moving objects (doors, platforms) |
+| Mode | Behaviour | Use for |
+|---|---|---|
+| `None` | Snap to the latest server position. | Teleporters, cutscene anchors. |
+| `Low` | ~33 ms lerp. | Fast projectiles, bullets. |
+| `Medium` | ~50 ms lerp. *(default)* | Most props. |
+| `High` | ~100 ms lerp. | Slow heavy things — doors, platforms, boulders. |
 
-## Key Properties (Code)
+## Runtime API
 
-```csharp
-ushort LocalId           // Deterministic ID (assigned by sorting)
-bool IsClaimedLocally    // This client owns this object
-bool IsClaimedByRemote   // Another client owns this object
-ushort ClaimedByClient   // Client ID of current owner (0 = master authority)
-```
-
-## Public Methods
+### Claim state
 
 ```csharp
-// Manually claim/release (for custom interaction systems)
-void Grab()      // Claim ownership, enable local physics
-void Release()   // Release ownership, return to master authority
-
-// Called by PlayerPushDetector (automatic)
-void OnPlayerPush()   // Auto-claim on player collision
+public bool    IsClaimedLocally  { get; }         // This client drives the object
+public bool    IsClaimedByRemote { get; }         // Some other client drives it
+public ushort  ClaimedByClient   { get; }         // 0 = server, else the cid
+public bool    HasAuthority();                     // True if we can write sibling state
+                                                  //   (NetworkVariables, NetworkAnimator, ...)
 ```
 
-## How Interaction Works
+`HasAuthority()` is the gate you check before writing to `NetworkVariables` / `NetworkAnimator` / `NetworkTimer` on this object. Rule: authority if we hold it OR nobody does. Grabbed items are written by the grabber; free-floating objects accept writes from anyone.
 
-1. Player walks into object → `PlayerPushDetector` calls `OnPlayerPush()`
-2. Object is **claimed** — physics enabled locally, position updates sent
-3. If this object hits another NetworkObject → **chain claim** (domino effect)
-4. Once object velocity ≈ 0 → **auto-released** back to master authority
-5. 0.5s cooldown prevents claim/release loops
+### Last release pose
 
-## Deterministic Sorting
+Populated when the server broadcasts `CTRL_RELEASE` for this object (i.e. the previous holder let go). Deterministic subsystems like `NetworkNPC` use it to re-anchor.
 
-All clients sort NetworkObjects by:
-1. `entityType` (alphabetical)
-2. `gameObject.name` (alphabetical)
-3. Position: x → y → z
+```csharp
+public Vector3     LastReleasePos      { get; }
+public Quaternion  LastReleaseRot      { get; }
+public ulong       LastReleaseServerMs { get; }
+```
 
-This produces identical `LocalId` assignments on every client without any network handshake.
+### Spawn timestamp
 
-## Interaction Control
+Server-authoritative birth time of this object. For scene-baked objects this is `NetworkManager.SceneReadyServerMs`; for runtime spawns it's set from the `CTRL_SPAWN` message.
 
-Use `pushable` and `grabbable` to control per-object interaction:
+```csharp
+public ulong SpawnServerMs { get; }   // 0 = not ready yet (defer work this tick)
+```
 
-| Object Type | Pushable | Grabbable | Example |
-|------------|----------|-----------|---------|
-| Throwable prop | ✅ | ✅ | Ball, bottle, crate |
-| Physics decoration | ❌ | ❌ | Chandelier, hanging rope |
-| Grabbable-only item | ❌ | ✅ | Weapon, key, tool |
-| Push-only obstacle | ✅ | ❌ | Heavy box, boulder |
+### Identity
 
-## Tips
+```csharp
+public ushort LocalId;   // Deterministic ID assigned by NetworkManager at scene ready
+```
 
-- Set unique `entityType` values for different object categories
-- Objects with the same type and name are sorted by position — make sure they're in the same positions on all clients
-- Use `Grab()` / `Release()` for custom interactions (e.g. picking up items with a button press)
+### Public methods
+
+```csharp
+// Request ownership. Optimistic — call sites like PlayerPushDetector
+// call this on contact and assume success; if rejected, OnClaimRejected
+// unwinds cleanly.
+void Grab(bool enableLocalPhysics = true);
+
+// Release ownership. Server will broadcast an authoritative release pose
+// + timestamp that every client re-anchors to.
+void Release();
+
+// Called automatically by PlayerPushDetector on CharacterController contact.
+// No need to call manually — listed here for completeness.
+void OnPlayerPush();
+```
+
+## Common patterns
+
+### Sync any GameObject
+
+Drop `NetworkObject` on it. Done.
+
+```
+GameObject "Crate"
+├── Rigidbody
+├── BoxCollider
+└── NetworkObject  (entityType: "crate")
+```
+
+### Grab & throw
+
+```csharp
+// Typical VR interaction: on trigger-press, attach to hand
+public class HandGrab : MonoBehaviour
+{
+    public Transform hand;
+    NetworkObject _held;
+
+    void Update()
+    {
+        if (Input.GetButtonDown("Grab") && TryFindNearby(out _held))
+            _held.Grab(enableLocalPhysics: false);  // we're driving pose
+
+        if (Input.GetButtonUp("Grab") && _held != null)
+        {
+            _held.Release();
+            _held = null;
+        }
+
+        if (_held != null && _held.IsClaimedLocally)
+            _held.transform.position = hand.position;  // overwritten every frame
+    }
+
+    bool TryFindNearby(out NetworkObject hit) { /* raycast / overlap */ }
+}
+```
+
+The held-object update path (`MSG_INTERACTION_UPDATE`) is automatic — NetworkManager ships your transform pose at `sendRate` Hz while a NetworkObject you own is moving.
+
+### Claim before writing sibling state
+
+```csharp
+// On some trigger — change a networked variable
+var vars = obj.GetComponent<NetworkVariables>();
+if (obj.HasAuthority())
+    vars.Set("health", newHealth);     // broadcast to all clients
+// else: silently ignore, or grab first
+```
+
+### React to remote events
+
+```csharp
+// Subscribe to sibling NetworkEvents
+var events = obj.GetComponent<NetworkEvents>();
+events.OnEvent("opened", args => {
+    // some other client opened this door
+    doorAnim.Play("open");
+});
+```
+
+### Wait for a valid spawn timestamp
+
+For code that depends on `SpawnServerMs` (e.g. deterministic motion anchored to scene start):
+
+```csharp
+void Update()
+{
+    var obj = GetComponent<NetworkObject>();
+    ulong spawnMs = obj.SpawnServerMs;
+    if (spawnMs == 0) return;   // welcome / physics-ready not in yet — try next tick
+
+    double spawnSec = spawnMs / 1000.0;
+    double t = NetworkManager.Instance.ServerTime - spawnSec;
+    // ...use t as seconds-since-birth, synced across all clients
+}
+```
+
+## Extending NetworkObject
+
+The class is a `partial` split across three files — `NetworkObject.cs` (core), `NetworkObject.Interaction.cs` (claim/release/push), `NetworkObject.Interpolation.cs` (pose application). `Awake` is `protected virtual`, so subclasses layer on top cleanly:
+
+```csharp
+public class BombObject : NetworkObject
+{
+    public float fuseSeconds = 3f;
+    float _armedAt = -1;
+
+    protected override void Awake()
+    {
+        base.Awake();               // keep NetworkObject's Rigidbody capture etc.
+        // your initialisation here
+    }
+
+    void Update()
+    {
+        // Only the holder drives the bomb.
+        if (!IsClaimedLocally) return;
+        if (_armedAt < 0) _armedAt = Time.time;
+        if (Time.time - _armedAt > fuseSeconds)
+            GetComponent<NetworkEvents>().Send("boom");
+    }
+}
+```
+
+For customising smoothing itself (`ApplyUpdate` / interpolation), the interpolation logic lives in the partial — reach for it if you need a different curve (spring, critically-damped, fixed-duration-regardless-of-rate).
+
+## Don't
+
+- **Don't** set a unique `entityType` per instance ("cube_001", "cube_002"). The sort has to match on every client, so use a *category* tag — instance distinction comes from position / name.
+- **Don't** call `Grab()` on a cooldown loop. The server rate-limits and legitimate claim attempts can end up rejected. Use it in response to actual input.
+- **Don't** manually set `transform.position` on an object you don't hold. The next server broadcast will snap it back.
+- **Don't** assume `SpawnServerMs` is non-zero on the first `Awake`. It populates from `CTRL_WELCOME` / `CTRL_PHYSICS_READY`, which may arrive frames later. Guard.
+
+## Related
+
+- [**NetworkManager**](./network-manager) — connection, registration, shared clock
+- [**NetworkNPC**](./network-npc) — one-component AI using NetworkObject for its body
+- [**NetworkVariables**](./network-variables) — per-object custom state sync
+- [**NetworkEvents**](./network-events) — per-object RPCs
+- [**PlayerPushDetector**](./player-push-detector) — the auto-attached component that invokes `Grab()` on walking contact
