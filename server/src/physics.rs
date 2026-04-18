@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use half::f16;
 use log::warn;
@@ -42,12 +43,26 @@ pub struct PhysicsWorld {
     pub object_to_body: HashMap<u16, RigidBodyHandle>,
     /// Maps Rapier RigidBodyHandle → network object ID
     pub body_to_object: HashMap<RigidBodyHandle, u16>,
-    /// Claimed (kinematic) objects and their last known linear velocity
-    pub claimed: HashMap<u16, [f32; 3]>,
+    /// Currently-claimed (kinematic) objects and their owning client. Tracks
+    /// the last position + timestamp + derived velocity per body; velocity is
+    /// recomputed from position deltas so throws transfer real momentum even
+    /// though the held-object wire format has no velocity field.
+    pub claimed: HashMap<u16, ClaimedTrack>,
     /// Per-body "was awake last snapshot" — used to detect sleep transitions.
     /// On awake→sleeping, the final position is sent to every client regardless
     /// of AOI so they know where the body actually came to rest.
     awake_prev: HashMap<u16, bool>,
+    /// Kinematic capsule per player so Rapier sees player-object collisions
+    /// directly (pushing spheres naturally as you walk into them). Keyed by
+    /// client_id. Dimensions are whatever the client reports with its player
+    /// position update, so every player's body shape matches their actual rig.
+    player_bodies: HashMap<u16, PlayerBody>,
+}
+
+struct PlayerBody {
+    handle: RigidBodyHandle,
+    radius: f32,
+    half_height: f32,
 }
 
 impl PhysicsWorld {
@@ -71,7 +86,87 @@ impl PhysicsWorld {
             body_to_object: HashMap::new(),
             claimed: HashMap::new(),
             awake_prev: HashMap::new(),
+            player_bodies: HashMap::new(),
         }
+    }
+
+    /// Update (or create) the kinematic capsule that represents a player in
+    /// the physics world. Called every time the client reports a new position.
+    /// Capsule dims are tolerated changing — if the client re-sends different
+    /// radius/half_height (e.g. crouch), the collider is rebuilt.
+    pub fn update_player_body(
+        &mut self,
+        client_id: u16,
+        pos: [f32; 3],
+        radius: f32,
+        half_height: f32,
+    ) {
+        let r = radius.max(0.05);
+        let hh = half_height.max(0.01);
+
+        if let Some(pb) = self.player_bodies.get(&client_id) {
+            // Shape unchanged — just move the body.
+            if (pb.radius - r).abs() < 1e-3 && (pb.half_height - hh).abs() < 1e-3 {
+                if let Some(rb) = self.rigid_bodies.get_mut(pb.handle) {
+                    rb.set_next_kinematic_translation(vector![pos[0], pos[1], pos[2]]);
+                }
+                return;
+            }
+            // Shape changed — drop and recreate below.
+            let handle = pb.handle;
+            self.remove_body_handle(handle);
+            self.player_bodies.remove(&client_id);
+        }
+
+        let rb = RigidBodyBuilder::kinematic_position_based()
+            .translation(vector![pos[0], pos[1], pos[2]])
+            .build();
+        let handle = self.rigid_bodies.insert(rb);
+
+        let collider = ColliderBuilder::capsule_y(hh, r)
+            .friction(0.3)
+            .restitution(0.0)
+            .build();
+        self.colliders
+            .insert_with_parent(collider, handle, &mut self.rigid_bodies);
+
+        self.player_bodies.insert(
+            client_id,
+            PlayerBody {
+                handle,
+                radius: r,
+                half_height: hh,
+            },
+        );
+    }
+
+    /// Remove a player's capsule from the physics world (on disconnect).
+    pub fn remove_player_body(&mut self, client_id: u16) {
+        if let Some(pb) = self.player_bodies.remove(&client_id) {
+            self.remove_body_handle(pb.handle);
+        }
+    }
+
+    /// Remove a runtime-spawned object from the physics world. Used by the
+    /// despawn path. Leaves the id reserved in the ID counter (no reuse).
+    pub fn remove_object(&mut self, obj_id: u16) {
+        if let Some(handle) = self.object_to_body.remove(&obj_id) {
+            self.body_to_object.remove(&handle);
+            self.claimed.remove(&obj_id);
+            self.awake_prev.remove(&obj_id);
+            self.remove_body_handle(handle);
+        }
+    }
+
+    fn remove_body_handle(&mut self, handle: RigidBodyHandle) {
+        self.rigid_bodies.remove(
+            handle,
+            &mut self.island_manager,
+            &mut self.colliders,
+            &mut self.impulse_joints,
+            &mut self.multibody_joints,
+            true, // wake up neighbors so nearby spheres respond to the removal
+        );
     }
 
     /// Add one physics body described by `desc`.
@@ -189,15 +284,60 @@ impl PhysicsWorld {
         );
     }
 
-    /// Make the body for `obj_id` kinematic (a player has grabbed it).
-    /// Stores it in `claimed` with zero initial velocity.
-    pub fn claim(&mut self, obj_id: u16) {
-        if let Some(&handle) = self.object_to_body.get(&obj_id) {
+    /// Make the body for `obj_id` kinematic (a player has grabbed it). Stores
+    /// the current position so the first `update_claimed` can derive a sensible
+    /// velocity delta.
+    pub fn claim(&mut self, obj_id: u16, owner: u16) {
+        let pos = if let Some(&handle) = self.object_to_body.get(&obj_id) {
             if let Some(rb) = self.rigid_bodies.get_mut(handle) {
                 rb.set_body_type(RigidBodyType::KinematicPositionBased, true);
-                self.claimed.insert(obj_id, [0.0, 0.0, 0.0]);
+                let t = rb.translation();
+                [t.x, t.y, t.z]
+            } else {
+                [0.0, 0.0, 0.0]
+            }
+        } else {
+            [0.0, 0.0, 0.0]
+        };
+
+        self.claimed.insert(
+            obj_id,
+            ClaimedTrack {
+                owner,
+                last_pos: pos,
+                last_update: Instant::now(),
+                velocity: [0.0, 0.0, 0.0],
+            },
+        );
+    }
+
+    /// Release a claim explicitly (no caller-chosen velocity) — used for stale
+    /// claim cleanup. Applies the last derived velocity so the object coasts
+    /// on exactly like a normal release.
+    pub fn release_stale(&mut self, obj_id: u16) -> Option<u16> {
+        let track = self.claimed.remove(&obj_id)?;
+        if let Some(&handle) = self.object_to_body.get(&obj_id) {
+            if let Some(rb) = self.rigid_bodies.get_mut(handle) {
+                rb.set_body_type(RigidBodyType::Dynamic, true);
+                rb.set_linvel(
+                    vector![track.velocity[0], track.velocity[1], track.velocity[2]],
+                    true,
+                );
             }
         }
+        Some(track.owner)
+    }
+
+    /// Walk `claimed` and return (obj_id, owner) for any entry whose last
+    /// update was more than `timeout` ago. Handler uses this to clean up
+    /// stuck claims from stalled clients.
+    pub fn stale_claims(&self, timeout: Duration) -> Vec<(u16, u16)> {
+        let now = Instant::now();
+        self.claimed
+            .iter()
+            .filter(|(_, t)| now.duration_since(t.last_update) > timeout)
+            .map(|(&id, t)| (id, t.owner))
+            .collect()
     }
 
     /// Apply a push impulse to a dynamic body — used when a player walks into
@@ -224,26 +364,32 @@ impl PhysicsWorld {
         }
     }
 
-    /// Restore a claimed body to dynamic, applying the last known velocity.
+    /// Restore a claimed body to dynamic, applying the velocity derived from
+    /// the client's last few position updates. Throws properly transfer
+    /// momentum even though the wire format carries no velocity field.
     pub fn release(&mut self, obj_id: u16) {
-        let last_vel = self.claimed.remove(&obj_id).unwrap_or([0.0, 0.0, 0.0]);
+        let velocity = self
+            .claimed
+            .remove(&obj_id)
+            .map(|t| t.velocity)
+            .unwrap_or([0.0, 0.0, 0.0]);
 
         if let Some(&handle) = self.object_to_body.get(&obj_id) {
             if let Some(rb) = self.rigid_bodies.get_mut(handle) {
                 rb.set_body_type(RigidBodyType::Dynamic, true);
-                rb.set_linvel(vector![last_vel[0], last_vel[1], last_vel[2]], true);
+                rb.set_linvel(vector![velocity[0], velocity[1], velocity[2]], true);
             }
         }
     }
 
-    /// Update the kinematic body position and cache its velocity for the next `release`.
+    /// Update the kinematic body position. Derives velocity from the position
+    /// delta over real time so `release` can transfer the motion as momentum.
     #[allow(clippy::too_many_arguments)]
     pub fn update_claimed(
         &mut self,
         obj_id: u16,
         px: f32, py: f32, pz: f32,
         qx: f32, qy: f32, qz: f32, qw: f32,
-        vx: f32, vy: f32, vz: f32,
     ) {
         if let Some(&handle) = self.object_to_body.get(&obj_id) {
             if let Some(rb) = self.rigid_bodies.get_mut(handle) {
@@ -253,8 +399,27 @@ impl PhysicsWorld {
                 rb.set_next_kinematic_rotation(rot);
             }
         }
-        if self.claimed.contains_key(&obj_id) {
-            self.claimed.insert(obj_id, [vx, vy, vz]);
+
+        // Smooth velocity with exponential averaging so a single jittery
+        // packet doesn't set a wildly wrong release velocity.
+        if let Some(track) = self.claimed.get_mut(&obj_id) {
+            let now = Instant::now();
+            let dt = now.duration_since(track.last_update).as_secs_f32();
+            if dt > 1e-4 && dt < 0.5 {
+                let instant = [
+                    (px - track.last_pos[0]) / dt,
+                    (py - track.last_pos[1]) / dt,
+                    (pz - track.last_pos[2]) / dt,
+                ];
+                const SMOOTHING: f32 = 0.5; // 50/50 blend with previous sample
+                track.velocity = [
+                    track.velocity[0] * (1.0 - SMOOTHING) + instant[0] * SMOOTHING,
+                    track.velocity[1] * (1.0 - SMOOTHING) + instant[1] * SMOOTHING,
+                    track.velocity[2] * (1.0 - SMOOTHING) + instant[2] * SMOOTHING,
+                ];
+            }
+            track.last_pos = [px, py, pz];
+            track.last_update = now;
         }
     }
 
@@ -333,6 +498,15 @@ pub struct DynamicSnapshot {
     pub pos: [f32; 3],
     pub quat: [f32; 4],
     pub vel: [f32; 3],
+}
+
+/// State tracked per claimed (kinematic) body so `release` can transfer real
+/// momentum and the claim-timeout system can detect stalled owners.
+pub struct ClaimedTrack {
+    pub owner: u16,
+    pub last_pos: [f32; 3],
+    pub last_update: Instant,
+    pub velocity: [f32; 3],
 }
 
 // ─── AOI + LOD tuning ─────────────────────────────────────────────────────────

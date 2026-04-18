@@ -9,10 +9,10 @@ use crate::client::{broadcast_except, new_client, send, send_try, Client, Client
 use crate::persistence::PersistenceDb;
 use crate::physics::{build_filtered_message, parse_scene_init, PhysicsWorld};
 use crate::protocol::{
-    ctrl_msg, CTRL_CLAIM, CTRL_CLAIM_REJECTED, CTRL_ERROR, CTRL_PERSIST_DATA, CTRL_PERSIST_GET,
-    CTRL_PERSIST_SET, CTRL_PHYSICS_READY, CTRL_PLAYER_IDENT, CTRL_RELEASE, CTRL_WELCOME,
-    MSG_ANIMATOR, MSG_EVENT, MSG_INTERACTION_UPDATE, MSG_PLAYER_POS, MSG_PUSH_IMPULSE,
-    MSG_SCALED_INTERACTION, MSG_SCENE_INIT, MSG_VARIABLE_UPDATE,
+    ctrl_msg, CTRL_CLAIM, CTRL_CLAIM_REJECTED, CTRL_DESPAWN, CTRL_ERROR, CTRL_PERSIST_DATA,
+    CTRL_PERSIST_GET, CTRL_PERSIST_SET, CTRL_PHYSICS_READY, CTRL_PLAYER_IDENT, CTRL_RELEASE,
+    CTRL_SPAWN, CTRL_SPAWN_REQUEST, CTRL_WELCOME, MSG_ANIMATOR, MSG_EVENT, MSG_INTERACTION_UPDATE,
+    MSG_PLAYER_POS, MSG_PUSH_IMPULSE, MSG_SCALED_INTERACTION, MSG_SCENE_INIT, MSG_VARIABLE_UPDATE,
 };
 use crate::room::Room;
 use crate::room::RoomMap;
@@ -172,15 +172,29 @@ async fn handle_binary(
         }
 
         MSG_PLAYER_POS => {
-            // [0x0C][f32 x][f32 y][f32 z] = 13 bytes
-            if data.len() < 13 {
+            // [0x0C][f32 x][f32 y][f32 z][f32 radius][f32 half_height] = 21 bytes
+            if data.len() < 21 {
                 return;
             }
             let x = read_f32(data, 1);
             let y = read_f32(data, 5);
             let z = read_f32(data, 9);
-            let mut r = room.write().await;
-            r.player_positions.insert(client_id, [x, y, z]);
+            let radius = read_f32(data, 13);
+            let half_height = read_f32(data, 17);
+
+            // Update AOI position map.
+            {
+                let mut r = room.write().await;
+                r.player_positions.insert(client_id, [x, y, z]);
+            }
+
+            // Update (or create) the player's kinematic capsule so Rapier
+            // collisions treat players as solid bodies in the world.
+            let pw_opt = room.read().await.physics_world.clone();
+            if let Some(pw_arc) = pw_opt {
+                let mut pw = pw_arc.lock().await;
+                pw.update_player_body(client_id, [x, y, z], radius, half_height);
+            }
         }
 
         MSG_PUSH_IMPULSE => {
@@ -282,9 +296,7 @@ async fn handle_held_object_update(room: &Arc<RwLock<Room>>, client_id: u16, dat
             let qy = read_i16(data, offset + 16) as f32 / 32767.0;
             let qz = read_i16(data, offset + 18) as f32 / 32767.0;
             let qw = read_i16(data, offset + 20) as f32 / 32767.0;
-            // Velocity isn't on this wire format; pass zero (server uses cached
-            // velocity on release for momentum transfer).
-            pw.update_claimed(obj_id, px, py, pz, qx, qy, qz, qw, 0.0, 0.0, 0.0);
+            pw.update_claimed(obj_id, px, py, pz, qx, qy, qz, qw);
         }
 
         relay.extend_from_slice(&data[offset..offset + bytes_per_entity]);
@@ -337,10 +349,13 @@ async fn handle_scene_init(room: &Arc<RwLock<Room>>, room_id: &str, data: &[u8])
     let pw_arc = Arc::new(tokio::sync::Mutex::new(world));
 
     // Mark physics ready and broadcast to every connected client.
+    let initial_object_count = objects.len() as u16;
     {
         let mut r = room.write().await;
         r.physics_ready = true;
         r.physics_world = Some(pw_arc.clone());
+        // Runtime spawns get IDs starting right after the baked-in scene objects.
+        r.next_runtime_id = initial_object_count;
         let ready_msg = vec![0xFF_u8, CTRL_PHYSICS_READY];
         crate::client::broadcast_all(&r.clients, &ready_msg);
     }
@@ -365,10 +380,17 @@ async fn physics_tick_task(
     const PHYSICS_INTERVAL: Duration = Duration::from_millis(1000 / PHYSICS_HZ);
     const BROADCAST_INTERVAL: Duration = Duration::from_millis(1000 / BROADCAST_HZ);
     const ROOM_CHECK_INTERVAL: Duration = Duration::from_secs(2);
+    /// If a claimed body hasn't received an update in this long, assume the
+    /// grabbing client's socket stalled and auto-release so other clients can
+    /// interact again. TCP idle-kick is 60s but that's way too long to leave
+    /// grabbed objects frozen in-world.
+    const STALE_CLAIM_TIMEOUT: Duration = Duration::from_secs(5);
+    const STALE_CLAIM_CHECK_INTERVAL: Duration = Duration::from_secs(2);
 
     let mut last_physics = Instant::now();
     let mut last_broadcast = Instant::now();
     let mut last_room_check = Instant::now();
+    let mut last_claim_check = Instant::now();
     let mut server_sequence: u16 = 0;
     let mut tick: u32 = 0;
 
@@ -379,8 +401,12 @@ async fn physics_tick_task(
         let next_physics = last_physics + PHYSICS_INTERVAL;
         let next_broadcast = last_broadcast + BROADCAST_INTERVAL;
         let next_check = last_room_check + ROOM_CHECK_INTERVAL;
+        let next_claim_check = last_claim_check + STALE_CLAIM_CHECK_INTERVAL;
 
-        let wake_at = next_physics.min(next_broadcast).min(next_check);
+        let wake_at = next_physics
+            .min(next_broadcast)
+            .min(next_check)
+            .min(next_claim_check);
         if wake_at > now {
             tokio::time::sleep_until(wake_at).await;
         }
@@ -467,6 +493,45 @@ async fn physics_tick_task(
                 return;
             }
         }
+
+        // ── Stale claim cleanup ───────────────────────────────────────────
+        // If a client grabs something and their send loop stalls (TCP keeps
+        // the socket nominally alive but no packets flow), the object stays
+        // frozen kinematic and unclaimable by anyone else until the 60s idle
+        // disconnect fires. Sweep periodically so grabs self-release sooner.
+        if now >= next_claim_check {
+            last_claim_check = now;
+            let stale = {
+                let pw = pw_arc.lock().await;
+                pw.stale_claims(STALE_CLAIM_TIMEOUT)
+            };
+            if !stale.is_empty() {
+                let room_arc = match room_weak.upgrade() {
+                    Some(r) => r,
+                    None => return,
+                };
+                {
+                    let mut pw = pw_arc.lock().await;
+                    for (obj_id, _) in &stale {
+                        pw.release_stale(*obj_id);
+                    }
+                }
+                let mut r = room_arc.write().await;
+                for (obj_id, owner) in &stale {
+                    if r.claimed_objects.get(obj_id) == Some(owner) {
+                        r.claimed_objects.remove(obj_id);
+                        let mut msg = vec![0xFF, CTRL_RELEASE];
+                        msg.extend_from_slice(&obj_id.to_le_bytes());
+                        msg.extend_from_slice(&owner.to_le_bytes());
+                        crate::client::broadcast_all(&r.clients, &msg);
+                        info!(
+                            "[Room:{}] stale claim on obj_{} (owner client_{}) auto-released",
+                            room_id, obj_id, owner
+                        );
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -495,6 +560,16 @@ async fn handle_control(
     }
     if ctrl == CTRL_PERSIST_GET {
         handle_persist_get(room, client, client_id, data, room_id, db).await;
+        return;
+    }
+
+    // Runtime spawn / despawn
+    if ctrl == CTRL_SPAWN_REQUEST {
+        handle_spawn_request(room, client_id, data, room_id).await;
+        return;
+    }
+    if ctrl == CTRL_DESPAWN {
+        handle_despawn(room, client_id, data, room_id).await;
         return;
     }
 
@@ -542,7 +617,7 @@ async fn handle_control(
 
             if let Some(pw_arc) = physics_world_opt {
                 let mut pw = pw_arc.lock().await;
-                pw.claim(obj_id);
+                pw.claim(obj_id, client_id);
             }
         }
         CTRL_RELEASE => {
@@ -568,6 +643,118 @@ async fn handle_control(
         }
         _ => {}
     }
+}
+
+/// Client asked to spawn an object at runtime. Assign it an id, add it to
+/// Rapier, broadcast the full descriptor (now with id) to every client.
+///
+/// Wire format:
+///   request:   [0xFF][0x0B][u8 prefab_idx][60B scene_object]     = 63 bytes
+///   broadcast: [0xFF][0x0C][u16 id][u8 prefab_idx][60B scene_object] = 65 bytes
+///
+/// The scene_object layout mirrors SCENE_INIT entries — same 60 bytes, same
+/// parser, so bodies spawned at runtime look identical to baked-in ones.
+async fn handle_spawn_request(
+    room: &Arc<RwLock<Room>>,
+    _client_id: u16,
+    data: &[u8],
+    room_id: &str,
+) {
+    const HEADER: usize = 3; // [0xFF][0x0B][u8 prefab_idx]
+    const SCENE_OBJECT_BYTES: usize = 60;
+    if data.len() < HEADER + SCENE_OBJECT_BYTES {
+        return;
+    }
+    let prefab_idx = data[2];
+
+    // Parse scene_object using the SCENE_INIT parser — feed it a matching
+    // framed buffer: [0x10][u16 count=1][60B object].
+    let mut framed = Vec::with_capacity(3 + SCENE_OBJECT_BYTES);
+    framed.push(MSG_SCENE_INIT);
+    framed.extend_from_slice(&1u16.to_le_bytes());
+    framed.extend_from_slice(&data[HEADER..HEADER + SCENE_OBJECT_BYTES]);
+    let mut desc = match parse_scene_init(&framed) {
+        Some(mut list) if !list.is_empty() => list.swap_remove(0),
+        _ => {
+            warn!("[Room:{}] CTRL_SPAWN_REQUEST failed to parse scene object", room_id);
+            return;
+        }
+    };
+
+    // Need physics world + next id.
+    let (pw_opt, assigned_id) = {
+        let mut r = room.write().await;
+        if !r.physics_ready || r.physics_world.is_none() {
+            warn!("[Room:{}] CTRL_SPAWN_REQUEST before physics ready", room_id);
+            return;
+        }
+        let id = r.next_runtime_id;
+        if id == u16::MAX {
+            warn!("[Room:{}] CTRL_SPAWN_REQUEST: ran out of u16 ids", room_id);
+            return;
+        }
+        r.next_runtime_id = id.wrapping_add(1);
+        (r.physics_world.clone(), id)
+    };
+    desc.id = assigned_id;
+
+    if let Some(pw_arc) = pw_opt {
+        let mut pw = pw_arc.lock().await;
+        pw.add_object(&desc);
+    }
+
+    // Broadcast to every client: [0xFF][0x0C][u16 id][u8 prefab_idx][60B scene_object]
+    let mut msg = Vec::with_capacity(2 + 2 + 1 + SCENE_OBJECT_BYTES);
+    msg.push(0xFF);
+    msg.push(CTRL_SPAWN);
+    msg.extend_from_slice(&assigned_id.to_le_bytes());
+    msg.push(prefab_idx);
+    msg.extend_from_slice(&data[HEADER..HEADER + SCENE_OBJECT_BYTES]);
+    // Patch the scene_object's own id field (its first 2 bytes) to match the
+    // server-assigned id — client's parser will read it from there.
+    const SCENE_OBJ_ID_OFFSET: usize = 5; // after [0xFF][0x0C][u16 outer_id][u8 prefab]
+    msg[SCENE_OBJ_ID_OFFSET]     = (assigned_id & 0xFF) as u8;
+    msg[SCENE_OBJ_ID_OFFSET + 1] = (assigned_id >> 8) as u8;
+
+    let r = room.read().await;
+    crate::client::broadcast_all(&r.clients, &msg);
+    info!(
+        "[Room:{}] spawned object id={} prefab={}",
+        room_id, assigned_id, prefab_idx
+    );
+}
+
+/// Either direction: destroy a runtime-spawned object. Either a client asks
+/// to destroy one they own, or the server is tearing one down. Server removes
+/// from Rapier, clears any claim, broadcasts to all clients.
+async fn handle_despawn(
+    room: &Arc<RwLock<Room>>,
+    _client_id: u16,
+    data: &[u8],
+    room_id: &str,
+) {
+    if data.len() < 4 {
+        return;
+    }
+    let obj_id = u16::from_le_bytes([data[2], data[3]]);
+
+    let pw_opt = {
+        let mut r = room.write().await;
+        // Clear any claim on the object being despawned.
+        r.claimed_objects.remove(&obj_id);
+        r.physics_world.clone()
+    };
+
+    if let Some(pw_arc) = pw_opt {
+        let mut pw = pw_arc.lock().await;
+        pw.remove_object(obj_id);
+    }
+
+    let mut msg = vec![0xFF, CTRL_DESPAWN];
+    msg.extend_from_slice(&obj_id.to_le_bytes());
+    let r = room.read().await;
+    crate::client::broadcast_all(&r.clients, &msg);
+    info!("[Room:{}] despawned object id={}", room_id, obj_id);
 }
 
 async fn handle_player_ident(room: &Arc<RwLock<Room>>, client_id: u16, data: &[u8], room_id: &str) {
@@ -779,12 +966,14 @@ async fn handle_disconnect(room: &Arc<RwLock<Room>>, client_id: u16, room_id: &s
     };
 
     if let Some(pw_arc) = pw_opt {
-        if !released_ids.is_empty() {
-            let mut pw = pw_arc.lock().await;
-            for obj_id in &released_ids {
-                pw.release(*obj_id);
-            }
+        let mut pw = pw_arc.lock().await;
+        // Release any objects this client was holding (cache velocity so they
+        // retain momentum on the way to Dynamic).
+        for obj_id in &released_ids {
+            pw.release(*obj_id);
         }
+        // Pull their kinematic capsule out of the world so it stops colliding.
+        pw.remove_player_body(client_id);
     }
 
     // Broadcast release for every object this client was holding so other

@@ -37,6 +37,9 @@ pub const CTRL_CLAIM: u8             = 0x05; // any → server → others: grab 
 pub const CTRL_RELEASE: u8           = 0x06; // any → server → others: release a grab
 pub const CTRL_CLAIM_REJECTED: u8    = 0x07; // server → requester: your claim was refused, [u16 obj_id]
 pub const CTRL_PHYSICS_READY: u8     = 0x08; // server → all: physics sim is live
+pub const CTRL_SPAWN_REQUEST: u8     = 0x0B; // client → server: please spawn [u8 prefab_idx][60B scene_object]
+pub const CTRL_SPAWN: u8             = 0x0C; // server → all: spawned [u16 id][u8 prefab_idx][60B scene_object]
+pub const CTRL_DESPAWN: u8           = 0x0D; // either direction: destroy [u16 id]
 
 // --- Persistence control subtypes ---
 pub const CTRL_PLAYER_IDENT: u8  = 0x20;

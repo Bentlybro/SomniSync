@@ -47,8 +47,21 @@ namespace SomniumSpace.Worlds.bently.networking
         [Header("Local Player")]
         [Tooltip("Your player transform. If set, this is used for server-side AOI and push detection. Leave empty to auto-detect Somnium Space rigs.")]
         public Transform localPlayer;
-        [Tooltip("Auto-attach PlayerPushDetector to whatever local player is detected. Turn off if you don't want push-to-grab on walkthrough.")]
-        public bool autoAttachPushDetector = true;
+        [Tooltip("Auto-attach PlayerPushDetector for one-shot MSG_PUSH_IMPULSE on contact. Off by default — the server's Rapier player capsule already handles continuous push physics from your movement. Only enable if you specifically want an extra instantaneous impulse on first contact.")]
+        public bool autoAttachPushDetector = false;
+
+        [Header("Runtime Spawning")]
+        [Tooltip("Prefabs that can be spawned at runtime. List order = prefab index — MUST match on every client.")]
+        public List<GameObject> networkedPrefabs = new List<GameObject>();
+
+        /// <summary>
+        /// Fires whenever a runtime NetworkObject is spawned (local or remote).
+        /// Callback receives the spawned object and its prefab index.
+        /// </summary>
+        public event Action<NetworkObject, int> OnObjectSpawned;
+
+        /// <summary>Fires whenever a runtime object is despawned.</summary>
+        public event Action<NetworkObject> OnObjectDespawned;
 
         // State
         public bool IsConnected { get; private set; }

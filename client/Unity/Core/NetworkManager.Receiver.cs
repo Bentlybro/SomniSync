@@ -109,6 +109,15 @@ namespace SomniumSpace.Worlds.bently.networking
                     }
                     break;
 
+                case Protocol.CTRL_SPAWN:
+                    HandleSpawn(data, length);
+                    break;
+
+                case Protocol.CTRL_DESPAWN:
+                    if (length >= 4)
+                        HandleDespawn(Protocol.ReadU16(data, 2));
+                    break;
+
                 case Protocol.CTRL_PHYSICS_READY:
                     IsPhysicsReady = true;
                     Debug.Log("[Net] Server physics active");
@@ -246,6 +255,68 @@ namespace SomniumSpace.Worlds.bently.networking
 
             if (GetObject(objId) is { } animObj && animObj.CachedAnimator != null)
                 animObj.CachedAnimator.ApplyRemoteState(data, 3);
+        }
+
+        // =====================================================================
+        // Runtime spawn / despawn (CTRL_SPAWN 0x0C, CTRL_DESPAWN 0x0D)
+        // =====================================================================
+
+        private void HandleSpawn(byte[] data, int length)
+        {
+            // [0xFF][0x0C][u16 id][u8 prefab_idx][60B scene_object]
+            const int headerEnd = 5; // bytes before scene_object
+            if (length < headerEnd + Protocol.BYTES_PER_SCENE_OBJECT) return;
+
+            ushort localId  = Protocol.ReadU16(data, 2);
+            byte prefabIdx  = data[4];
+
+            // scene_object layout:
+            //   [u16 id][u8 body_type][u8 shape_type][f32 px,py,pz][f32 rx,ry,rz]
+            //   [f32 sx,sy,sz][f32 mass][f32 restitution][f32 friction]
+            //   [f32 lin_damp][f32 ang_damp]
+            int off = headerEnd + 4; // skip id (2) + body_type (1) + shape_type (1)
+            float px = Protocol.ReadFloat(data, off); off += 4;
+            float py = Protocol.ReadFloat(data, off); off += 4;
+            float pz = Protocol.ReadFloat(data, off); off += 4;
+            float rx = Protocol.ReadFloat(data, off); off += 4;
+            float ry = Protocol.ReadFloat(data, off); off += 4;
+            float rz = Protocol.ReadFloat(data, off); off += 4;
+
+            if (networkedPrefabs == null || prefabIdx >= networkedPrefabs.Count)
+            {
+                Debug.LogWarning($"[Net] Spawn received for unknown prefab index {prefabIdx} (id={localId})");
+                return;
+            }
+            var prefab = networkedPrefabs[prefabIdx];
+            if (prefab == null) return;
+
+            var go = Instantiate(prefab, new Vector3(px, py, pz), Quaternion.Euler(rx, ry, rz));
+            var netObj = go.GetComponent<NetworkObject>();
+            if (netObj == null)
+            {
+                Debug.LogError($"[Net] Spawned prefab {prefabIdx} has no NetworkObject — destroying");
+                Destroy(go);
+                return;
+            }
+
+            netObj.LocalId = localId;
+
+            // Extend _objects to hold the new id (allows gaps if ids have skipped).
+            while (_objects.Count <= localId) _objects.Add(null);
+            _objects[localId] = netObj;
+
+            OnObjectSpawned?.Invoke(netObj, prefabIdx);
+        }
+
+        private void HandleDespawn(ushort localId)
+        {
+            if (localId >= _objects.Count) return;
+            var obj = _objects[localId];
+            if (obj == null) return;
+
+            _objects[localId] = null;
+            OnObjectDespawned?.Invoke(obj);
+            Destroy(obj.gameObject);
         }
 
         // =====================================================================

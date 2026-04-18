@@ -43,6 +43,13 @@ namespace SomniumSpace.Worlds.bently.networking
         public const byte CTRL_RELEASE           = 0x06;
         /// <summary>Server → requester: the claim was rejected (someone else owns the object). [0xFF][0x07][u16 obj_id]</summary>
         public const byte CTRL_CLAIM_REJECTED    = 0x07;
+
+        /// <summary>Client → server: spawn a networked prefab. [0xFF][0x0B][u8 prefab_idx][60B scene_object] (id=0)</summary>
+        public const byte CTRL_SPAWN_REQUEST     = 0x0B;
+        /// <summary>Server → all: a runtime object has been spawned. [0xFF][0x0C][u16 id][u8 prefab_idx][60B scene_object]</summary>
+        public const byte CTRL_SPAWN             = 0x0C;
+        /// <summary>Either direction: destroy a runtime object. [0xFF][0x0D][u16 id]</summary>
+        public const byte CTRL_DESPAWN           = 0x0D;
         /// <summary>Server → all: physics sim is now live. Stop any local simulation.</summary>
         public const byte CTRL_PHYSICS_READY     = 0x08;
 

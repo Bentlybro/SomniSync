@@ -126,6 +126,106 @@ namespace SomniumSpace.Worlds.bently.networking
             SendBinary(buf);
         }
 
+        // =====================================================================
+        // Runtime spawn / despawn
+        //
+        // Call Spawn to request a new networked object at runtime. The server
+        // assigns a stable local id, adds it to the Rapier world, and broadcasts
+        // CTRL_SPAWN to every client — each client then instantiates the prefab
+        // locally and fires NetworkManager.OnObjectSpawned.
+        //
+        // Prefab identity is just an index into `networkedPrefabs` — every
+        // client MUST have the same list in the same order.
+        // =====================================================================
+
+        /// <summary>
+        /// Request the server spawn a new networked object using the prefab at
+        /// <paramref name="prefabIndex"/> in <see cref="networkedPrefabs"/>.
+        /// Does not return the spawned object directly — listen for
+        /// <see cref="OnObjectSpawned"/> which fires when the server confirms.
+        /// </summary>
+        public void Spawn(int prefabIndex, Vector3 pos, Quaternion rot)
+        {
+            if (_ws == null || _ws.State != System.Net.WebSockets.WebSocketState.Open)
+            {
+                Debug.LogWarning("[Net] Spawn ignored — not connected");
+                return;
+            }
+            if (prefabIndex < 0 || prefabIndex > 255)
+            {
+                Debug.LogError($"[Net] Spawn: prefab index {prefabIndex} out of range");
+                return;
+            }
+            if (networkedPrefabs == null || prefabIndex >= networkedPrefabs.Count)
+            {
+                Debug.LogError($"[Net] Spawn: prefab index {prefabIndex} not in networkedPrefabs");
+                return;
+            }
+            var prefab = networkedPrefabs[prefabIndex];
+            if (prefab == null)
+            {
+                Debug.LogError($"[Net] Spawn: prefab at index {prefabIndex} is null");
+                return;
+            }
+
+            var col = prefab.GetComponent<Collider>();
+            var rb  = prefab.GetComponent<Rigidbody>();
+            var np  = prefab.GetComponent<NetworkObject>();
+            if (np == null || col == null)
+            {
+                Debug.LogError("[Net] Spawn: prefab must have NetworkObject + Collider");
+                return;
+            }
+
+            if (!TryGetColliderShape(col, prefab.transform,
+                out Protocol.PhysicsShapeType shapeType, out Vector3 shapeParams))
+            {
+                Debug.LogError("[Net] Spawn: prefab collider is not a sphere/box/capsule");
+                return;
+            }
+
+            Protocol.PhysicsBodyType bodyType;
+            if (rb == null) bodyType = Protocol.PhysicsBodyType.Fixed;
+            else if (rb.isKinematic) bodyType = Protocol.PhysicsBodyType.KinematicPosition;
+            else bodyType = Protocol.PhysicsBodyType.Dynamic;
+
+            float mass          = rb != null ? rb.mass           : 0f;
+            float linearDamp    = rb != null ? rb.linearDamping  : 0f;
+            float angularDamp   = rb != null ? rb.angularDamping : 0.05f;
+            float restitution   = 0.3f;
+            float friction      = 0.4f;
+            if (col.sharedMaterial != null)
+            {
+                restitution = col.sharedMaterial.bounciness;
+                friction    = col.sharedMaterial.dynamicFriction;
+            }
+
+            byte[] buf = new byte[3 + Protocol.BYTES_PER_SCENE_OBJECT];
+            buf[0] = 0xFF;
+            buf[1] = Protocol.CTRL_SPAWN_REQUEST;
+            buf[2] = (byte)prefabIndex;
+            Protocol.WriteSceneObject(buf, 3,
+                0 /* id — server assigns */, bodyType, shapeType,
+                pos, rot.eulerAngles, shapeParams,
+                mass, restitution, friction, linearDamp, angularDamp);
+            SendBinary(buf);
+        }
+
+        /// <summary>
+        /// Ask the server to destroy a previously-spawned networked object.
+        /// Every client will receive the despawn broadcast and tear down
+        /// their local copy.
+        /// </summary>
+        public void Despawn(ushort localId)
+        {
+            if (_ws == null || _ws.State != System.Net.WebSockets.WebSocketState.Open) return;
+            byte[] buf = new byte[4];
+            buf[0] = 0xFF;
+            buf[1] = Protocol.CTRL_DESPAWN;
+            Protocol.WriteU16(buf, 2, localId);
+            SendBinary(buf);
+        }
+
         /// <summary>
         /// Send a push impulse — server applies momentum to the object via Rapier.
         /// Used by <see cref="PlayerPushDetector"/> when the local player walks
@@ -143,20 +243,53 @@ namespace SomniumSpace.Worlds.bently.networking
         }
 
         // =====================================================================
-        // Player position (0x0C) — local player head/body for server-side AOI
-        // Format: [0x0C][f32 x][f32 y][f32 z] = 13 bytes
+        // Player position (0x0C) — local player body for server-side AOI
+        // and the Rapier player capsule.
+        //
+        // Format: [0x0C][f32 x][f32 y][f32 z][f32 radius][f32 half_height]
+        //         = 21 bytes
+        //
+        // Capsule dims come from the CharacterController on the local player
+        // if present, else fall back to typical human-avatar defaults so the
+        // server still has a sane shape.
         // =====================================================================
+
+        private const float DefaultPlayerRadius = 0.3f;
+        private const float DefaultPlayerHalfHeight = 0.6f;
 
         private void SendPlayerPosition()
         {
             if (_localPlayerTransform == null) return;
 
             Vector3 p = _localPlayerTransform.position;
-            byte[] buf = new byte[13];
+
+            float radius = DefaultPlayerRadius;
+            float halfHeight = DefaultPlayerHalfHeight;
+
+            // Prefer a CharacterController on the local player — it's the
+            // collider Somnium / the user rig actually uses for locomotion.
+            var cc = _localPlayerTransform.GetComponent<CharacterController>();
+            if (cc == null)
+                cc = _localPlayerTransform.GetComponentInChildren<CharacterController>();
+            if (cc != null)
+            {
+                radius = cc.radius;
+                // CC.height is the total; Rapier's capsule_y wants the half-
+                // height of just the cylindrical section between hemispheres.
+                halfHeight = Mathf.Max(0.01f, cc.height * 0.5f - cc.radius);
+
+                // Position: use CC's world-space center so the capsule aligns
+                // with the CC rather than being anchored at the feet.
+                p = cc.transform.TransformPoint(cc.center);
+            }
+
+            byte[] buf = new byte[21];
             buf[0] = Protocol.MSG_PLAYER_POS;
-            Protocol.WriteFloat(buf, 1, p.x);
-            Protocol.WriteFloat(buf, 5, p.y);
-            Protocol.WriteFloat(buf, 9, p.z);
+            Protocol.WriteFloat(buf, 1,  p.x);
+            Protocol.WriteFloat(buf, 5,  p.y);
+            Protocol.WriteFloat(buf, 9,  p.z);
+            Protocol.WriteFloat(buf, 13, radius);
+            Protocol.WriteFloat(buf, 17, halfHeight);
             SendBinary(buf);
         }
 

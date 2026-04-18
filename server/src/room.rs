@@ -35,6 +35,12 @@ pub struct Room {
 
     /// The authoritative physics world — present only after SCENE_INIT.
     pub physics_world: Option<Arc<Mutex<PhysicsWorld>>>,
+
+    /// Next local_id to hand out for runtime-spawned NetworkObjects. Set by
+    /// SCENE_INIT to the initial object count; increments on each CTRL_SPAWN.
+    /// IDs are never reused even after despawn (no holes in the assignment
+    /// sequence) — u16 gives 65k spawns per room, plenty in practice.
+    pub next_runtime_id: u16,
 }
 
 impl Room {
@@ -47,6 +53,7 @@ impl Room {
             player_positions: HashMap::new(),
             physics_ready: false,
             physics_world: None,
+            next_runtime_id: 0,
         }
     }
 
