@@ -57,6 +57,11 @@ pub struct PhysicsWorld {
     /// client_id. Dimensions are whatever the client reports with its player
     /// position update, so every player's body shape matches their actual rig.
     player_bodies: HashMap<u16, PlayerBody>,
+    /// Body type each object was created with. Used on release so we restore
+    /// the original type instead of forcing Dynamic — NPCs (KinematicPosition)
+    /// need to stay kinematic across grab/release cycles, otherwise the server
+    /// starts simulating them with gravity after every chase.
+    initial_body_type: HashMap<u16, RigidBodyType>,
 }
 
 struct PlayerBody {
@@ -87,6 +92,7 @@ impl PhysicsWorld {
             claimed: HashMap::new(),
             awake_prev: HashMap::new(),
             player_bodies: HashMap::new(),
+            initial_body_type: HashMap::new(),
         }
     }
 
@@ -154,6 +160,7 @@ impl PhysicsWorld {
             self.body_to_object.remove(&handle);
             self.claimed.remove(&obj_id);
             self.awake_prev.remove(&obj_id);
+            self.initial_body_type.remove(&obj_id);
             self.remove_body_handle(handle);
         }
     }
@@ -259,6 +266,7 @@ impl PhysicsWorld {
         self.colliders.insert_with_parent(collider, handle, &mut self.rigid_bodies);
         self.object_to_body.insert(desc.id, handle);
         self.body_to_object.insert(handle, desc.id);
+        self.initial_body_type.insert(desc.id, body_type);
     }
 
     /// Advance the simulation by one fixed timestep (dt = 1/50 s).
@@ -311,21 +319,34 @@ impl PhysicsWorld {
         );
     }
 
-    /// Release a claim explicitly (no caller-chosen velocity) — used for stale
-    /// claim cleanup. Applies the last derived velocity so the object coasts
-    /// on exactly like a normal release.
+    /// Release a claim explicitly — used for stale claim cleanup. Applies the
+    /// last derived velocity so the object coasts on exactly like a normal
+    /// release (but only if its original body type was Dynamic; NPCs stay put).
     pub fn release_stale(&mut self, obj_id: u16) -> Option<u16> {
         let track = self.claimed.remove(&obj_id)?;
+        self.restore_body_after_claim(obj_id, track.velocity);
+        Some(track.owner)
+    }
+
+    /// Internal: restore a body to its SCENE_INIT body type after a claim.
+    /// Dynamic bodies get the tracked linvel applied for momentum transfer;
+    /// Kinematic and Fixed bodies just swap back to their original type and
+    /// stop there — no linvel to apply, and the caller wouldn't want their
+    /// NPC suddenly gaining velocity.
+    fn restore_body_after_claim(&mut self, obj_id: u16, velocity: [f32; 3]) {
+        let original = self
+            .initial_body_type
+            .get(&obj_id)
+            .copied()
+            .unwrap_or(RigidBodyType::Dynamic);
         if let Some(&handle) = self.object_to_body.get(&obj_id) {
             if let Some(rb) = self.rigid_bodies.get_mut(handle) {
-                rb.set_body_type(RigidBodyType::Dynamic, true);
-                rb.set_linvel(
-                    vector![track.velocity[0], track.velocity[1], track.velocity[2]],
-                    true,
-                );
+                rb.set_body_type(original, true);
+                if original == RigidBodyType::Dynamic {
+                    rb.set_linvel(vector![velocity[0], velocity[1], velocity[2]], true);
+                }
             }
         }
-        Some(track.owner)
     }
 
     /// Walk `claimed` and return (obj_id, owner) for any entry whose last
@@ -364,22 +385,18 @@ impl PhysicsWorld {
         }
     }
 
-    /// Restore a claimed body to dynamic, applying the velocity derived from
-    /// the client's last few position updates. Throws properly transfer
-    /// momentum even though the wire format carries no velocity field.
+    /// Restore a claimed body to its original body type (Dynamic / Kinematic
+    /// / Fixed). For Dynamic bodies the derived release velocity is applied
+    /// so throws transfer momentum. For Kinematic bodies (e.g. NPCs) the body
+    /// stays kinematic so the server doesn't start simulating it with gravity
+    /// after every chase — the client's AI script retains sole control.
     pub fn release(&mut self, obj_id: u16) {
         let velocity = self
             .claimed
             .remove(&obj_id)
             .map(|t| t.velocity)
             .unwrap_or([0.0, 0.0, 0.0]);
-
-        if let Some(&handle) = self.object_to_body.get(&obj_id) {
-            if let Some(rb) = self.rigid_bodies.get_mut(handle) {
-                rb.set_body_type(RigidBodyType::Dynamic, true);
-                rb.set_linvel(vector![velocity[0], velocity[1], velocity[2]], true);
-            }
-        }
+        self.restore_body_after_claim(obj_id, velocity);
     }
 
     /// Update the kinematic body position. Derives velocity from the position
