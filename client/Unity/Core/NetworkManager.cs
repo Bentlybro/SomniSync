@@ -293,6 +293,14 @@ namespace SomniumSpace.Worlds.bently.networking
         /// </summary>
         public void SetLocalPlayer(Transform t) => _localPlayerTransform = t;
 
+        /// <summary>
+        /// The currently-resolved local player transform (inspector override,
+        /// SetLocalPlayer call, or auto-detected Somnium rig). Null until
+        /// one of those paths has succeeded. Useful for NPC AI that wants
+        /// to chase/aggro against the local player.
+        /// </summary>
+        public Transform LocalPlayer => _localPlayerTransform;
+
         // =====================================================================
         // Connection
         // =====================================================================
