@@ -13,9 +13,10 @@ bandwidth, message relay) and to validate deterministic NPC sync across many
   * Sends MSG_PLAYER_POS at 10 Hz so the server's AOI filter treats it as a
     real participant (and so AOI load gets exercised).
   * Receives MSG_POSITION_VELOCITY, CTRL_RELEASE, CTRL_SPAWN, and writes one
-    CSV row per observed NetworkObject per log tick — same schema as
-    NetworkDebug.cs, so tools/netdbg_diff.py works unchanged against a mix
-    of bot and real-client CSVs.
+    CSV row per observed NetworkObject per log tick. The Unity-side
+    NetworkDebug component deliberately does not write files (Somnium
+    world scripts run sandboxed), so these bot CSVs are how you capture
+    per-client state for offline diffing with tools/netdbg_diff.py.
 
 The first client in a room is asked to send SCENE_INIT. Bots won't — start a
 real Unity client (or one Somnium client) first, then launch the bot swarm.

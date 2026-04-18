@@ -1,6 +1,4 @@
-using System;
 using System.Globalization;
-using System.IO;
 using System.Text;
 using UnityEngine;
 
@@ -17,10 +15,18 @@ namespace SomniumSpace.Worlds.bently.networking
     ///     _anchoredReleaseMs, claim flags, and last-release fields from
     ///     the sibling NetworkObject.
     ///
-    /// Run two clients side-by-side with this enabled, then diff the two
-    /// consoles / log files around the same wall-clock time. Any line that
-    /// differs between clients (position, wander state, anchors, etc.) is
-    /// a data-driven pointer at the divergence source — no more guessing.
+    /// Output goes to the Unity console only — no filesystem writes. World
+    /// scripts in Somnium run sandboxed and writing to disk is not
+    /// something we want a networking library doing. For persistent,
+    /// machine-readable diagnostic capture there are two better paths:
+    ///
+    ///   * The server's <c>/export</c> HTTP endpoint (see
+    ///     <c>server/src/metrics_server.rs</c>) — captures the whole server
+    ///     state including the full log ring and raw physics timings.
+    ///   * The headless Python bot client (<c>tools/bot_client.py</c>)
+    ///     mimics a Unity client at the protocol level and writes CSVs
+    ///     from outside the Unity sandbox; <c>tools/netdbg_diff.py</c>
+    ///     compares any pair.
     ///
     /// Tag each client's output: set <see cref="clientTag"/> to e.g. "A"
     /// and "B" so log lines are easy to identify after the fact.
@@ -43,17 +49,9 @@ namespace SomniumSpace.Worlds.bently.networking
         [Tooltip("Log arrival of CTRL_RELEASE messages (position + server_ms).")]
         public bool logReleaseEvents = true;
 
-        [Header("CSV File Output")]
-        [Tooltip("Also write every tick to a CSV file. Each client writes its own file; tools/netdbg_diff.py can diff two files post-hoc.")]
-        public bool logToFile = false;
-        [Tooltip("Optional file path override. If empty, writes to Application.persistentDataPath/netdbg_{clientTag}_{UTC stamp}.csv. Printed to console on first write.")]
-        public string logFilePath = "";
-
         private float _nextDumpTime;
         private NetworkNPC[] _npcs;
         private float _nextRefreshTime;
-        private StreamWriter _csv;
-        private string _csvPathResolved;
 
         protected virtual void Update()
         {
@@ -94,7 +92,6 @@ namespace SomniumSpace.Worlds.bently.networking
                 }
             }
 
-            int npcRowsWritten = 0;
             if (logNPCs && _npcs != null && mgr != null)
             {
                 for (int i = 0; i < _npcs.Length; i++)
@@ -124,107 +121,11 @@ namespace SomniumSpace.Worlds.bently.networking
                         lrm,
                         loc ? "T" : "F",
                         rem ? "T" : "F");
-
-                    if (logToFile)
-                    {
-                        WriteCsvRow(tag, localT, serverT, offset, rttS, cid, ready, phys,
-                            npcId, n.gameObject.name, pos,
-                            n.DebugOrigin, n.DebugWanderEpoch, wT, n.DebugAnchoredReleaseMs,
-                            lrp, lrm, loc, rem);
-                        npcRowsWritten++;
-                    }
                 }
-            }
-
-            if (logToFile && npcRowsWritten == 0 && mgr != null)
-            {
-                WriteCsvRow(tag, localT, serverT, offset, rttS, cid, ready, phys,
-                    "", "", Vector3.zero,
-                    Vector3.zero, double.NaN, double.NaN, 0UL,
-                    Vector3.zero, 0UL, false, false);
             }
 
             if (sb.Length > 0)
                 Debug.Log(sb.ToString().TrimEnd());
-        }
-
-        private void WriteCsvRow(
-            string tag, double localT, double serverT, double offset, double rttS,
-            int cid, bool ready, bool phys,
-            string npcId, string npcName, Vector3 pos,
-            Vector3 origin, double wanderEpoch, double wT, ulong anchoredMs,
-            Vector3 lastReleasePos, ulong lastReleaseMs, bool claimLoc, bool claimRem)
-        {
-            EnsureCsvOpen(tag);
-            if (_csv == null) return;
-
-            // Sanitize name for CSV: strip commas and quotes.
-            string safeName = npcName.Replace(",", " ").Replace("\"", "");
-            var ci = CultureInfo.InvariantCulture;
-            _csv.Write(tag); _csv.Write(',');
-            _csv.Write(localT.ToString("F3", ci)); _csv.Write(',');
-            _csv.Write(serverT.ToString("F6", ci)); _csv.Write(',');
-            _csv.Write(offset.ToString("F6", ci)); _csv.Write(',');
-            _csv.Write(rttS.ToString("F6", ci)); _csv.Write(',');
-            _csv.Write(cid.ToString(ci)); _csv.Write(',');
-            _csv.Write(ready ? "1" : "0"); _csv.Write(',');
-            _csv.Write(phys ? "1" : "0"); _csv.Write(',');
-            _csv.Write(npcId); _csv.Write(',');
-            _csv.Write(safeName); _csv.Write(',');
-            _csv.Write(pos.x.ToString("F4", ci)); _csv.Write(',');
-            _csv.Write(pos.y.ToString("F4", ci)); _csv.Write(',');
-            _csv.Write(pos.z.ToString("F4", ci)); _csv.Write(',');
-            _csv.Write(origin.x.ToString("F4", ci)); _csv.Write(',');
-            _csv.Write(origin.y.ToString("F4", ci)); _csv.Write(',');
-            _csv.Write(origin.z.ToString("F4", ci)); _csv.Write(',');
-            _csv.Write(wanderEpoch.ToString("F6", ci)); _csv.Write(',');
-            _csv.Write(wT.ToString("F6", ci)); _csv.Write(',');
-            _csv.Write(anchoredMs.ToString(ci)); _csv.Write(',');
-            _csv.Write(lastReleasePos.x.ToString("F4", ci)); _csv.Write(',');
-            _csv.Write(lastReleasePos.y.ToString("F4", ci)); _csv.Write(',');
-            _csv.Write(lastReleasePos.z.ToString("F4", ci)); _csv.Write(',');
-            _csv.Write(lastReleaseMs.ToString(ci)); _csv.Write(',');
-            _csv.Write(claimLoc ? "1" : "0"); _csv.Write(',');
-            _csv.Write(claimRem ? "1" : "0");
-            _csv.Write('\n');
-        }
-
-        private void EnsureCsvOpen(string tag)
-        {
-            if (_csv != null) return;
-            try
-            {
-                string path = logFilePath;
-                if (string.IsNullOrWhiteSpace(path))
-                {
-                    string stamp = DateTime.UtcNow.ToString("yyyyMMdd_HHmmss", CultureInfo.InvariantCulture);
-                    string safeTag = string.IsNullOrEmpty(tag) ? "x" : tag;
-                    path = Path.Combine(Application.persistentDataPath, $"netdbg_{safeTag}_{stamp}.csv");
-                }
-                _csvPathResolved = path;
-                var dir = Path.GetDirectoryName(path);
-                if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
-                _csv = new StreamWriter(path, append: false, Encoding.UTF8) { AutoFlush = true };
-                _csv.Write(
-                    "tag,localT,serverT,offset,bestRTT,cid,ready,physicsReady," +
-                    "npc_id,npc_name,pos_x,pos_y,pos_z," +
-                    "origin_x,origin_y,origin_z,wanderEpoch,wT,anchoredMs," +
-                    "lrp_x,lrp_y,lrp_z,lrm,claimLoc,claimRem\n");
-                Debug.Log($"[NetDbg {tag}] CSV -> {_csvPathResolved}");
-            }
-            catch (Exception e)
-            {
-                Debug.LogError($"[NetDbg {tag}] CSV open failed: {e.Message}. Disabling file logging.");
-                logToFile = false;
-                _csv = null;
-            }
-        }
-
-        private void CloseCsv()
-        {
-            if (_csv == null) return;
-            try { _csv.Flush(); _csv.Dispose(); } catch { }
-            _csv = null;
         }
 
         /// <summary>
@@ -252,13 +153,7 @@ namespace SomniumSpace.Worlds.bently.networking
         }
         private static NetworkDebug _instance;
 
-        protected virtual void OnEnable() => _instance = this;
-        protected virtual void OnDisable()
-        {
-            if (_instance == this) _instance = null;
-            CloseCsv();
-        }
-        protected virtual void OnDestroy() => CloseCsv();
-        protected virtual void OnApplicationQuit() => CloseCsv();
+        protected virtual void OnEnable()  => _instance = this;
+        protected virtual void OnDisable() { if (_instance == this) _instance = null; }
     }
 }

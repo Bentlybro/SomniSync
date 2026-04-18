@@ -1,18 +1,24 @@
 #!/usr/bin/env python3
 """
-Diff two NetworkDebug CSV dumps to find inter-client NPC position delta
+Diff two bot-client CSV dumps to find inter-client NPC position delta
 and clock-offset skew.
 
-Each client's NetworkDebug writes one CSV per session to
-Application.persistentDataPath (printed to the Unity console on first
-write). After an overlapping test run, drop both files here:
+The headless Python bot in `tools/bot_client.py` writes one CSV per
+bot (outside the Unity sandbox — the Unity-side NetworkDebug component
+only prints to the console; we deliberately don't write files from
+inside Somnium worlds). After an overlapping test run, point this
+script at any two bot CSVs:
 
-    python tools/netdbg_diff.py netdbg_A_*.csv netdbg_B_*.csv [--out diff.csv]
+    python tools/netdbg_diff.py bot00.csv bot01.csv [--out diff.csv]
 
 The script nearest-neighbor-joins rows on serverT per npc_id, computes
-Euclidean position delta, and reports summary stats. Each client's
+Euclidean position delta, and reports summary stats. Each bot's
 serverT is its own local estimate of server time — if the estimates
 diverge, that shows up in the per-row "offset_delta" column.
+
+The CSV schema matches what the old Unity-side NetworkDebug used to
+write, so if you have historical logs from before the Unity CSV
+output was removed they still diff fine against new bot dumps.
 """
 from __future__ import annotations
 

@@ -3,8 +3,8 @@
 There are three tools in the repo that together let you actually test scale without 40 real humans:
 
 - **`benchmarks/bench.py`** — ping, event relay latency, connection storm. Measures the relay fundamentals.
-- **`tools/bot_client.py`** — headless bot swarm. Speaks the full binary protocol — the server genuinely can't tell these from Unity clients.
-- **`tools/netdbg_diff.py`** — offline CSV diff. Loads two `NetworkDebug` / bot-client CSV dumps and reports inter-client position disagreement per-object.
+- **`tools/bot_client.py`** — headless bot swarm. Speaks the full binary protocol — the server genuinely can't tell these from Unity clients. Each bot writes a CSV of observed state (outside the Unity sandbox, so no file I/O inside the game).
+- **`tools/netdbg_diff.py`** — offline CSV diff. Loads any two bot-client CSVs and reports inter-client position disagreement per-object.
 
 ## `benchmarks/bench.py`
 

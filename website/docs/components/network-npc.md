@@ -189,7 +189,9 @@ If NPCs disagree visually between clients, it's almost always one of:
 
 ## Diagnostics
 
-Drop [NetworkDebug](./) on a scene object to dump per-NPC state (position, origin, epoch, claim flags) every second — optionally to a CSV file. `tools/netdbg_diff.py` compares two CSVs and reports per-NPC position delta between clients.
+Drop [NetworkDebug](./) on a scene object and it prints per-NPC state (position, origin, epoch, claim flags) to the Unity console every second on each client — compare the two consoles to see disagreement between clients.
+
+For machine-readable cross-client comparison without real Unity clients, use the headless Python bots (`tools/bot_client.py`) which generate CSVs outside the Unity sandbox; `tools/netdbg_diff.py` then joins any two bot CSVs and reports per-NPC position delta.
 
 ## Don't
 
@@ -204,4 +206,4 @@ Drop [NetworkDebug](./) on a scene object to dump per-NPC state (position, origi
 - [**NetworkManager**](./network-manager) — shared clock, SceneReadyServerMs
 - [**NetworkVariables**](./network-variables) — attach to add health, state, whatever
 - [**NetworkEvents**](./network-events) — fire RPCs from the NPC (death, hit, sound)
-- [**NetworkDebug**](./) — per-tick diagnostic CSV dump
+- [**NetworkDebug**](./) — per-tick diagnostic dump to the Unity console
