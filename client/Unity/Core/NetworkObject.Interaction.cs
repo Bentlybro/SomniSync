@@ -130,13 +130,22 @@ namespace SomniumSpace.Worlds.bently.networking
             }
         }
 
-        private void OnCollisionEnter(Collision collision)
-        {
-            if (!IsClaimedLocally || !_hasRb) return;
-            if (_rb.linearVelocity.sqrMagnitude < 0.1f) return;
-            var other = collision.gameObject.GetComponent<NetworkObject>();
-            if (other == null || other.IsClaimedLocally || other.IsClaimedByRemote) return;
-            other.OnPlayerPush();
-        }
+        // Object-to-object collision cascading was removed intentionally.
+        //
+        // Previously, a locally-claimed object's OnCollisionEnter would fire a
+        // grab on whatever it hit so the receiving object also simulated locally.
+        // That made sense under relay/shared-authority physics, but under
+        // server-authoritative physics it's actively harmful:
+        //
+        //   Player pushes A (locally claimed, dynamic) into B (kinematic, server-
+        //   owned). A collides with B; Unity's solver resolves it with B still
+        //   kinematic. OnCollisionEnter fires and flips B to dynamic mid-overlap.
+        //   Unity's next step sees A and B penetrating and applies a massive
+        //   separation impulse -> B launches at mach 1.
+        //
+        // Server-side Rapier already handles A-hits-B correctly: A's kinematic
+        // body in Rapier follows the client's position updates, its motion
+        // registers as a velocity, and B gets pushed naturally. Clients just
+        // render the resulting 0x0B updates. No cascade needed.
     }
 }
