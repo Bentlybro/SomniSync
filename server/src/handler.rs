@@ -390,7 +390,7 @@ async fn physics_tick_task(
         let do_broadcast = now >= next_broadcast;
 
         // Single physics-mutex acquisition per tick: step + snapshot for broadcast.
-        let snapshot_opt = if do_physics || do_broadcast {
+        let buckets_opt = if do_physics || do_broadcast {
             let mut pw = pw_arc.lock().await;
             if do_physics {
                 last_physics = now;
@@ -407,7 +407,7 @@ async fn physics_tick_task(
         };
 
         if do_broadcast {
-            let snapshot = match snapshot_opt {
+            let buckets = match buckets_opt {
                 Some(s) => s,
                 None => continue,
             };
@@ -424,7 +424,6 @@ async fn physics_tick_task(
                 }
             };
 
-            // Hold the read lock only long enough to snapshot per-client state.
             let (clients_clone, player_pos_clone): (
                 Vec<(u16, Arc<Client>)>,
                 std::collections::HashMap<u16, [f32; 3]>,
@@ -440,11 +439,15 @@ async fn physics_tick_task(
                 )
             };
 
-            // Build + send one filtered message per client. Per-client because
-            // AOI + LOD depend on where that player is.
             for (cid, client) in &clients_clone {
                 let pp = player_pos_clone.get(cid).copied();
-                if let Some(msg) = build_filtered_message(&snapshot, pp, tick, seq) {
+                if let Some(msg) = build_filtered_message(
+                    &buckets.awake,
+                    &buckets.just_slept,
+                    pp,
+                    tick,
+                    seq,
+                ) {
                     send_try(client, bytes::Bytes::from(msg));
                 }
             }

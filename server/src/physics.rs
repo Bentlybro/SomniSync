@@ -44,6 +44,10 @@ pub struct PhysicsWorld {
     pub body_to_object: HashMap<RigidBodyHandle, u16>,
     /// Claimed (kinematic) objects and their last known linear velocity
     pub claimed: HashMap<u16, [f32; 3]>,
+    /// Per-body "was awake last snapshot" — used to detect sleep transitions.
+    /// On awake→sleeping, the final position is sent to every client regardless
+    /// of AOI so they know where the body actually came to rest.
+    awake_prev: HashMap<u16, bool>,
 }
 
 impl PhysicsWorld {
@@ -66,6 +70,7 @@ impl PhysicsWorld {
             object_to_body: HashMap::new(),
             body_to_object: HashMap::new(),
             claimed: HashMap::new(),
+            awake_prev: HashMap::new(),
         }
     }
 
@@ -253,10 +258,22 @@ impl PhysicsWorld {
         }
     }
 
-    /// Snapshot every dynamic, awake body that could be broadcast this tick.
-    /// Taken once per tick and reused to build per-client filtered messages.
-    pub fn snapshot_dynamic(&self) -> Vec<DynamicSnapshot> {
-        let mut out = Vec::with_capacity(self.object_to_body.len());
+    /// Snapshot every dynamic body whose state clients may need to see this tick.
+    ///
+    /// Two buckets are returned:
+    ///
+    ///   **awake**: Currently-moving bodies. Subject to per-client AOI +
+    ///   LOD filtering when building per-client messages.
+    ///
+    ///   **just_slept**: Bodies that transitioned awake→sleeping *this tick*.
+    ///   Broadcast unconditionally (bypassing AOI) so every client learns the
+    ///   final resting position, even if they were nowhere near when the body
+    ///   settled. Without this, far-away clients see objects frozen at their
+    ///   last mid-flight position indefinitely — a tower of ghost spheres.
+    pub fn snapshot_dynamic(&mut self) -> SnapshotBuckets {
+        let mut awake = Vec::with_capacity(self.object_to_body.len());
+        let mut just_slept = Vec::new();
+
         for (&obj_id, &handle) in &self.object_to_body {
             if self.claimed.contains_key(&obj_id) {
                 continue;
@@ -268,21 +285,44 @@ impl PhysicsWorld {
             if rb.body_type() != RigidBodyType::Dynamic {
                 continue;
             }
-            if rb.is_sleeping() {
-                continue;
-            }
+
+            let is_awake = !rb.is_sleeping();
+            let was_awake = self.awake_prev.get(&obj_id).copied().unwrap_or(false);
+
             let pos = *rb.translation();
             let rot = rb.rotation();
             let vel = *rb.linvel();
-            out.push(DynamicSnapshot {
+            let snap = DynamicSnapshot {
                 obj_id,
                 pos: [pos.x, pos.y, pos.z],
                 quat: [rot.i, rot.j, rot.k, rot.w],
                 vel: [vel.x, vel.y, vel.z],
-            });
+            };
+
+            if is_awake {
+                awake.push(snap);
+            } else if was_awake {
+                // Awake→sleeping transition — final resting state for all clients.
+                just_slept.push(snap);
+            }
         }
-        out
+
+        // Update wake-state tracking after building the buckets.
+        for (&obj_id, &handle) in &self.object_to_body {
+            if let Some(rb) = self.rigid_bodies.get(handle) {
+                self.awake_prev.insert(obj_id, !rb.is_sleeping());
+            }
+        }
+
+        SnapshotBuckets { awake, just_slept }
     }
+}
+
+/// Output of `snapshot_dynamic` — bodies that need broadcasting this tick,
+/// split by how they should be filtered.
+pub struct SnapshotBuckets {
+    pub awake: Vec<DynamicSnapshot>,
+    pub just_slept: Vec<DynamicSnapshot>,
 }
 
 /// Per-tick snapshot of one dynamic body. Rotation is stored as a quaternion
@@ -305,9 +345,9 @@ pub struct DynamicSnapshot {
 // Spread over time using `(tick + obj_id) % N` so far objects don't arrive in
 // one giant packet — different objects hit different phase offsets.
 
-pub const AOI_NEAR_RADIUS: f32 = 25.0;
-pub const AOI_MID_RADIUS: f32 = 60.0;
-pub const AOI_FAR_RADIUS: f32 = 150.0;
+pub const AOI_NEAR_RADIUS: f32 = 50.0;
+pub const AOI_MID_RADIUS: f32 = 150.0;
+pub const AOI_FAR_RADIUS: f32 = 500.0;
 
 const AOI_NEAR_SQ: f32 = AOI_NEAR_RADIUS * AOI_NEAR_RADIUS;
 const AOI_MID_SQ: f32 = AOI_MID_RADIUS * AOI_MID_RADIUS;
@@ -322,17 +362,17 @@ const LOD_FAR_SKIP: u32 = 10;
 /// If `player_pos` is None, the client has not yet reported a position — send
 /// everything so visuals aren't empty during the first few frames.
 pub fn build_filtered_message(
-    snapshot: &[DynamicSnapshot],
+    awake: &[DynamicSnapshot],
+    just_slept: &[DynamicSnapshot],
     player_pos: Option<[f32; 3]>,
     tick: u32,
     seq: u16,
 ) -> Option<Vec<u8>> {
-    if snapshot.is_empty() {
+    if awake.is_empty() && just_slept.is_empty() {
         return None;
     }
 
-    // 7-byte header + 28 bytes per velocity entity.
-    let mut buf = Vec::with_capacity(7 + snapshot.len() * 28);
+    let mut buf = Vec::with_capacity(7 + (awake.len() + just_slept.len()) * 28);
     buf.push(MSG_POSITION_VELOCITY);
     push_u16(&mut buf, 0);
     push_u16(&mut buf, seq);
@@ -340,7 +380,8 @@ pub fn build_filtered_message(
 
     let mut count: u16 = 0;
 
-    for entry in snapshot {
+    // Awake bodies: standard AOI + LOD filtering.
+    for entry in awake {
         if let Some(pp) = player_pos {
             let dx = entry.pos[0] - pp[0];
             let dy = entry.pos[1] - pp[1];
@@ -363,14 +404,14 @@ pub fn build_filtered_message(
             }
         }
 
-        push_u16(&mut buf, entry.obj_id);
-        push_f32(&mut buf, entry.pos[0]);
-        push_f32(&mut buf, entry.pos[1]);
-        push_f32(&mut buf, entry.pos[2]);
-        push_quat(&mut buf, entry.quat);
-        push_f16(&mut buf, entry.vel[0]);
-        push_f16(&mut buf, entry.vel[1]);
-        push_f16(&mut buf, entry.vel[2]);
+        push_entity(&mut buf, entry);
+        count += 1;
+    }
+
+    // Sleep transitions: bypass AOI entirely so every client learns the
+    // final resting state even if they were nowhere near when it settled.
+    for entry in just_slept {
+        push_entity(&mut buf, entry);
         count += 1;
     }
 
@@ -381,6 +422,18 @@ pub fn build_filtered_message(
     buf[5] = (count & 0xFF) as u8;
     buf[6] = (count >> 8) as u8;
     Some(buf)
+}
+
+#[inline]
+fn push_entity(buf: &mut Vec<u8>, entry: &DynamicSnapshot) {
+    push_u16(buf, entry.obj_id);
+    push_f32(buf, entry.pos[0]);
+    push_f32(buf, entry.pos[1]);
+    push_f32(buf, entry.pos[2]);
+    push_quat(buf, entry.quat);
+    push_f16(buf, entry.vel[0]);
+    push_f16(buf, entry.vel[1]);
+    push_f16(buf, entry.vel[2]);
 }
 
 // ─── Binary encoding helpers ──────────────────────────────────────────────────
