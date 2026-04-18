@@ -34,6 +34,7 @@ import argparse
 import asyncio
 import csv
 import math
+import random
 import signal
 import socket
 import struct
@@ -106,6 +107,36 @@ def make_time_ping(client_local_ms: int) -> bytes:
     return bytes(buf)
 
 
+def make_claim(obj_id: int, sender_cid: int) -> bytes:
+    # [0xFF][0x05][u16 obj_id][u16 sender_cid]
+    buf = bytearray(6)
+    buf[0] = MSG_CONTROL
+    buf[1] = CTRL_CLAIM
+    struct.pack_into("<HH", buf, 2, obj_id, sender_cid)
+    return bytes(buf)
+
+
+def make_release(obj_id: int, sender_cid: int) -> bytes:
+    # [0xFF][0x06][u16 obj_id][u16 sender_cid]
+    buf = bytearray(6)
+    buf[0] = MSG_CONTROL
+    buf[1] = CTRL_RELEASE
+    struct.pack_into("<HH", buf, 2, obj_id, sender_cid)
+    return bytes(buf)
+
+
+def make_interaction_update_single(obj_id: int, x: float, y: float, z: float) -> bytes:
+    # [0x03][u16 count=1][u16 id][f32 x][f32 y][f32 z][i16 qx][i16 qy][i16 qz][i16 qw]
+    # Quaternion identity quantised: (0, 0, 0, 32767).
+    buf = bytearray(25)
+    buf[0] = MSG_INTERACTION_UPDATE
+    struct.pack_into("<H", buf, 1, 1)          # count
+    struct.pack_into("<H", buf, 3, obj_id)     # id
+    struct.pack_into("<fff", buf, 5, x, y, z)  # pos
+    struct.pack_into("<hhhh", buf, 17, 0, 0, 0, 32767)  # quantised identity quat
+    return bytes(buf)
+
+
 # ─── Bot ────────────────────────────────────────────────────────────────────
 @dataclass
 class BotConfig:
@@ -120,6 +151,15 @@ class BotConfig:
     player_pos_hz: float = 10.0
     ping_hz: float = 1.0
     log_interval_s: float = 1.0
+    # Physics-stress behaviour. When `interact` is on, each bot periodically
+    # claims an object it can see and drives it through a small circular
+    # motion at `interaction_hz` updates per second — this is what actually
+    # feeds work into the server's Rapier kinematic body update path and
+    # generates a broadcast fan-out. Leave off for pure observer load-tests.
+    interact: bool = False
+    claim_cooldown_s: float = 3.0   # wait this long between hold cycles
+    hold_duration_s: float = 2.0    # drive each held object for this long
+    interaction_hz: float = 60.0    # send rate while holding
 
 
 class Bot:
@@ -153,6 +193,12 @@ class Bot:
         self._observed: dict[int, tuple[float, float, float]] = {}
         # Latest release pose per object_id (for CSV lrp_* columns).
         self._last_release: dict[int, tuple[tuple[float, float, float], int]] = {}
+
+        # Claim/release cycle state for physics-stress mode.
+        self._held_obj_id: Optional[int] = None
+        self._held_since: float = 0.0          # perf_counter when we sent CLAIM
+        self._held_anchor: tuple[float, float, float] = (0.0, 0.0, 0.0)
+        self._rng = random.Random(cfg.bot_idx * 1_000_003 + 42)
 
         # Deterministic unique position around a ring so bots don't all overlap
         # at origin. Phase by bot_idx → every bot sits at a known spot.
@@ -192,13 +238,15 @@ class Bot:
             except Exception:
                 pass
 
-            await asyncio.gather(
+            loops = [
                 self._recv_loop(),
                 self._player_pos_loop(),
                 self._time_ping_loop(),
                 self._csv_log_loop(),
-                return_exceptions=False,
-            )
+            ]
+            if self.cfg.interact:
+                loops.append(self._interaction_loop())
+            await asyncio.gather(*loops, return_exceptions=False)
         except (ConnectionClosed, asyncio.CancelledError):
             pass
         except OSError as e:
@@ -268,6 +316,84 @@ class Bot:
                 continue
             self._flush_csv_tick()
 
+    async def _interaction_loop(self) -> None:
+        """
+        Physics-stress behaviour. Life cycle:
+          1. Wait for at least one observable object + cooldown elapsed.
+          2. Pick one at random, cache its pose, send CTRL_CLAIM.
+          3. Drive it in a small circle at interaction_hz for hold_duration_s.
+             Server treats each MSG_INTERACTION_UPDATE as a kinematic-body
+             position write into Rapier + relays to other clients — this is
+             the hot path we actually want to stress.
+          4. Send CTRL_RELEASE. Return to (1) after claim_cooldown_s.
+
+        If a claim gets rejected (CTRL_CLAIM_REJECTED from the server because
+        someone else already holds it), abort this cycle and try a different
+        object next round. Don't spam the same rejected obj_id.
+        """
+        assert self._ws is not None
+        interval = 1.0 / max(1.0, self.cfg.interaction_hz)
+        # Small per-bot offset so 40 bots don't hit the server in lockstep.
+        await asyncio.sleep(self._rng.uniform(0.1, self.cfg.claim_cooldown_s))
+
+        while self._alive:
+            if not self._physics_ready or not self._observed:
+                await asyncio.sleep(0.5)
+                continue
+
+            # Pick a target that isn't one we know we can't hold. We don't
+            # track "known-bad" long-term — CLAIM_REJECTED just aborts the
+            # current cycle and we'll randomly reselect on the next loop.
+            target_id = self._rng.choice(list(self._observed.keys()))
+            anchor = self._observed[target_id]
+            self._held_obj_id = target_id
+            self._held_anchor = anchor
+            self._held_since = time.perf_counter()
+
+            try:
+                await self._ws.send(make_claim(target_id, self._client_id))
+            except ConnectionClosed:
+                self._alive = False
+                return
+
+            # Drive at interaction_hz until either the hold duration elapses
+            # or a CLAIM_REJECTED invalidates our hold.
+            drive_start = time.perf_counter()
+            w = 2.0 * math.pi / 0.9  # 0.9s rotation period — tight, lots of motion
+            r = 0.3
+            last_send = drive_start
+            while self._alive and self._held_obj_id == target_id:
+                now = time.perf_counter()
+                if now - drive_start >= self.cfg.hold_duration_s:
+                    break
+                if now - last_send >= interval:
+                    t = now - drive_start
+                    x = anchor[0] + r * math.cos(w * t)
+                    y = anchor[1]
+                    z = anchor[2] + r * math.sin(w * t)
+                    try:
+                        await self._ws.send(
+                            make_interaction_update_single(target_id, x, y, z)
+                        )
+                    except ConnectionClosed:
+                        self._alive = False
+                        return
+                    last_send = now
+                else:
+                    await asyncio.sleep(max(0.0, interval - (now - last_send)))
+
+            # Always attempt release — even if the hold was rejected/aborted,
+            # releasing an object we don't own is harmless (server ignores
+            # claim-not-owner). Belt-and-suspenders against state desync.
+            if self._held_obj_id == target_id:
+                try:
+                    await self._ws.send(make_release(target_id, self._client_id))
+                except ConnectionClosed:
+                    self._alive = False
+                    return
+            self._held_obj_id = None
+            await asyncio.sleep(self.cfg.claim_cooldown_s)
+
     # ── Dispatch ──────────────────────────────────────────────────────────
     def _dispatch(self, data: bytes) -> None:
         if len(data) == 0:
@@ -289,7 +415,10 @@ class Bot:
                 self._handle_despawn(data)
             elif ctrl == CTRL_RELEASE:
                 self._handle_release(data)
-            # Ignore other control messages — bots don't claim objects.
+            elif ctrl == CTRL_CLAIM_REJECTED:
+                self._handle_claim_rejected(data)
+            # Ignore other control messages (CTRL_CLAIM broadcasts for other
+            # clients don't matter to us).
 
     # ── Handlers ──────────────────────────────────────────────────────────
     def _handle_welcome(self, data: bytes) -> None:
@@ -379,6 +508,17 @@ class Bot:
         pz = read_f32(data, 5 + 12)
         self._observed[obj_id] = (px, py, pz)
 
+    def _handle_claim_rejected(self, data: bytes) -> None:
+        # [0xFF][0x07][u16 obj_id]
+        if len(data) < 4:
+            return
+        obj_id = read_u16(data, 2)
+        # If the rejection is for the object we thought we were driving,
+        # clear our held state so the interaction loop stops sending
+        # updates the server will just ignore.
+        if self._held_obj_id == obj_id:
+            self._held_obj_id = None
+
     def _handle_despawn(self, data: bytes) -> None:
         # [0xFF][0x0D][u16 id]
         if len(data) < 4:
@@ -455,6 +595,10 @@ async def run_swarm(args: argparse.Namespace) -> None:
             player_pos_hz=args.player_pos_hz,
             ping_hz=args.ping_hz,
             log_interval_s=args.log_interval,
+            interact=args.interact,
+            claim_cooldown_s=args.claim_cooldown,
+            hold_duration_s=args.hold_duration,
+            interaction_hz=args.interaction_hz,
         ))
         for i in range(args.count)
     ]
@@ -506,6 +650,16 @@ def main() -> int:
     p.add_argument("--player-pos-hz", type=float, default=10.0, help="MSG_PLAYER_POS send rate.")
     p.add_argument("--ping-hz", type=float, default=1.0, help="MSG_TIME_PING rate.")
     p.add_argument("--log-interval", type=float, default=1.0, help="Seconds between CSV log ticks per bot.")
+
+    g = p.add_argument_group("physics stress (--interact)")
+    g.add_argument("--interact", action="store_true",
+                   help="Bots periodically claim an object and drive it via MSG_INTERACTION_UPDATE. "
+                        "This is the only mode that actually stresses the server's Rapier write path "
+                        "and the held-object relay; without it you're only testing AOI + broadcast throughput.")
+    g.add_argument("--claim-cooldown", type=float, default=3.0, help="Seconds between hold cycles.")
+    g.add_argument("--hold-duration", type=float, default=2.0, help="Seconds each hold cycle lasts.")
+    g.add_argument("--interaction-hz", type=float, default=60.0, help="MSG_INTERACTION_UPDATE rate while holding.")
+
     args = p.parse_args()
 
     try:
