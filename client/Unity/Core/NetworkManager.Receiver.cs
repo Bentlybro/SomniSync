@@ -47,29 +47,33 @@ namespace SomniumSpace.Worlds.bently.networking
 
             switch (ctrl)
             {
-                case Protocol.CTRL_WELCOME: // [u16 client_id][u8 needs_scene_init][u64 unix_millis]
+                case Protocol.CTRL_WELCOME: // [u16 client_id][u8 needs_scene_init][u64 unix_millis][u64 scene_ready_ms]
                     if (length < 5) break;
                     ClientId = Protocol.ReadU16(data, 2);
                     _needsSceneInit = data[4] != 0;
 
                     if (length >= 13)
                     {
-                        // Read u64 server unix millis → compute offset so ServerTime is
-                        // (approximately) agreed on by every client in the room.
-                        ulong serverMs =
-                              (ulong)data[5]
-                            | ((ulong)data[6] << 8)
-                            | ((ulong)data[7] << 16)
-                            | ((ulong)data[8] << 24)
-                            | ((ulong)data[9] << 32)
-                            | ((ulong)data[10] << 40)
-                            | ((ulong)data[11] << 48)
-                            | ((ulong)data[12] << 56);
+                        // Read u64 server unix millis → seed the ServerTime offset
+                        // before the NTP-style pings refine it.
+                        ulong serverMs = ReadU64(data, 5);
                         double serverSec = serverMs / 1000.0;
                         _serverTimeOffset = Time.timeAsDouble - serverSec;
                     }
 
-                    Debug.Log($"[Net] Welcome — client_{ClientId}, needs_scene_init={_needsSceneInit}");
+                    if (length >= 21)
+                    {
+                        // Shared "physics went live at T" anchor. Nonzero only if
+                        // the server had already bootstrapped physics before this
+                        // client connected — otherwise it lands via a later
+                        // CTRL_PHYSICS_READY broadcast.
+                        ulong sceneReadyMs = ReadU64(data, 13);
+                        if (sceneReadyMs != 0) SetSceneReadyServerMs(sceneReadyMs);
+                    }
+
+                    Debug.Log(
+                        $"[Net] Welcome — client_{ClientId}, needs_scene_init={_needsSceneInit}, scene_ready_ms={SceneReadyServerMs}"
+                    );
 
                     if (_needsSceneInit && _sceneReady && !_sceneInitSent)
                     {
@@ -119,7 +123,17 @@ namespace SomniumSpace.Worlds.bently.networking
 
                 case Protocol.CTRL_PHYSICS_READY:
                     IsPhysicsReady = true;
-                    Debug.Log("[Net] Server physics active");
+                    if (length >= 10)
+                    {
+                        // Shared scene-epoch anchor for deterministic subsystems.
+                        // Arrives here either as the broadcast when SCENE_INIT
+                        // first lands, or (for a late joiner) as the immediate
+                        // follow-up to welcome. Either way this is the authoritative
+                        // value for baked-in objects' SpawnServerMs fallback.
+                        ulong sceneReadyMs = ReadU64(data, 2);
+                        if (sceneReadyMs != 0) SetSceneReadyServerMs(sceneReadyMs);
+                    }
+                    Debug.Log($"[Net] Server physics active (scene_ready_ms={SceneReadyServerMs})");
                     break;
 
                 case 0xFE: // Server error notification
@@ -262,7 +276,7 @@ namespace SomniumSpace.Worlds.bently.networking
 
         private void HandleSpawn(byte[] data, int length)
         {
-            // [0xFF][0x0C][u16 id][u8 prefab_idx][60B scene_object]
+            // [0xFF][0x0C][u16 id][u8 prefab_idx][60B scene_object][u64 spawn_server_ms]
             const int headerEnd = 5; // bytes before scene_object
             if (length < headerEnd + Protocol.BYTES_PER_SCENE_OBJECT) return;
 
@@ -280,6 +294,15 @@ namespace SomniumSpace.Worlds.bently.networking
             float rx = Protocol.ReadFloat(data, off); off += 4;
             float ry = Protocol.ReadFloat(data, off); off += 4;
             float rz = Protocol.ReadFloat(data, off); off += 4;
+
+            // Optional trailing spawn_server_ms — server-authoritative creation
+            // timestamp so deterministic subsystems anchor to the same moment
+            // on every client. Absent on pre-upgrade servers, in which case
+            // the NetworkObject falls back to NetworkManager.SceneReadyServerMs.
+            int sceneObjEnd = headerEnd + Protocol.BYTES_PER_SCENE_OBJECT;
+            ulong spawnServerMs = 0;
+            if (length >= sceneObjEnd + 8)
+                spawnServerMs = ReadU64(data, sceneObjEnd);
 
             if (networkedPrefabs == null || prefabIdx >= networkedPrefabs.Count)
             {
@@ -299,6 +322,8 @@ namespace SomniumSpace.Worlds.bently.networking
             }
 
             netObj.LocalId = localId;
+            if (spawnServerMs != 0)
+                netObj.SpawnServerMs = spawnServerMs;
 
             // Extend _objects to hold the new id (allows gaps if ids have skipped).
             while (_objects.Count <= localId) _objects.Add(null);

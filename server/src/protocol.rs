@@ -33,13 +33,13 @@ pub const MSG_TIME_PING: u8              = 0x0E; // client → server: [u64 clie
 pub const MSG_SCENE_INIT: u8             = 0x10; // client → server: physics scene description
 
 // --- Control subtypes (inside 0xFF messages) ---
-pub const CTRL_WELCOME: u8           = 0x01; // server → client: [u16 client_id][u8 needs_scene_init]
+pub const CTRL_WELCOME: u8           = 0x01; // server → client: [u16 client_id][u8 needs_scene_init][u64 unix_ms][u64 scene_ready_ms]
 pub const CTRL_CLAIM: u8             = 0x05; // any → server → others: grab an object
 pub const CTRL_RELEASE: u8           = 0x06; // any → server → others: release a grab
 pub const CTRL_CLAIM_REJECTED: u8    = 0x07; // server → requester: your claim was refused, [u16 obj_id]
-pub const CTRL_PHYSICS_READY: u8     = 0x08; // server → all: physics sim is live
+pub const CTRL_PHYSICS_READY: u8     = 0x08; // server → all: physics sim is live, [u64 scene_ready_ms]
 pub const CTRL_SPAWN_REQUEST: u8     = 0x0B; // client → server: please spawn [u8 prefab_idx][60B scene_object]
-pub const CTRL_SPAWN: u8             = 0x0C; // server → all: spawned [u16 id][u8 prefab_idx][60B scene_object]
+pub const CTRL_SPAWN: u8             = 0x0C; // server → all: spawned [u16 id][u8 prefab_idx][60B scene_object][u64 spawn_server_ms]
 pub const CTRL_DESPAWN: u8           = 0x0D; // either direction: destroy [u16 id]
 pub const CTRL_TIME_PONG: u8         = 0x0E; // server → client: [u64 client_local_ms][u64 server_ms] — time sync reply
 

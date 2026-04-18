@@ -72,8 +72,16 @@ namespace SomniumSpace.Worlds.bently.networking
         // advances past _anchoredReleaseMs — meaning we've just received a new
         // server-authoritative release. Every client sees the same values,
         // so every client computes the same wander path after a chase.
+        //
+        // Before any chase has happened, _wanderEpoch derives from the object's
+        // SpawnServerMs (server-authoritative birth timestamp). Do NOT fall back
+        // to mgr.ServerTime here — each client's "first local tick" is at a
+        // different server time (they joined at different moments), so using
+        // that as the epoch puts every client on a different slice of the same
+        // deterministic wander path. The resulting position disagreement is
+        // exactly (client_A_join_gap_seconds * wanderSpeed) metres.
         private Vector3 _origin;
-        private double _wanderEpoch = -1;       // ServerTime when current wander anchor was set
+        private double _wanderEpoch = -1;       // Server unix-seconds anchor for the current wander segment
         private ulong _anchoredReleaseMs;       // LastReleaseServerMs we last re-anchored against
 
         // Read-only views of internal wander state — used by NetworkDebug to
@@ -107,7 +115,16 @@ namespace SomniumSpace.Worlds.bently.networking
             if (mgr == null || !mgr.IsNetworkReady) return;
 
             if (_wanderEpoch < 0)
-                _wanderEpoch = mgr.ServerTime;
+            {
+                // Anchor the wander formula to the object's server-authoritative
+                // birth timestamp. For baked-in scene objects this is the shared
+                // SceneReadyServerMs; for runtime spawns it's the server time
+                // stamped into CTRL_SPAWN. Either way every client lands on the
+                // same value, so they compute identical wander positions.
+                ulong spawnMs = _netObj.SpawnServerMs;
+                if (spawnMs == 0) return; // SceneReadyServerMs not populated yet — defer one tick.
+                _wanderEpoch = spawnMs / 1000.0;
+            }
 
             bool claimedByOther = _netObj.IsClaimedByRemote;
             bool claimedByUs    = _netObj.IsClaimedLocally;

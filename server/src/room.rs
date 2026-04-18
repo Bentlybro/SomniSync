@@ -41,6 +41,14 @@ pub struct Room {
     /// IDs are never reused even after despawn (no holes in the assignment
     /// sequence) — u16 gives 65k spawns per room, plenty in practice.
     pub next_runtime_id: u16,
+
+    /// Unix ms at the moment physics first went live (the first SCENE_INIT
+    /// landed). Shared with every client via CTRL_WELCOME + CTRL_PHYSICS_READY
+    /// so deterministic sub-systems (NetworkNPC wander, NetworkWaypoint paths)
+    /// can anchor to a single scene-wide timestamp every client agrees on,
+    /// rather than each client stamping its own local join time. 0 until the
+    /// first SCENE_INIT.
+    pub scene_ready_ms: u64,
 }
 
 impl Room {
@@ -54,6 +62,7 @@ impl Room {
             physics_ready: false,
             physics_world: None,
             next_runtime_id: 0,
+            scene_ready_ms: 0,
         }
     }
 

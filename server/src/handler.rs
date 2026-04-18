@@ -65,7 +65,7 @@ pub async fn handle_connection(
     let client = new_client(addr, ws_tx);
 
     // Register client and decide whether this is the one that bootstraps physics.
-    let (client_id, needs_scene_init, physics_already_active) = {
+    let (client_id, needs_scene_init, physics_already_active, scene_ready_ms) = {
         let mut r = room.write().await;
         let id = r.add_client(client.clone());
         let physics_active = r.physics_ready;
@@ -75,28 +75,41 @@ pub async fn handle_connection(
             "[Room:{}] Client {} connected: client_{} ({} total)",
             room_id, addr, id, r.client_count()
         );
-        (id, needs_init, physics_active)
+        (id, needs_init, physics_active, r.scene_ready_ms)
     };
 
-    // Send welcome: [u16 client_id][u8 needs_scene_init][u64 unix_millis]
-    // unix_millis gives every client a shared clock reference so components
-    // like NetworkWaypoint can do deterministic pathing without broadcasts.
+    // Send welcome: [u16 client_id][u8 needs_scene_init][u64 unix_millis][u64 scene_ready_ms]
+    //   unix_millis    — server's current unix time, used to seed the client's
+    //                    NTP-style ServerTime offset.
+    //   scene_ready_ms — unix time when physics first went live in this room.
+    //                    Shared across all clients so deterministic subsystems
+    //                    (NetworkNPC wander, NetworkWaypoint) anchor to the
+    //                    same scene-wide timestamp. 0 if physics not yet ready
+    //                    — this client will receive the value with the later
+    //                    CTRL_PHYSICS_READY broadcast.
     {
         let unix_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
-        let mut payload = Vec::with_capacity(11);
+        let mut payload = Vec::with_capacity(19);
         payload.extend_from_slice(&client_id.to_le_bytes());
         payload.push(if needs_scene_init { 1 } else { 0 });
         payload.extend_from_slice(&unix_ms.to_le_bytes());
+        payload.extend_from_slice(&scene_ready_ms.to_le_bytes());
         send(&client, ctrl_msg(CTRL_WELCOME, &payload)).await;
     }
 
     // If physics is already live, tell this client immediately so it stops any
-    // local simulation and waits for server broadcasts.
+    // local simulation and waits for server broadcasts. The payload carries
+    // scene_ready_ms so late joiners get the shared anchor even if they missed
+    // the original broadcast.
     if physics_already_active {
-        send(&client, ctrl_msg(CTRL_PHYSICS_READY, &[])).await;
+        send(
+            &client,
+            ctrl_msg(CTRL_PHYSICS_READY, &scene_ready_ms.to_le_bytes()),
+        )
+        .await;
     }
 
     const IDLE_TIMEOUT_SECS: u64 = 60;
@@ -371,15 +384,24 @@ async fn handle_scene_init(room: &Arc<RwLock<Room>>, room_id: &str, data: &[u8])
 
     let pw_arc = Arc::new(tokio::sync::Mutex::new(world));
 
-    // Mark physics ready and broadcast to every connected client.
+    // Mark physics ready and broadcast to every connected client. Stamp the
+    // room-wide scene_ready_ms here — it's the single canonical "physics went
+    // live at T" value every client anchors deterministic subsystems to. The
+    // CTRL_PHYSICS_READY broadcast carries it so clients that connected before
+    // SCENE_INIT landed learn the value now.
     let initial_object_count = objects.len() as u16;
+    let scene_ready_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
     {
         let mut r = room.write().await;
         r.physics_ready = true;
         r.physics_world = Some(pw_arc.clone());
         // Runtime spawns get IDs starting right after the baked-in scene objects.
         r.next_runtime_id = initial_object_count;
-        let ready_msg = vec![0xFF_u8, CTRL_PHYSICS_READY];
+        r.scene_ready_ms = scene_ready_ms;
+        let ready_msg = ctrl_msg(CTRL_PHYSICS_READY, &scene_ready_ms.to_le_bytes());
         crate::client::broadcast_all(&r.clients, &ready_msg);
     }
 
@@ -736,11 +758,14 @@ fn build_release_broadcast(
 /// Rapier, broadcast the full descriptor (now with id) to every client.
 ///
 /// Wire format:
-///   request:   [0xFF][0x0B][u8 prefab_idx][60B scene_object]     = 63 bytes
-///   broadcast: [0xFF][0x0C][u16 id][u8 prefab_idx][60B scene_object] = 65 bytes
+///   request:   [0xFF][0x0B][u8 prefab_idx][60B scene_object]                    = 63 bytes
+///   broadcast: [0xFF][0x0C][u16 id][u8 prefab_idx][60B scene_object][u64 spawn_ms] = 73 bytes
 ///
 /// The scene_object layout mirrors SCENE_INIT entries — same 60 bytes, same
 /// parser, so bodies spawned at runtime look identical to baked-in ones.
+/// The trailing spawn_ms is the server unix time at broadcast, letting every
+/// client anchor deterministic subsystems (NetworkNPC wander) to a shared
+/// per-object birth timestamp rather than each client's local Instantiate time.
 async fn handle_spawn_request(
     room: &Arc<RwLock<Room>>,
     _client_id: u16,
@@ -790,8 +815,14 @@ async fn handle_spawn_request(
         pw.add_object(&desc);
     }
 
-    // Broadcast to every client: [0xFF][0x0C][u16 id][u8 prefab_idx][60B scene_object]
-    let mut msg = Vec::with_capacity(2 + 2 + 1 + SCENE_OBJECT_BYTES);
+    // Broadcast to every client:
+    //   [0xFF][0x0C][u16 id][u8 prefab_idx][60B scene_object][u64 spawn_server_ms]
+    let spawn_server_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+
+    let mut msg = Vec::with_capacity(2 + 2 + 1 + SCENE_OBJECT_BYTES + 8);
     msg.push(0xFF);
     msg.push(CTRL_SPAWN);
     msg.extend_from_slice(&assigned_id.to_le_bytes());
@@ -802,12 +833,13 @@ async fn handle_spawn_request(
     const SCENE_OBJ_ID_OFFSET: usize = 5; // after [0xFF][0x0C][u16 outer_id][u8 prefab]
     msg[SCENE_OBJ_ID_OFFSET]     = (assigned_id & 0xFF) as u8;
     msg[SCENE_OBJ_ID_OFFSET + 1] = (assigned_id >> 8) as u8;
+    msg.extend_from_slice(&spawn_server_ms.to_le_bytes());
 
     let r = room.read().await;
     crate::client::broadcast_all(&r.clients, &msg);
     info!(
-        "[Room:{}] spawned object id={} prefab={}",
-        room_id, assigned_id, prefab_idx
+        "[Room:{}] spawned object id={} prefab={} spawn_ms={}",
+        room_id, assigned_id, prefab_idx, spawn_server_ms
     );
 }
 

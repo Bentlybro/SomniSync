@@ -57,6 +57,29 @@ namespace SomniumSpace.Worlds.bently.networking
         public ulong LastReleaseServerMs { get; internal set; }
 
         /// <summary>
+        /// Unix time (ms) that this object "exists from" — the shared birth
+        /// timestamp every client anchors deterministic subsystems
+        /// (NetworkNPC wander, NetworkWaypoint paths) to. For runtime-spawned
+        /// objects the server sends this with <c>CTRL_SPAWN</c>; for
+        /// scene-baked objects we fall back to
+        /// <see cref="NetworkManager.SceneReadyServerMs"/>, which the server
+        /// broadcasts once when physics first goes live. Returns 0 until
+        /// either source populates it, which subsystems should treat as
+        /// "not ready yet — defer".
+        /// </summary>
+        public ulong SpawnServerMs
+        {
+            get
+            {
+                if (_spawnServerMsExplicit != 0) return _spawnServerMsExplicit;
+                var mgr = NetworkManager.Instance;
+                return mgr != null ? mgr.SceneReadyServerMs : 0UL;
+            }
+            internal set => _spawnServerMsExplicit = value;
+        }
+        private ulong _spawnServerMsExplicit;
+
+        /// <summary>
         /// True if this client is allowed to write sibling-component state
         /// (NetworkVariables, NetworkAnimator, NetworkTimer, NetworkEvents).
         ///

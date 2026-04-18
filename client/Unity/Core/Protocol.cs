@@ -39,7 +39,7 @@ namespace SomniumSpace.Worlds.bently.networking
         // Control subtypes  (second byte inside 0xFF messages)
         // =====================================================================
 
-        /// <summary>Server → client on connect: [u16 client_id][u8 needs_scene_init]</summary>
+        /// <summary>Server → client on connect: [u16 client_id][u8 needs_scene_init][u64 unix_ms][u64 scene_ready_ms]. scene_ready_ms = 0 until the first SCENE_INIT lands; otherwise the moment physics went live in this room.</summary>
         public const byte CTRL_WELCOME           = 0x01;
         public const byte CTRL_CLAIM             = 0x05;
         public const byte CTRL_RELEASE           = 0x06;
@@ -48,13 +48,13 @@ namespace SomniumSpace.Worlds.bently.networking
 
         /// <summary>Client → server: spawn a networked prefab. [0xFF][0x0B][u8 prefab_idx][60B scene_object] (id=0)</summary>
         public const byte CTRL_SPAWN_REQUEST     = 0x0B;
-        /// <summary>Server → all: a runtime object has been spawned. [0xFF][0x0C][u16 id][u8 prefab_idx][60B scene_object]</summary>
+        /// <summary>Server → all: a runtime object has been spawned. [0xFF][0x0C][u16 id][u8 prefab_idx][60B scene_object][u64 spawn_server_ms]. spawn_server_ms anchors deterministic subsystems (NetworkNPC wander) to a shared per-object birth timestamp.</summary>
         public const byte CTRL_SPAWN             = 0x0C;
         /// <summary>Either direction: destroy a runtime object. [0xFF][0x0D][u16 id]</summary>
         public const byte CTRL_DESPAWN           = 0x0D;
         /// <summary>Server → client: time sync reply. [0xFF][0x0E][u64 client_local_ms][u64 server_ms]</summary>
         public const byte CTRL_TIME_PONG         = 0x0E;
-        /// <summary>Server → all: physics sim is now live. Stop any local simulation.</summary>
+        /// <summary>Server → all: physics sim is now live. Stop any local simulation. Payload: [u64 scene_ready_ms] — the server's unix time at the moment physics first went active, shared across all clients as a deterministic anchor for wander / waypoint / other time-driven sync.</summary>
         public const byte CTRL_PHYSICS_READY     = 0x08;
 
         // --- Persistence control subtypes ---

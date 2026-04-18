@@ -73,19 +73,35 @@ namespace SomniumSpace.Worlds.bently.networking
         /// <summary>
         /// Monotonic clock shared by all clients in this room, in seconds.
         /// Initialised from the server's unix_millis at welcome (accurate to
-        /// ±RTT/2), then continually refined by NTP-style ping/pong exchanges —
-        /// whenever we see a smaller RTT we use that sample's offset, which has
-        /// less one-way-delay error baked in. All clients converge on the same
-        /// ServerTime so deterministic components like NetworkNPC and
-        /// NetworkWaypoint produce matching positions. Zero until welcome.
+        /// ±RTT/2), then continually refined by an NTP-style ping/pong
+        /// exchange at 1 Hz: every pong's sample offset is blended into the
+        /// current offset via an exponential moving average, so server clock
+        /// drift / adjustments propagate continuously instead of being frozen
+        /// at whichever moment happened to give the lowest RTT. All clients
+        /// converge on the same ServerTime (to within a few ms) so
+        /// deterministic components like NetworkNPC + NetworkWaypoint produce
+        /// matching positions. Zero until welcome.
         /// </summary>
         public double ServerTime => IsNetworkReady ? Time.timeAsDouble - _serverTimeOffset : 0.0;
         private double _serverTimeOffset;
         internal void SetServerTimeOffsetSeconds(double offset) => _serverTimeOffset = offset;
         internal double ServerTimeOffsetSeconds => _serverTimeOffset;
-        /// <summary>Smallest RTT seen since connect, in seconds. Used to prefer the cleanest time-sync sample.</summary>
+        /// <summary>Smallest RTT seen since connect, in seconds. Diagnostic only — the actual offset uses an EMA of every sample, not just the best one.</summary>
         internal double BestRttSeconds = double.MaxValue;
         private float _nextTimePingTime;
+
+        /// <summary>
+        /// Unix time (ms) when the server's physics world first went live in
+        /// this room — the shared "scene epoch" every client anchors
+        /// deterministic subsystems (NetworkNPC wander, NetworkWaypoint
+        /// paths) to. Populated from <c>CTRL_WELCOME</c> for clients that
+        /// connect after physics is up, or from <c>CTRL_PHYSICS_READY</c> for
+        /// the client that bootstrapped the scene. 0 until one of those
+        /// messages lands. Shared across all clients, so two clients joining
+        /// 30 seconds apart compute identical wander positions.
+        /// </summary>
+        public ulong SceneReadyServerMs { get; private set; }
+        internal void SetSceneReadyServerMs(ulong ms) => SceneReadyServerMs = ms;
 
         // Events
         /// <summary>Fired when networking is ready (connected + client ID assigned). Safe to use network features.</summary>
@@ -393,6 +409,10 @@ namespace SomniumSpace.Worlds.bently.networking
             IsPhysicsReady = false;
             _sceneInitSent = false;
             _needsSceneInit = false;
+            // Discard the scene epoch — new welcome / physics-ready on reconnect
+            // will repopulate it. Leaving it stale would keep every baked-in
+            // NetworkNPC anchored to the *previous* session's scene-ready time.
+            SceneReadyServerMs = 0;
             // Keep _localPlayerTransform — it's a scene reference, still valid on
             // reconnect. No need to re-resolve.
             // Clear per-sender sequence dedup — on reconnect the server starts at
