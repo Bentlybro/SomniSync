@@ -69,13 +69,20 @@ namespace SomniumSpace.Worlds.bently.networking
 
             if (_hasRb)
             {
-                // Server is the authority again. Stop simulating locally and wait for
-                // incoming server position updates.
                 _rb.isKinematic = true;
                 _fromPos = _toPos = transform.position;
                 _fromRot = _toRot = transform.rotation;
                 _interpT = 1f;
             }
+
+            // Local approximation of the authoritative release — lets
+            // NetworkNPC re-anchor instantly without waiting ~RTT/2 for the
+            // server's echo. When the echo arrives, OnRemoteRelease overwrites
+            // these with the truly authoritative values (tiny correction —
+            // ServerTime should already be NTP-sync'd).
+            LastReleasePos = transform.position;
+            LastReleaseRot = transform.rotation;
+            LastReleaseServerMs = (ulong)(NetworkManager.Instance.ServerTime * 1000.0);
 
             NetworkManager.Instance.SendRelease(LocalId);
         }
@@ -91,11 +98,31 @@ namespace SomniumSpace.Worlds.bently.networking
                 _rb.isKinematic = true;
         }
 
-        public void OnRemoteRelease()
+        /// <summary>
+        /// Called when the server announces a release for this object.
+        /// <paramref name="pos"/>, <paramref name="rot"/>, and
+        /// <paramref name="serverMs"/> are the authoritative release state —
+        /// used to snap all clients (including the original claimer) to an
+        /// identical post-release pose, killing the per-client lerp-phase
+        /// drift that was making NetworkNPC paths diverge after each chase.
+        /// </summary>
+        public void OnRemoteRelease(Vector3 pos, Quaternion rot, ulong serverMs)
         {
             ClaimedByClient = 0;
             if (_hasRb)
                 _rb.isKinematic = true;
+
+            // Hard-snap to server's release pose so any in-flight interp
+            // doesn't continue writing transform.position after the claim ends.
+            transform.position = pos;
+            transform.rotation = rot;
+            _fromPos = _toPos = pos;
+            _fromRot = _toRot = rot;
+            _interpT = 1f;
+
+            LastReleasePos = pos;
+            LastReleaseRot = rot;
+            LastReleaseServerMs = serverMs;
         }
 
         /// <summary>

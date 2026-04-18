@@ -91,13 +91,8 @@ namespace SomniumSpace.Worlds.bently.networking
                     }
                     break;
 
-                case Protocol.CTRL_RELEASE: // Remote client released an object
-                    if (length >= 6)
-                    {
-                        ushort releaseObjId = Protocol.ReadU16(data, 2);
-                        if (GetObject(releaseObjId) is { } releaseObj)
-                            releaseObj.OnRemoteRelease();
-                    }
+                case Protocol.CTRL_RELEASE:
+                    HandleRelease(data, length);
                     break;
 
                 case Protocol.CTRL_CLAIM_REJECTED: // Server refused our claim
@@ -310,6 +305,56 @@ namespace SomniumSpace.Worlds.bently.networking
             _objects[localId] = netObj;
 
             OnObjectSpawned?.Invoke(netObj, prefabIdx);
+        }
+
+        /// <summary>
+        /// Release broadcast carries an authoritative pose + timestamp from the
+        /// server so every client snaps to identical post-chase state. Avoids
+        /// per-client re-anchor drift that was making NetworkNPCs diverge after
+        /// each chase.
+        ///
+        /// Wire layout (34 bytes):
+        ///   [0xFF][0x06][u16 obj_id][u16 client_id]
+        ///   [f32 px][f32 py][f32 pz]
+        ///   [i16 qx][i16 qy][i16 qz][i16 qw]    (decode each /32767)
+        ///   [u64 server_unix_ms]
+        /// </summary>
+        private void HandleRelease(byte[] data, int length)
+        {
+            if (length < 6) return;
+            ushort releaseObjId = Protocol.ReadU16(data, 2);
+            if (GetObject(releaseObjId) is not { } releaseObj) return;
+
+            // Back-compat path if an older server ever sends the 6-byte format.
+            if (length < 34)
+            {
+                releaseObj.OnRemoteRelease(releaseObj.transform.position,
+                                           releaseObj.transform.rotation,
+                                           0);
+                return;
+            }
+
+            float px = Protocol.ReadFloat(data, 6);
+            float py = Protocol.ReadFloat(data, 10);
+            float pz = Protocol.ReadFloat(data, 14);
+            short qxs = Protocol.ReadI16(data, 18);
+            short qys = Protocol.ReadI16(data, 20);
+            short qzs = Protocol.ReadI16(data, 22);
+            short qws = Protocol.ReadI16(data, 24);
+            ulong serverMs = ReadU64(data, 26);
+
+            Vector3 pos = new Vector3(px, py, pz);
+            Quaternion rot = new Quaternion(
+                qxs / 32767f,
+                qys / 32767f,
+                qzs / 32767f,
+                qws / 32767f);
+            // Re-normalise — quantisation can nudge |q| slightly off 1.
+            float mag = Mathf.Sqrt(rot.x * rot.x + rot.y * rot.y + rot.z * rot.z + rot.w * rot.w);
+            if (mag > 1e-5f)
+                rot = new Quaternion(rot.x / mag, rot.y / mag, rot.z / mag, rot.w / mag);
+
+            releaseObj.OnRemoteRelease(pos, rot, serverMs);
         }
 
         private void HandleDespawn(ushort localId)

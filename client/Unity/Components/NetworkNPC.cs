@@ -68,10 +68,13 @@ namespace SomniumSpace.Worlds.bently.networking
 
         private NetworkObject _netObj;
 
-        // Wander state
+        // Wander state. Re-anchor happens when NetworkObject.LastReleaseServerMs
+        // advances past _anchoredReleaseMs — meaning we've just received a new
+        // server-authoritative release. Every client sees the same values,
+        // so every client computes the same wander path after a chase.
         private Vector3 _origin;
-        private double _wanderEpoch = -1; // ServerTime when current wander anchor was set
-        private bool _wasClaimed;
+        private double _wanderEpoch = -1;       // ServerTime when current wander anchor was set
+        private ulong _anchoredReleaseMs;       // LastReleaseServerMs we last re-anchored against
 
         // Chase state
         private float _nextClaimAttemptTime;
@@ -144,19 +147,19 @@ namespace SomniumSpace.Worlds.bently.networking
             }
 
             // ── Wander ────────────────────────────────────────────────────
-            if (claimedByUs || claimedByOther)
-            {
-                _wasClaimed = true;
-                return;
-            }
+            if (claimedByUs || claimedByOther) return;
 
-            if (_wasClaimed)
+            // Server-authoritative re-anchor. When the most recent release
+            // (shared across all clients) is newer than what we've anchored
+            // against, rebind _origin and _wanderEpoch to server values — every
+            // client lands on identical inputs, so the deterministic wander
+            // sampler produces the same output on every screen.
+            if (_netObj.LastReleaseServerMs != 0
+                && _netObj.LastReleaseServerMs != _anchoredReleaseMs)
             {
-                // Just came free — re-anchor at current pos so wander picks up
-                // from here rather than teleporting back to its deterministic path.
-                _origin = transform.position;
-                _wanderEpoch = mgr.ServerTime;
-                _wasClaimed = false;
+                _origin = _netObj.LastReleasePos;
+                _wanderEpoch = _netObj.LastReleaseServerMs / 1000.0;
+                _anchoredReleaseMs = _netObj.LastReleaseServerMs;
             }
 
             if (!canWander) return;

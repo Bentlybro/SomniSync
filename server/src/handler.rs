@@ -533,19 +533,29 @@ async fn physics_tick_task(
                     Some(r) => r,
                     None => return,
                 };
+
+                // Snapshot poses BEFORE release_stale (which may reset kinematic
+                // state), so broadcasts carry authoritative pre-release position.
+                let mut poses = Vec::with_capacity(stale.len());
+                {
+                    let pw = pw_arc.lock().await;
+                    for (obj_id, _) in &stale {
+                        poses.push(pw.read_body_pose(*obj_id));
+                    }
+                }
                 {
                     let mut pw = pw_arc.lock().await;
                     for (obj_id, _) in &stale {
                         pw.release_stale(*obj_id);
                     }
                 }
+
                 let mut r = room_arc.write().await;
-                for (obj_id, owner) in &stale {
+                for (i, (obj_id, owner)) in stale.iter().enumerate() {
                     if r.claimed_objects.get(obj_id) == Some(owner) {
                         r.claimed_objects.remove(obj_id);
-                        let mut msg = vec![0xFF, CTRL_RELEASE];
-                        msg.extend_from_slice(&obj_id.to_le_bytes());
-                        msg.extend_from_slice(&owner.to_le_bytes());
+                        let pose = poses.get(i).copied().flatten();
+                        let msg = build_release_broadcast(*obj_id, *owner, pose);
                         crate::client::broadcast_all(&r.clients, &msg);
                         info!(
                             "[Room:{}] stale claim on obj_{} (owner client_{}) auto-released",
@@ -645,19 +655,30 @@ async fn handle_control(
         }
         CTRL_RELEASE => {
             let physics_world_opt = {
-                let mut room = room.write().await;
-                // Only the owner can release.
-                if room.claimed_objects.get(&obj_id) != Some(&client_id) {
+                let room_r = room.read().await;
+                if room_r.claimed_objects.get(&obj_id) != Some(&client_id) {
                     return;
                 }
-                room.claimed_objects.remove(&obj_id);
-                debug!("[Room:{}] client_{} released object {}", room_id, client_id, obj_id);
-                let mut relay = vec![0xFF, CTRL_RELEASE];
-                relay.extend_from_slice(&obj_id.to_le_bytes());
-                relay.extend_from_slice(&client_id.to_le_bytes());
-                broadcast_except(&room.clients, client_id, &relay);
-                room.physics_world.clone()
+                room_r.physics_world.clone()
             };
+
+            // Read the authoritative pose BEFORE release() restores the body
+            // type — the pose is what every client should re-anchor to.
+            let pose = if let Some(ref pw_arc) = physics_world_opt {
+                let pw = pw_arc.lock().await;
+                pw.read_body_pose(obj_id)
+            } else {
+                None
+            };
+
+            let mut room_w = room.write().await;
+            room_w.claimed_objects.remove(&obj_id);
+            debug!("[Room:{}] client_{} released object {}", room_id, client_id, obj_id);
+            let msg = build_release_broadcast(obj_id, client_id, pose);
+            // Broadcast to ALL including the releaser so even the chaser
+            // re-anchors from the same authoritative pose + timestamp.
+            crate::client::broadcast_all(&room_w.clients, &msg);
+            drop(room_w);
 
             if let Some(pw_arc) = physics_world_opt {
                 let mut pw = pw_arc.lock().await;
@@ -666,6 +687,44 @@ async fn handle_control(
         }
         _ => {}
     }
+}
+
+/// Build a CTRL_RELEASE broadcast carrying the authoritative release pose +
+/// the server's current unix_ms. Every recipient (including the original
+/// claimer) re-anchors from these values so deterministic subcomponents
+/// (NetworkNPC's wander) don't drift per-client.
+///
+/// Wire layout:
+///   [0xFF][0x06][u16 obj_id][u16 client_id]
+///   [f32 px][f32 py][f32 pz]
+///   [i16 qx][i16 qy][i16 qz][i16 qw]   (quantised quaternion, /32767 to decode)
+///   [u64 server_unix_ms]
+///   = 34 bytes
+fn build_release_broadcast(
+    obj_id: u16,
+    client_id: u16,
+    pose: Option<([f32; 3], [f32; 4])>,
+) -> Vec<u8> {
+    let (pos, quat) = pose.unwrap_or(([0.0; 3], [0.0, 0.0, 0.0, 1.0]));
+    let server_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+
+    let mut buf = Vec::with_capacity(34);
+    buf.push(0xFF);
+    buf.push(CTRL_RELEASE);
+    buf.extend_from_slice(&obj_id.to_le_bytes());
+    buf.extend_from_slice(&client_id.to_le_bytes());
+    buf.extend_from_slice(&pos[0].to_le_bytes());
+    buf.extend_from_slice(&pos[1].to_le_bytes());
+    buf.extend_from_slice(&pos[2].to_le_bytes());
+    for c in quat.iter() {
+        let q = (c.clamp(-1.0, 1.0) * 32767.0).round() as i16;
+        buf.extend_from_slice(&q.to_le_bytes());
+    }
+    buf.extend_from_slice(&server_ms.to_le_bytes());
+    buf
 }
 
 /// Client asked to spawn an object at runtime. Assign it an id, add it to
@@ -989,25 +1048,29 @@ async fn handle_disconnect(room: &Arc<RwLock<Room>>, client_id: u16, room_id: &s
     };
 
     if let Some(pw_arc) = pw_opt {
-        let mut pw = pw_arc.lock().await;
-        // Release any objects this client was holding (cache velocity so they
-        // retain momentum on the way to Dynamic).
-        for obj_id in &released_ids {
-            pw.release(*obj_id);
+        // Read poses first so release broadcasts match authoritative state.
+        let mut poses = Vec::with_capacity(released_ids.len());
+        {
+            let pw = pw_arc.lock().await;
+            for obj_id in &released_ids {
+                poses.push((*obj_id, pw.read_body_pose(*obj_id)));
+            }
         }
-        // Pull their kinematic capsule out of the world so it stops colliding.
-        pw.remove_player_body(client_id);
-    }
 
-    // Broadcast release for every object this client was holding so other
-    // clients stop showing the held-object visual state.
-    if !released_ids.is_empty() {
-        let room_r = room.read().await;
-        for obj_id in &released_ids {
-            let mut relay = vec![0xFF, CTRL_RELEASE];
-            relay.extend_from_slice(&obj_id.to_le_bytes());
-            relay.extend_from_slice(&client_id.to_le_bytes());
-            crate::client::broadcast_all(&room_r.clients, &relay);
+        {
+            let mut pw = pw_arc.lock().await;
+            for obj_id in &released_ids {
+                pw.release(*obj_id);
+            }
+            pw.remove_player_body(client_id);
+        }
+
+        if !released_ids.is_empty() {
+            let room_r = room.read().await;
+            for (obj_id, pose) in poses {
+                let msg = build_release_broadcast(obj_id, client_id, pose);
+                crate::client::broadcast_all(&room_r.clients, &msg);
+            }
         }
     }
 }

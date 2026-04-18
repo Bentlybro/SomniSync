@@ -47,6 +47,16 @@ namespace SomniumSpace.Worlds.bently.networking
         public bool IsClaimedByRemote => ClaimedByClient != 0 && !IsClaimedLocally;
 
         /// <summary>
+        /// Authoritative release pose broadcast by the server when the last
+        /// claim on this object ended. Populated on CTRL_RELEASE. Used by AI
+        /// subcomponents (NetworkNPC) to re-anchor deterministic motion at
+        /// a point every client agrees on, eliminating post-chase drift.
+        /// </summary>
+        public Vector3 LastReleasePos { get; internal set; }
+        public Quaternion LastReleaseRot { get; internal set; }
+        public ulong LastReleaseServerMs { get; internal set; }
+
+        /// <summary>
         /// True if this client is allowed to write sibling-component state
         /// (NetworkVariables, NetworkAnimator, NetworkTimer, NetworkEvents).
         ///

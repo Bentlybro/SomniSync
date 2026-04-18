@@ -361,6 +361,17 @@ impl PhysicsWorld {
             .collect()
     }
 
+    /// Read the current world pose (pos + quaternion) of a body. Used by the
+    /// release broadcast so every client snaps to an identical, authoritative
+    /// position instead of relying on per-client lerp state.
+    pub fn read_body_pose(&self, obj_id: u16) -> Option<([f32; 3], [f32; 4])> {
+        let handle = *self.object_to_body.get(&obj_id)?;
+        let rb = self.rigid_bodies.get(handle)?;
+        let p = rb.translation();
+        let q = rb.rotation();
+        Some(([p.x, p.y, p.z], [q.i, q.j, q.k, q.w]))
+    }
+
     /// Apply a push impulse to a dynamic body — used when a player walks into
     /// an object. Passes a velocity vector; internally multiplied by mass so it
     /// behaves as a proper momentum transfer through Rapier. Kinematic / fixed
