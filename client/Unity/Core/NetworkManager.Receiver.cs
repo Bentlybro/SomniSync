@@ -118,6 +118,10 @@ namespace SomniumSpace.Worlds.bently.networking
                         HandleDespawn(Protocol.ReadU16(data, 2));
                     break;
 
+                case Protocol.CTRL_TIME_PONG:
+                    HandleTimePong(data, length);
+                    break;
+
                 case Protocol.CTRL_PHYSICS_READY:
                     IsPhysicsReady = true;
                     Debug.Log("[Net] Server physics active");
@@ -317,6 +321,56 @@ namespace SomniumSpace.Worlds.bently.networking
             _objects[localId] = null;
             OnObjectDespawned?.Invoke(obj);
             Destroy(obj.gameObject);
+        }
+
+        // =====================================================================
+        // Time sync (CTRL_TIME_PONG 0x0E)
+        //
+        // NTP-style correction of the ServerTime offset. The welcome message
+        // gave us a one-way estimate (accurate to ±RTT/2); this round-trip
+        // exchange lets us measure RTT and bake out the one-way-delay error.
+        //
+        // Payload: [u64 client_local_ms_echoed][u64 server_ms_when_processed]
+        // =====================================================================
+
+        private void HandleTimePong(byte[] data, int length)
+        {
+            if (length < 18) return;
+
+            ulong clientSentMs = ReadU64(data, 2);
+            ulong serverMs     = ReadU64(data, 10);
+
+            double localNowMs = Time.timeAsDouble * 1000.0;
+            double rttMs = localNowMs - clientSentMs;
+
+            // Filter out garbage — negative (clock jump?) or absurdly high.
+            if (rttMs < 0 || rttMs > 5000) return;
+
+            double rttSec = rttMs / 1000.0;
+            // Prefer smallest-RTT sample seen so far. Smaller RTT means less
+            // jitter error in our symmetric one-way-delay assumption.
+            if (rttSec >= BestRttSeconds && BestRttSeconds != double.MaxValue) return;
+
+            BestRttSeconds = rttSec;
+
+            // Estimate server's clock at the moment the pong arrived: the
+            // server's stamp (when it processed the ping) plus the one-way
+            // delay on the return leg (assumed symmetric = RTT/2).
+            double estimatedServerMsNow = serverMs + (rttMs * 0.5);
+            double offsetSeconds = (localNowMs - estimatedServerMsNow) / 1000.0;
+            SetServerTimeOffsetSeconds(offsetSeconds);
+        }
+
+        private static ulong ReadU64(byte[] buf, int offset)
+        {
+            return ((ulong)buf[offset])
+                 | ((ulong)buf[offset + 1] << 8)
+                 | ((ulong)buf[offset + 2] << 16)
+                 | ((ulong)buf[offset + 3] << 24)
+                 | ((ulong)buf[offset + 4] << 32)
+                 | ((ulong)buf[offset + 5] << 40)
+                 | ((ulong)buf[offset + 6] << 48)
+                 | ((ulong)buf[offset + 7] << 56);
         }
 
         // =====================================================================

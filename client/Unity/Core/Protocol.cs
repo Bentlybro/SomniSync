@@ -29,6 +29,8 @@ namespace SomniumSpace.Worlds.bently.networking
         public const byte MSG_PLAYER_POS              = 0x0C;
         /// <summary>Client → server: apply a push impulse to an object. [0x0D][u16 obj_id][f32 vx][f32 vy][f32 vz]</summary>
         public const byte MSG_PUSH_IMPULSE            = 0x0D;
+        /// <summary>Client → server: time sync ping. [0x0E][u64 client_local_ms]. Server replies with CTRL_TIME_PONG.</summary>
+        public const byte MSG_TIME_PING               = 0x0E;
         /// <summary>Client → server: physics scene description. [0x10][u16 count][N × 60B objects]</summary>
         public const byte MSG_SCENE_INIT              = 0x10;
         public const byte MSG_CONTROL                 = 0xFF;
@@ -50,6 +52,8 @@ namespace SomniumSpace.Worlds.bently.networking
         public const byte CTRL_SPAWN             = 0x0C;
         /// <summary>Either direction: destroy a runtime object. [0xFF][0x0D][u16 id]</summary>
         public const byte CTRL_DESPAWN           = 0x0D;
+        /// <summary>Server → client: time sync reply. [0xFF][0x0E][u64 client_local_ms][u64 server_ms]</summary>
+        public const byte CTRL_TIME_PONG         = 0x0E;
         /// <summary>Server → all: physics sim is now live. Stop any local simulation.</summary>
         public const byte CTRL_PHYSICS_READY     = 0x08;
 

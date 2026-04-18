@@ -29,6 +29,7 @@ pub const MSG_SCALED_INTERACTION: u8     = 0x09; // claimed scaled-object positi
 pub const MSG_POSITION_VELOCITY: u8      = 0x0B; // server → clients: authoritative position + velocity
 pub const MSG_PLAYER_POS: u8             = 0x0C; // client → server: local player position (for AOI)
 pub const MSG_PUSH_IMPULSE: u8           = 0x0D; // client → server: apply impulse to an object (no claim)
+pub const MSG_TIME_PING: u8              = 0x0E; // client → server: [u64 client_local_ms] — time sync ping
 pub const MSG_SCENE_INIT: u8             = 0x10; // client → server: physics scene description
 
 // --- Control subtypes (inside 0xFF messages) ---
@@ -40,6 +41,7 @@ pub const CTRL_PHYSICS_READY: u8     = 0x08; // server → all: physics sim is l
 pub const CTRL_SPAWN_REQUEST: u8     = 0x0B; // client → server: please spawn [u8 prefab_idx][60B scene_object]
 pub const CTRL_SPAWN: u8             = 0x0C; // server → all: spawned [u16 id][u8 prefab_idx][60B scene_object]
 pub const CTRL_DESPAWN: u8           = 0x0D; // either direction: destroy [u16 id]
+pub const CTRL_TIME_PONG: u8         = 0x0E; // server → client: [u64 client_local_ms][u64 server_ms] — time sync reply
 
 // --- Persistence control subtypes ---
 pub const CTRL_PLAYER_IDENT: u8  = 0x20;

@@ -72,13 +72,20 @@ namespace SomniumSpace.Worlds.bently.networking
 
         /// <summary>
         /// Monotonic clock shared by all clients in this room, in seconds.
-        /// Derived from the server's unix_millis at welcome and then kept using the
-        /// client's own delta-time. All clients agree on ServerTime (modulo RTT) so
-        /// deterministic components like NetworkWaypoint produce matching positions.
-        /// Zero until welcome arrives.
+        /// Initialised from the server's unix_millis at welcome (accurate to
+        /// ±RTT/2), then continually refined by NTP-style ping/pong exchanges —
+        /// whenever we see a smaller RTT we use that sample's offset, which has
+        /// less one-way-delay error baked in. All clients converge on the same
+        /// ServerTime so deterministic components like NetworkNPC and
+        /// NetworkWaypoint produce matching positions. Zero until welcome.
         /// </summary>
         public double ServerTime => IsNetworkReady ? Time.timeAsDouble - _serverTimeOffset : 0.0;
         private double _serverTimeOffset;
+        internal void SetServerTimeOffsetSeconds(double offset) => _serverTimeOffset = offset;
+        internal double ServerTimeOffsetSeconds => _serverTimeOffset;
+        /// <summary>Smallest RTT seen since connect, in seconds. Used to prefer the cleanest time-sync sample.</summary>
+        internal double BestRttSeconds = double.MaxValue;
+        private float _nextTimePingTime;
 
         // Events
         /// <summary>Fired when networking is ready (connected + client ID assigned). Safe to use network features.</summary>
@@ -193,6 +200,33 @@ namespace SomniumSpace.Worlds.bently.networking
                 _nextPlayerPosTime = Time.time + _playerPosInterval;
                 SendPlayerPosition();
             }
+
+            // Periodic NTP-style ping to tighten the ServerTime offset.
+            if (IsNetworkReady && Time.time >= _nextTimePingTime)
+            {
+                // Faster cadence at first (2s) so initial convergence is quick,
+                // then back off. The offset only needs re-measuring when the
+                // network path changes significantly.
+                _nextTimePingTime = Time.time + (BestRttSeconds == double.MaxValue ? 2f : 10f);
+                SendTimePing();
+            }
+        }
+
+        private void SendTimePing()
+        {
+            if (_ws == null || _ws.State != WebSocketState.Open) return;
+            ulong clientMs = (ulong)(Time.timeAsDouble * 1000.0);
+            byte[] buf = new byte[9];
+            buf[0] = Protocol.MSG_TIME_PING;
+            buf[1] = (byte)(clientMs       & 0xFF);
+            buf[2] = (byte)((clientMs >> 8)  & 0xFF);
+            buf[3] = (byte)((clientMs >> 16) & 0xFF);
+            buf[4] = (byte)((clientMs >> 24) & 0xFF);
+            buf[5] = (byte)((clientMs >> 32) & 0xFF);
+            buf[6] = (byte)((clientMs >> 40) & 0xFF);
+            buf[7] = (byte)((clientMs >> 48) & 0xFF);
+            buf[8] = (byte)((clientMs >> 56) & 0xFF);
+            SendBinary(buf);
         }
 
         // =====================================================================
@@ -365,6 +399,9 @@ namespace SomniumSpace.Worlds.bently.networking
             // seq=1, which would otherwise be rejected as "older" than the cached
             // high value from the previous session and silently drop updates.
             _receivedSequences.Clear();
+            // Discard the RTT sample history — new session, new network path.
+            BestRttSeconds = double.MaxValue;
+            _nextTimePingTime = 0;
             // Release any objects we were holding so reconnect doesn't leave the
             // client stuck believing it still owns objects the server has long
             // since returned to Dynamic.

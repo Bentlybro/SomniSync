@@ -11,8 +11,9 @@ use crate::physics::{build_filtered_message, parse_scene_init, PhysicsWorld};
 use crate::protocol::{
     ctrl_msg, CTRL_CLAIM, CTRL_CLAIM_REJECTED, CTRL_DESPAWN, CTRL_ERROR, CTRL_PERSIST_DATA,
     CTRL_PERSIST_GET, CTRL_PERSIST_SET, CTRL_PHYSICS_READY, CTRL_PLAYER_IDENT, CTRL_RELEASE,
-    CTRL_SPAWN, CTRL_SPAWN_REQUEST, CTRL_WELCOME, MSG_ANIMATOR, MSG_EVENT, MSG_INTERACTION_UPDATE,
-    MSG_PLAYER_POS, MSG_PUSH_IMPULSE, MSG_SCALED_INTERACTION, MSG_SCENE_INIT, MSG_VARIABLE_UPDATE,
+    CTRL_SPAWN, CTRL_SPAWN_REQUEST, CTRL_TIME_PONG, CTRL_WELCOME, MSG_ANIMATOR, MSG_EVENT,
+    MSG_INTERACTION_UPDATE, MSG_PLAYER_POS, MSG_PUSH_IMPULSE, MSG_SCALED_INTERACTION,
+    MSG_SCENE_INIT, MSG_TIME_PING, MSG_VARIABLE_UPDATE,
 };
 use crate::room::Room;
 use crate::room::RoomMap;
@@ -195,6 +196,28 @@ async fn handle_binary(
                 let mut pw = pw_arc.lock().await;
                 pw.update_player_body(client_id, [x, y, z], radius, half_height);
             }
+        }
+
+        MSG_TIME_PING => {
+            // [0x0E][u64 client_local_ms] = 9 bytes
+            // Echo the client's timestamp back alongside the server's current
+            // unix_ms so the client can compute RTT and a better ServerTime
+            // offset than the single one-way estimate we gave at welcome.
+            if data.len() < 9 {
+                return;
+            }
+            let client_ms = u64::from_le_bytes([
+                data[1], data[2], data[3], data[4],
+                data[5], data[6], data[7], data[8],
+            ]);
+            let server_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
+            let mut payload = Vec::with_capacity(16);
+            payload.extend_from_slice(&client_ms.to_le_bytes());
+            payload.extend_from_slice(&server_ms.to_le_bytes());
+            send(client, ctrl_msg(CTRL_TIME_PONG, &payload)).await;
         }
 
         MSG_PUSH_IMPULSE => {
