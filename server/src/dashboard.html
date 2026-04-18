@@ -167,7 +167,11 @@
   const $ = (id) => document.getElementById(id);
   const fmt_bytes = (b) => {
     if (b === undefined || b === null) return "—";
-    if (b < 1024) return b + " B";
+    // Rates (B/s) can be non-integer, so toFixed even the small branch —
+    // otherwise a 8.89345… float dumps all 15 digits of precision into the UI.
+    // Integer byte counts coming through here (RSS, totals) harmlessly gain
+    // one decimal of zero padding; that's fine.
+    if (b < 1024) return b.toFixed(1) + " B";
     if (b < 1024 * 1024) return (b / 1024).toFixed(1) + " KB";
     if (b < 1024 * 1024 * 1024) return (b / 1024 / 1024).toFixed(1) + " MB";
     return (b / 1024 / 1024 / 1024).toFixed(2) + " GB";
