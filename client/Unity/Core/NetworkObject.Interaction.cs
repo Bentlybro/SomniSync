@@ -24,7 +24,20 @@ namespace SomniumSpace.Worlds.bently.networking
         // Grab / Release
         // =====================================================================
 
-        public void Grab()
+        public void Grab() => Grab(true);
+
+        /// <summary>
+        /// Claim this object for local control.
+        /// </summary>
+        /// <param name="enableLocalPhysics">
+        /// If true (default), the Rigidbody becomes non-kinematic so Unity
+        /// physics drives the object while held — right for player grabs of
+        /// physics props. If false, the Rigidbody stays kinematic; the caller
+        /// is expected to drive transform.position directly (AI scripts
+        /// chasing a target, for example). Fighting Unity physics with manual
+        /// transform assignment causes visible jitter and tumbling.
+        /// </param>
+        public void Grab(bool enableLocalPhysics)
         {
             if (!grabbable) return;
             if (NetworkManager.Instance == null || !NetworkManager.Instance.IsConnected) return;
@@ -34,8 +47,7 @@ namespace SomniumSpace.Worlds.bently.networking
             IsClaimedLocally = true;
             ClaimedByClient  = NetworkManager.Instance.ClientId;
 
-            // Enable local physics so the grabber gets instant response.
-            if (_hasRb)
+            if (_hasRb && enableLocalPhysics)
                 _rb.isKinematic = false;
 
             NetworkManager.Instance.SendClaim(LocalId);

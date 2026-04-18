@@ -81,12 +81,22 @@ namespace SomniumSpace.Worlds.bently.networking
         private bool      _wasKinematicAtAwake;
 
         /// <summary>
+        /// Set to true by AI/controller components (e.g. <c>NetworkNPC</c>)
+        /// that drive the transform themselves and don't want the server's
+        /// Rapier simulation fighting them with gravity, tumbling, etc.
+        /// When true, SendSceneInit sends this object as KinematicPosition
+        /// regardless of the prefab's Rigidbody configuration.
+        /// </summary>
+        [HideInInspector] public bool forceKinematicOnServer;
+
+        /// <summary>
         /// True when the user configured this object as a Dynamic rigidbody in
         /// the inspector. We force isKinematic = true at Awake (so local physics
         /// doesn't diverge before the server is ready), so SendSceneInit can't
         /// rely on the current isKinematic flag — it must use this instead.
+        /// Honoured only when <see cref="forceKinematicOnServer"/> is false.
         /// </summary>
-        public bool WantsDynamicPhysics => _hasRb && !_wasKinematicAtAwake;
+        public bool WantsDynamicPhysics => _hasRb && !_wasKinematicAtAwake && !forceKinematicOnServer;
 
         // Optional sibling components — cached at Awake to avoid per-message GetComponent calls
         internal NetworkVariables CachedVariables;
