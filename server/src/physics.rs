@@ -203,6 +203,25 @@ impl PhysicsWorld {
 
         let handle = self.rigid_bodies.insert(rb);
 
+        // Virtual skin around dynamic colliders so they don't visually
+        // interpenetrate the ground when they settle to sleep. Rapier's
+        // solver accepts up to `allowed_linear_error` (~1 mm default) of
+        // penetration before it stops correcting — that's correct for
+        // stability but looks like "a sphere sinking into the floor".
+        // Contact skin is additive across the pair, so dynamic bodies
+        // sit ~SKIN above fixed geometry, invisible at VR viewing
+        // distances but enough to kill the sink.
+        //
+        // Only apply to dynamic bodies — fixed scene geometry keeps a
+        // clean surface so e.g. snapping objects to a shelf doesn't
+        // inherit an offset from the shelf's own skin.
+        const DYNAMIC_CONTACT_SKIN: f32 = 0.005;
+        let skin = if matches!(body_type, RigidBodyType::Dynamic) {
+            DYNAMIC_CONTACT_SKIN
+        } else {
+            0.0
+        };
+
         // Build collider
         let collider = match desc.shape_type {
             0 => {
@@ -211,6 +230,7 @@ impl PhysicsWorld {
                 ColliderBuilder::ball(radius)
                     .restitution(desc.restitution)
                     .friction(desc.friction)
+                    .contact_skin(skin)
                     .density(if desc.mass > 0.0 {
                         // Rapier takes density; compute from mass and volume
                         let vol = (4.0 / 3.0) * std::f32::consts::PI * radius * radius * radius;
@@ -228,6 +248,7 @@ impl PhysicsWorld {
                 ColliderBuilder::cuboid(hx, hy, hz)
                     .restitution(desc.restitution)
                     .friction(desc.friction)
+                    .contact_skin(skin)
                     .density(if desc.mass > 0.0 {
                         let vol = 8.0 * hx * hy * hz;
                         desc.mass / vol.max(f32::EPSILON)
@@ -243,6 +264,7 @@ impl PhysicsWorld {
                 ColliderBuilder::capsule_y(half_height, radius)
                     .restitution(desc.restitution)
                     .friction(desc.friction)
+                    .contact_skin(skin)
                     .density(if desc.mass > 0.0 {
                         // Approximate capsule volume
                         let cyl_vol = std::f32::consts::PI * radius * radius * 2.0 * half_height;
@@ -259,6 +281,7 @@ impl PhysicsWorld {
                 ColliderBuilder::ball(0.5)
                     .restitution(desc.restitution)
                     .friction(desc.friction)
+                    .contact_skin(skin)
                     .build()
             }
         };
