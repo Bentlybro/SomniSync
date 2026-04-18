@@ -12,6 +12,7 @@
 //! session via a shared `Arc<Mutex<PrevSample>>` so multiple browsers don't
 //! trample each other's rate math.
 
+use std::collections::BTreeMap;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -28,7 +29,7 @@ use tokio::net::TcpListener;
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::room::RoomMap;
-use crate::stats::Stats;
+use crate::stats::{Stats, LOG_TAIL_LIVE};
 
 const DASHBOARD_HTML: &str = include_str!("dashboard.html");
 
@@ -63,6 +64,7 @@ pub async fn serve(addr: String, stats: Arc<Stats>, rooms: RoomMap) {
     let app = Router::new()
         .route("/", get(index))
         .route("/metrics", get(metrics))
+        .route("/export", get(export))
         .with_state(state);
 
     match TcpListener::bind(&addr).await {
@@ -115,7 +117,34 @@ struct MetricsSnapshot {
     physics_broadcast_p99_us: u64,
 
     rooms: Vec<RoomSnapshot>,
+    clients: Vec<ClientSnapshot>,
+    msgs_rx_by_type: BTreeMap<String, u64>,
+    msgs_rx_ctrl_subtype: BTreeMap<String, u64>,
     log: Vec<LogLineOut>,
+}
+
+#[derive(Serialize)]
+struct ClientSnapshot {
+    cid: u16,
+    addr: String,
+    room: String,
+    connected_at_ms: u64,
+    uptime_sec: f64,
+    msgs_rx: u64,
+    bytes_rx: u64,
+}
+
+#[derive(Serialize)]
+struct ExportSnapshot {
+    /// Everything in /metrics, plus:
+    metrics: MetricsSnapshot,
+    /// Raw physics tick samples in microseconds (most recent first trimmed
+    /// is oldest → newest). Useful for plotting the actual distribution.
+    physics_tick_us_raw: Vec<u64>,
+    physics_broadcast_us_raw: Vec<u64>,
+    /// Server identification so diff'd exports can be matched up.
+    server_version: &'static str,
+    exported_at_unix_ms: u64,
 }
 
 #[derive(Serialize)]
@@ -136,6 +165,39 @@ struct LogLineOut {
 }
 
 async fn metrics(State(state): State<AppState>) -> Json<MetricsSnapshot> {
+    Json(build_snapshot(&state, /* full_log */ false).await)
+}
+
+async fn export(State(state): State<AppState>) -> Json<ExportSnapshot> {
+    let stats = state.stats.clone();
+    let metrics = build_snapshot(&state, /* full_log */ true).await;
+
+    let physics_tick_us_raw: Vec<u64> = stats
+        .physics_tick_us
+        .lock()
+        .map(|v| v.iter().copied().collect())
+        .unwrap_or_default();
+    let physics_broadcast_us_raw: Vec<u64> = stats
+        .physics_broadcast_us
+        .lock()
+        .map(|v| v.iter().copied().collect())
+        .unwrap_or_default();
+
+    let exported_at_unix_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+
+    Json(ExportSnapshot {
+        metrics,
+        physics_tick_us_raw,
+        physics_broadcast_us_raw,
+        server_version: env!("CARGO_PKG_VERSION"),
+        exported_at_unix_ms,
+    })
+}
+
+async fn build_snapshot(state: &AppState, full_log: bool) -> MetricsSnapshot {
     let stats = state.stats.clone();
 
     // Atomic counters — read once here so the subsequent rate computation
@@ -200,17 +262,74 @@ async fn metrics(State(state): State<AppState>) -> Json<MetricsSnapshot> {
         }
     }
 
+    // Client list — snapshot the map under a brief read lock, then release
+    // before reading the per-client atomics. No async work while locked.
+    let mut client_snapshots: Vec<ClientSnapshot> = Vec::new();
+    if let Ok(clients) = stats.clients.read() {
+        let snapshot: Vec<_> = clients.values().cloned().collect();
+        drop(clients);
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        for info in snapshot {
+            client_snapshots.push(ClientSnapshot {
+                cid: info.cid,
+                addr: info.addr.clone(),
+                room: info.room.clone(),
+                connected_at_ms: info.connected_at_ms,
+                uptime_sec: now_ms.saturating_sub(info.connected_at_ms) as f64 / 1000.0,
+                msgs_rx: info.msgs_rx.load(Ordering::Relaxed),
+                bytes_rx: info.bytes_rx.load(Ordering::Relaxed),
+            });
+        }
+        client_snapshots.sort_by_key(|c| c.cid);
+    }
+
+    // Message-type histograms — only include non-zero buckets so the JSON
+    // doesn't carry 256 empty slots per request.
+    let mut msgs_rx_by_type: BTreeMap<String, u64> = BTreeMap::new();
+    for (i, slot) in stats.msgs_rx_by_type.iter().enumerate() {
+        let v = slot.load(Ordering::Relaxed);
+        if v > 0 {
+            msgs_rx_by_type.insert(msg_type_name(i as u8), v);
+        }
+    }
+    let mut msgs_rx_ctrl_subtype: BTreeMap<String, u64> = BTreeMap::new();
+    for (i, slot) in stats.msgs_rx_ctrl_subtype.iter().enumerate() {
+        let v = slot.load(Ordering::Relaxed);
+        if v > 0 {
+            msgs_rx_ctrl_subtype.insert(ctrl_subtype_name(i as u8), v);
+        }
+    }
+
     // Log tail — collect under the sync lock, release, THEN build output.
+    // `/metrics` gets the most recent LOG_TAIL_LIVE lines to keep the 1Hz
+    // dashboard refresh lean; `/export` gets the full ring.
     let log_lines: Vec<LogLineOut> = {
         match stats.log_lines.lock() {
-            Ok(lines) => lines
-                .iter()
-                .map(|l| LogLineOut {
-                    ts_unix_ms: l.ts_unix_ms,
-                    level: l.level,
-                    msg: l.msg.clone(),
-                })
-                .collect(),
+            Ok(lines) => {
+                let iter = lines.iter();
+                let collected: Vec<LogLineOut> = if full_log || lines.len() <= LOG_TAIL_LIVE {
+                    iter.map(|l| LogLineOut {
+                        ts_unix_ms: l.ts_unix_ms,
+                        level: l.level,
+                        msg: l.msg.clone(),
+                    })
+                    .collect()
+                } else {
+                    lines
+                        .iter()
+                        .skip(lines.len() - LOG_TAIL_LIVE)
+                        .map(|l| LogLineOut {
+                            ts_unix_ms: l.ts_unix_ms,
+                            level: l.level,
+                            msg: l.msg.clone(),
+                        })
+                        .collect()
+                };
+                collected
+            }
             Err(_) => Vec::new(),
         }
     };
@@ -220,7 +339,7 @@ async fn metrics(State(state): State<AppState>) -> Json<MetricsSnapshot> {
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0);
 
-    Json(MetricsSnapshot {
+    MetricsSnapshot {
         sampled_at_ms,
         uptime_sec: stats.started_at.elapsed().as_secs_f64(),
 
@@ -250,8 +369,50 @@ async fn metrics(State(state): State<AppState>) -> Json<MetricsSnapshot> {
         physics_broadcast_p99_us: bc_p99,
 
         rooms: room_snapshots,
+        clients: client_snapshots,
+        msgs_rx_by_type,
+        msgs_rx_ctrl_subtype,
         log: log_lines,
-    })
+    }
+}
+
+/// Pretty-name the top-level message byte for the dashboard table.
+fn msg_type_name(b: u8) -> String {
+    match b {
+        0x03 => "MSG_INTERACTION_UPDATE (0x03)",
+        0x04 => "MSG_VARIABLE_UPDATE (0x04)",
+        0x06 => "MSG_EVENT (0x06)",
+        0x07 => "MSG_ANIMATOR (0x07)",
+        0x09 => "MSG_SCALED_INTERACTION (0x09)",
+        0x0B => "MSG_POSITION_VELOCITY (0x0B)",
+        0x0C => "MSG_PLAYER_POS (0x0C)",
+        0x0D => "MSG_PUSH_IMPULSE (0x0D)",
+        0x0E => "MSG_TIME_PING (0x0E)",
+        0x10 => "MSG_SCENE_INIT (0x10)",
+        0xFF => "MSG_CONTROL (0xFF)",
+        _ => return format!("unknown (0x{:02X})", b),
+    }
+    .to_string()
+}
+
+fn ctrl_subtype_name(b: u8) -> String {
+    match b {
+        0x01 => "CTRL_WELCOME (0x01)",
+        0x05 => "CTRL_CLAIM (0x05)",
+        0x06 => "CTRL_RELEASE (0x06)",
+        0x07 => "CTRL_CLAIM_REJECTED (0x07)",
+        0x08 => "CTRL_PHYSICS_READY (0x08)",
+        0x0B => "CTRL_SPAWN_REQUEST (0x0B)",
+        0x0C => "CTRL_SPAWN (0x0C)",
+        0x0D => "CTRL_DESPAWN (0x0D)",
+        0x0E => "CTRL_TIME_PONG (0x0E)",
+        0x20 => "CTRL_PLAYER_IDENT (0x20)",
+        0x21 => "CTRL_PERSIST_SET (0x21)",
+        0x22 => "CTRL_PERSIST_GET (0x22)",
+        0x23 => "CTRL_PERSIST_DATA (0x23)",
+        _ => return format!("unknown ctrl (0x{:02X})", b),
+    }
+    .to_string()
 }
 
 fn percentiles_from_mutex(

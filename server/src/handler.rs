@@ -2,7 +2,7 @@ use log::{debug, error, info, warn};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tokio::time::{timeout, Duration, Instant};
+use tokio::time::{Duration, Instant};
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::client::{broadcast_except, new_client, send, send_try, Client, ClientMsg};
@@ -79,6 +79,7 @@ pub async fn handle_connection(
         );
         (id, needs_init, physics_active, r.scene_ready_ms)
     };
+    stats::register_client(client_id, addr, &room_id);
 
     // Send welcome: [u16 client_id][u8 needs_scene_init][u64 unix_millis][u64 scene_ready_ms]
     //   unix_millis    — server's current unix time, used to seed the client's
@@ -115,47 +116,67 @@ pub async fn handle_connection(
     }
 
     const IDLE_TIMEOUT_SECS: u64 = 60;
+    const POLL_INTERVAL: Duration = Duration::from_secs(2);
+
+    // The previous implementation only checked the WebSocket receive side,
+    // which can block for the full idle timeout when a peer half-closes the
+    // connection (crash, network pause, sleep). If the send-side task dies
+    // first — because `sink.send` errored on a dead TCP — the send
+    // channel's receiver is dropped and `client.tx.is_closed()` flips to
+    // true. A short poll branch detects that within `POLL_INTERVAL` and we
+    // can tear down the handler immediately, stopping the flood of dropped
+    // broadcasts to a zombie client.
+    let mut seconds_idle: u64 = 0;
 
     loop {
-        let next = timeout(
-            Duration::from_secs(IDLE_TIMEOUT_SECS),
-            futures_util::StreamExt::next(&mut rx),
-        )
-        .await;
-
-        let msg = match next {
-            Ok(Some(Ok(m))) => m,
-            Ok(Some(Err(e))) => {
-                warn!("[Room:{}] Error from client_{}: {}", room_id, client_id, e);
-                break;
-            }
-            Ok(None) => break,
-            Err(_) => {
-                warn!(
-                    "[Room:{}] client_{} idle for >{}s, disconnecting",
-                    room_id, client_id, IDLE_TIMEOUT_SECS
-                );
-                break;
-            }
-        };
-
-        match msg {
-            Message::Binary(data) => {
-                if data.is_empty() {
-                    continue;
+        tokio::select! {
+            recv_result = futures_util::StreamExt::next(&mut rx) => {
+                seconds_idle = 0;
+                let msg = match recv_result {
+                    Some(Ok(m)) => m,
+                    Some(Err(e)) => {
+                        warn!("[Room:{}] Error from client_{}: {}", room_id, client_id, e);
+                        break;
+                    }
+                    None => break,
+                };
+                match msg {
+                    Message::Binary(data) => {
+                        if data.is_empty() {
+                            continue;
+                        }
+                        handle_binary(&room, &client, client_id, &data, &room_id, &db).await;
+                    }
+                    Message::Close(_) => break,
+                    Message::Ping(d) => {
+                        let _ = client.tx.send(ClientMsg::Pong(d.into())).await;
+                    }
+                    _ => {}
                 }
-                handle_binary(&room, &client, client_id, &data, &room_id, &db).await;
             }
-            Message::Close(_) => break,
-            Message::Ping(d) => {
-                let _ = client.tx.send(ClientMsg::Pong(d.into())).await;
+            _ = tokio::time::sleep(POLL_INTERVAL) => {
+                if client.tx.is_closed() {
+                    info!(
+                        "[Room:{}] client_{} send channel closed (peer dead), disconnecting",
+                        room_id, client_id
+                    );
+                    break;
+                }
+                seconds_idle = seconds_idle.saturating_add(POLL_INTERVAL.as_secs());
+                if seconds_idle >= IDLE_TIMEOUT_SECS {
+                    warn!(
+                        "[Room:{}] client_{} idle for >{}s, disconnecting",
+                        room_id, client_id, IDLE_TIMEOUT_SECS
+                    );
+                    break;
+                }
             }
-            _ => {}
         }
     }
 
     handle_disconnect(&room, client_id, &room_id).await;
     stats::bump_client_disconnected();
+    stats::unregister_client(client_id);
 
     {
         let r = room.read().await;
@@ -182,6 +203,8 @@ async fn handle_binary(
     db: &PersistenceDb,
 ) {
     stats::bump_rx(data.len());
+    stats::bump_rx_type(data);
+    stats::bump_client_rx(client_id, data.len());
     let msg_type = data[0];
 
     match msg_type {

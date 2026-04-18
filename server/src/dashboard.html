@@ -67,11 +67,39 @@
     background: var(--ok); margin-right: 6px; vertical-align: middle;
   }
   .dot.stale { background: var(--warn); }
+
+  .topbar { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
+  .actions { display: flex; gap: 8px; align-items: center; }
+  button.export {
+    background: var(--panel); color: var(--accent); border: 1px solid var(--accent);
+    padding: 6px 14px; border-radius: 3px; font-family: inherit; font-size: 12px;
+    cursor: pointer; letter-spacing: 0.4px;
+  }
+  button.export:hover { background: #1a2735; }
+  button.export:active { transform: translateY(1px); }
+  button.export:disabled { opacity: 0.5; cursor: wait; }
+  .actions .hint { font-size: 10px; color: var(--dim); }
+
+  .cols2 {
+    display: grid; grid-template-columns: 2fr 1fr; gap: 16px;
+  }
+  @media (max-width: 900px) {
+    .cols2 { grid-template-columns: 1fr; }
+  }
+  .mini-table th, .mini-table td { padding: 4px 8px; font-size: 11px; }
 </style>
 </head>
 <body>
-<h1>SomniSync — Server Dashboard</h1>
-<div class="sub"><span class="dot" id="dot"></span><span id="subtitle">connecting…</span></div>
+<div class="topbar">
+  <div>
+    <h1>SomniSync — Server Dashboard</h1>
+    <div class="sub"><span class="dot" id="dot"></span><span id="subtitle">connecting…</span></div>
+  </div>
+  <div class="actions">
+    <span class="hint" id="history_info">history 0 samples</span>
+    <button class="export" id="export_btn" onclick="exportNow()">Export snapshot</button>
+  </div>
+</div>
 
 <div class="grid">
   <div class="card"><div class="label">Uptime</div><div class="val" id="uptime">—</div></div>
@@ -86,18 +114,49 @@
   <div class="card"><div class="label">Broadcast build p50</div><div class="val" id="bc_p50">—</div><div class="sub" id="bc_sub">—</div></div>
 </div>
 
-<h2>Rooms</h2>
-<table id="rooms_table">
-<thead><tr>
-  <th>ID</th>
-  <th class="num">Clients</th>
-  <th>Physics</th>
-  <th class="num">Objects</th>
-  <th class="num">Claimed</th>
-  <th>Scene ready at</th>
-</tr></thead>
-<tbody></tbody>
-</table>
+<div class="cols2">
+  <div>
+    <h2>Rooms</h2>
+    <table id="rooms_table">
+    <thead><tr>
+      <th>ID</th>
+      <th class="num">Clients</th>
+      <th>Physics</th>
+      <th class="num">Objects</th>
+      <th class="num">Claimed</th>
+      <th>Scene ready at</th>
+    </tr></thead>
+    <tbody></tbody>
+    </table>
+
+    <h2>Clients</h2>
+    <table id="clients_table" class="mini-table">
+    <thead><tr>
+      <th class="num">CID</th>
+      <th>Address</th>
+      <th>Room</th>
+      <th class="num">Uptime</th>
+      <th class="num">Rx msgs</th>
+      <th class="num">Rx bytes</th>
+    </tr></thead>
+    <tbody></tbody>
+    </table>
+  </div>
+
+  <div>
+    <h2>Messages received (by type)</h2>
+    <table id="msgtype_table" class="mini-table">
+    <thead><tr><th>Type</th><th class="num">Count</th></tr></thead>
+    <tbody></tbody>
+    </table>
+
+    <h2>Control subtypes received</h2>
+    <table id="ctrltype_table" class="mini-table">
+    <thead><tr><th>Type</th><th class="num">Count</th></tr></thead>
+    <tbody></tbody>
+    </table>
+  </div>
+</div>
 
 <h2>Log</h2>
 <div class="log" id="log"></div>
@@ -138,6 +197,62 @@
 
   let lastOkAt = 0;
 
+  // Rolling client-side history buffer — every successful /metrics fetch
+  // gets pushed here. Export dumps the full thing so trends aren't lost.
+  // 3600 samples @ 1Hz = 1 hour; each sample is ~3-5KB serialised.
+  const HISTORY_MAX = 3600;
+  const history = [];
+
+  function pushHistory(snapshot) {
+    history.push({ fetched_at_ms: Date.now(), snapshot });
+    while (history.length > HISTORY_MAX) history.shift();
+    $("history_info").textContent =
+      `history ${history.length} sample${history.length === 1 ? "" : "s"}` +
+      (history.length === HISTORY_MAX ? " (full)" : "");
+  }
+
+  async function exportNow() {
+    const btn = $("export_btn");
+    btn.disabled = true;
+    btn.textContent = "Exporting…";
+    try {
+      // /export is richer than /metrics — full log ring + raw physics
+      // samples + server version. Pair it with the client-side history
+      // for the complete "what happened while I was watching" picture.
+      const detailed = await fetch("/export", { cache: "no-store" }).then(r => {
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        return r.json();
+      });
+
+      const bundle = {
+        exported_at: new Date().toISOString(),
+        dashboard_history: history,
+        server_export: detailed,
+        user_agent: navigator.userAgent,
+      };
+
+      const blob = new Blob(
+        [JSON.stringify(bundle, null, 2)],
+        { type: "application/json" }
+      );
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+      a.href = url;
+      a.download = `somnisync-export-${stamp}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      btn.textContent = "Exported";
+      setTimeout(() => { btn.textContent = "Export snapshot"; btn.disabled = false; }, 1500);
+    } catch (e) {
+      btn.textContent = "Export failed";
+      setTimeout(() => { btn.textContent = "Export snapshot"; btn.disabled = false; }, 2500);
+      console.error(e);
+    }
+  }
+
   async function refresh() {
     try {
       const r = await fetch("/metrics", { cache: "no-store" });
@@ -169,11 +284,11 @@
       $("bc_sub").textContent =
         `p95 ${fmt_us(d.physics_broadcast_p95_us)} · p99 ${fmt_us(d.physics_broadcast_p99_us)}`;
 
-      const tbody = document.querySelector("#rooms_table tbody");
+      const roomsBody = document.querySelector("#rooms_table tbody");
       if (d.rooms.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="6" style="color: var(--dim);">No rooms active.</td></tr>';
+        roomsBody.innerHTML = '<tr><td colspan="6" style="color: var(--dim);">No rooms active.</td></tr>';
       } else {
-        tbody.innerHTML = d.rooms.map(r =>
+        roomsBody.innerHTML = d.rooms.map(r =>
           `<tr>
             <td>${esc(r.id)}</td>
             <td class="num">${r.clients}</td>
@@ -184,6 +299,42 @@
           </tr>`
         ).join("");
       }
+
+      const clientsBody = document.querySelector("#clients_table tbody");
+      if (!d.clients || d.clients.length === 0) {
+        clientsBody.innerHTML = '<tr><td colspan="6" style="color: var(--dim);">No clients connected.</td></tr>';
+      } else {
+        clientsBody.innerHTML = d.clients.map(c =>
+          `<tr>
+            <td class="num">${c.cid}</td>
+            <td>${esc(c.addr)}</td>
+            <td>${esc(c.room)}</td>
+            <td class="num">${fmt_dur(c.uptime_sec)}</td>
+            <td class="num">${c.msgs_rx.toLocaleString()}</td>
+            <td class="num">${fmt_bytes(c.bytes_rx)}</td>
+          </tr>`
+        ).join("");
+      }
+
+      const msgBody = document.querySelector("#msgtype_table tbody");
+      const msgEntries = Object.entries(d.msgs_rx_by_type || {})
+        .sort((a, b) => b[1] - a[1]);
+      msgBody.innerHTML = msgEntries.length === 0
+        ? '<tr><td colspan="2" style="color: var(--dim);">No messages yet.</td></tr>'
+        : msgEntries.map(([k, v]) =>
+          `<tr><td>${esc(k)}</td><td class="num">${v.toLocaleString()}</td></tr>`
+        ).join("");
+
+      const ctrlBody = document.querySelector("#ctrltype_table tbody");
+      const ctrlEntries = Object.entries(d.msgs_rx_ctrl_subtype || {})
+        .sort((a, b) => b[1] - a[1]);
+      ctrlBody.innerHTML = ctrlEntries.length === 0
+        ? '<tr><td colspan="2" style="color: var(--dim);">No control messages yet.</td></tr>'
+        : ctrlEntries.map(([k, v]) =>
+          `<tr><td>${esc(k)}</td><td class="num">${v.toLocaleString()}</td></tr>`
+        ).join("");
+
+      pushHistory(d);
 
       const log = $("log");
       const pinned = log.scrollTop + log.clientHeight >= log.scrollHeight - 8;

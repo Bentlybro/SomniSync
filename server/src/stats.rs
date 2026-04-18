@@ -16,10 +16,11 @@
 //!     pushes into a ring buffer the dashboard reads. Existing `info!()` /
 //!     `warn!()` / etc. calls throughout the codebase work unchanged.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::io::Write;
+use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock, RwLock};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -28,9 +29,15 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 /// letting the deque balloon.
 const TIMING_SAMPLES: usize = 300;
 
-/// Cap on retained log lines. The dashboard fetches the full buffer each
-/// refresh, so keep it small enough for JSON serialisation to stay cheap.
-const LOG_BUFFER: usize = 200;
+/// Single log ring the buffer is kept at. The live dashboard fetches the
+/// most recent `LOG_TAIL_LIVE` lines from it every refresh; `/export`
+/// returns the full buffer. Sized to capture enough history to diagnose
+/// a slow-building issue without bloating JSON on the 1Hz path.
+const LOG_BUFFER: usize = 2000;
+
+/// How many trailing log lines `/metrics` includes for the live dashboard.
+/// Smaller than `LOG_BUFFER` so the 1Hz refresh payload stays lean.
+pub const LOG_TAIL_LIVE: usize = 200;
 
 /// Shared, read-mostly counters + small ring buffers. The whole struct
 /// lives behind an `Arc` so both the WebSocket handler and the HTTP
@@ -69,6 +76,21 @@ pub struct Stats {
 
     /// Captured log lines (structured) for the dashboard.
     pub log_lines: Mutex<VecDeque<LogLine>>,
+
+    /// Received-message counters bucketed by first byte (message type). 256
+    /// slots in heap-allocated `Box<[AtomicU64]>`. Indexed directly by
+    /// `data[0]`. Gives the dashboard a "what kind of traffic is hitting us"
+    /// breakdown — player-pos vs interaction vs event, etc.
+    pub msgs_rx_by_type: Box<[AtomicU64]>,
+
+    /// For 0xFF (MSG_CONTROL) messages, also bucket by the control subtype
+    /// byte. Empty (all zero) for messages that aren't control.
+    pub msgs_rx_ctrl_subtype: Box<[AtomicU64]>,
+
+    /// Per-client tracking: address, room, connect time, bytes/msgs seen.
+    /// RwLock read-mostly — insert on connect, remove on disconnect, else
+    /// only atomic counter reads. Metrics snapshot takes a brief read lock.
+    pub clients: RwLock<HashMap<u16, Arc<ClientInfo>>>,
 }
 
 #[derive(Clone)]
@@ -78,8 +100,22 @@ pub struct LogLine {
     pub msg: String,
 }
 
+/// Per-client stats. Wrapped in `Arc` so the metrics endpoint can snapshot
+/// the map + drop its read lock, then consult each client's atomic counters
+/// at its leisure.
+pub struct ClientInfo {
+    pub cid: u16,
+    pub addr: String,
+    pub room: String,
+    pub connected_at_ms: u64,
+    pub msgs_rx: AtomicU64,
+    pub bytes_rx: AtomicU64,
+}
+
 impl Stats {
     pub fn new() -> Arc<Self> {
+        let by_type: Vec<AtomicU64> = (0..256).map(|_| AtomicU64::new(0)).collect();
+        let by_ctrl: Vec<AtomicU64> = (0..256).map(|_| AtomicU64::new(0)).collect();
         Arc::new(Self {
             started_at: Instant::now(),
             cpu_percent_x100: AtomicU32::new(0),
@@ -94,6 +130,9 @@ impl Stats {
             physics_tick_us: Mutex::new(VecDeque::with_capacity(TIMING_SAMPLES)),
             physics_broadcast_us: Mutex::new(VecDeque::with_capacity(TIMING_SAMPLES)),
             log_lines: Mutex::new(VecDeque::with_capacity(LOG_BUFFER)),
+            msgs_rx_by_type: by_type.into_boxed_slice(),
+            msgs_rx_ctrl_subtype: by_ctrl.into_boxed_slice(),
+            clients: RwLock::new(HashMap::new()),
         })
     }
 
@@ -135,6 +174,66 @@ pub fn bump_rx(bytes: usize) {
     if let Some(s) = STATS.get() {
         s.total_msgs_rx.fetch_add(1, Ordering::Relaxed);
         s.total_bytes_rx.fetch_add(bytes as u64, Ordering::Relaxed);
+    }
+}
+
+/// Record per-type RX buckets. For 0xFF control messages, also bumps the
+/// subtype counter. Cheap — two atomic adds at most.
+#[inline]
+pub fn bump_rx_type(data: &[u8]) {
+    if data.is_empty() { return; }
+    if let Some(s) = STATS.get() {
+        s.msgs_rx_by_type[data[0] as usize].fetch_add(1, Ordering::Relaxed);
+        if data[0] == 0xFF && data.len() >= 2 {
+            s.msgs_rx_ctrl_subtype[data[1] as usize].fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+
+/// Register a newly-connected client. Called once from the handler after
+/// a successful handshake. Cheap: one RwLock write + one HashMap insert.
+pub fn register_client(cid: u16, addr: SocketAddr, room: &str) {
+    if let Some(s) = STATS.get() {
+        let connected_at_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let info = Arc::new(ClientInfo {
+            cid,
+            addr: addr.to_string(),
+            room: room.to_string(),
+            connected_at_ms,
+            msgs_rx: AtomicU64::new(0),
+            bytes_rx: AtomicU64::new(0),
+        });
+        if let Ok(mut map) = s.clients.write() {
+            map.insert(cid, info);
+        }
+    }
+}
+
+/// Remove a client on disconnect.
+pub fn unregister_client(cid: u16) {
+    if let Some(s) = STATS.get() {
+        if let Ok(mut map) = s.clients.write() {
+            map.remove(&cid);
+        }
+    }
+}
+
+/// Per-client RX counter bump. Reads the map under a read lock (no write
+/// contention with other clients sending), then increments atomics on the
+/// Arc'd ClientInfo. Map read is O(1), entirely lock-free once the read
+/// lock is held.
+#[inline]
+pub fn bump_client_rx(cid: u16, bytes: usize) {
+    if let Some(s) = STATS.get() {
+        if let Ok(map) = s.clients.read() {
+            if let Some(info) = map.get(&cid) {
+                info.msgs_rx.fetch_add(1, Ordering::Relaxed);
+                info.bytes_rx.fetch_add(bytes as u64, Ordering::Relaxed);
+            }
+        }
     }
 }
 
