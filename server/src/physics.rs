@@ -195,6 +195,30 @@ impl PhysicsWorld {
         }
     }
 
+    /// Apply a push impulse to a dynamic body — used when a player walks into
+    /// an object. Passes a velocity vector; internally multiplied by mass so it
+    /// behaves as a proper momentum transfer through Rapier. Kinematic / fixed
+    /// bodies are ignored.
+    pub fn apply_push_impulse(&mut self, obj_id: u16, velocity: [f32; 3]) {
+        if let Some(&handle) = self.object_to_body.get(&obj_id) {
+            if let Some(rb) = self.rigid_bodies.get_mut(handle) {
+                if rb.body_type() != RigidBodyType::Dynamic {
+                    return;
+                }
+                let mass = rb.mass();
+                if mass <= 0.0 {
+                    return;
+                }
+                let impulse = vector![
+                    velocity[0] * mass,
+                    velocity[1] * mass,
+                    velocity[2] * mass
+                ];
+                rb.apply_impulse(impulse, true);
+            }
+        }
+    }
+
     /// Restore a claimed body to dynamic, applying the last known velocity.
     pub fn release(&mut self, obj_id: u16) {
         let last_vel = self.claimed.remove(&obj_id).unwrap_or([0.0, 0.0, 0.0]);

@@ -28,6 +28,7 @@ pub const MSG_ANIMATOR: u8               = 0x07; // animator state (any → othe
 pub const MSG_SCALED_INTERACTION: u8     = 0x09; // claimed scaled-object position
 pub const MSG_POSITION_VELOCITY: u8      = 0x0B; // server → clients: authoritative position + velocity
 pub const MSG_PLAYER_POS: u8             = 0x0C; // client → server: local player position (for AOI)
+pub const MSG_PUSH_IMPULSE: u8           = 0x0D; // client → server: apply impulse to an object (no claim)
 pub const MSG_SCENE_INIT: u8             = 0x10; // client → server: physics scene description
 
 // --- Control subtypes (inside 0xFF messages) ---

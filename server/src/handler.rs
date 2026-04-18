@@ -11,8 +11,8 @@ use crate::physics::{build_filtered_message, parse_scene_init, PhysicsWorld};
 use crate::protocol::{
     ctrl_msg, CTRL_CLAIM, CTRL_CLAIM_REJECTED, CTRL_ERROR, CTRL_PERSIST_DATA, CTRL_PERSIST_GET,
     CTRL_PERSIST_SET, CTRL_PHYSICS_READY, CTRL_PLAYER_IDENT, CTRL_RELEASE, CTRL_WELCOME,
-    MSG_ANIMATOR, MSG_EVENT, MSG_INTERACTION_UPDATE, MSG_PLAYER_POS, MSG_SCALED_INTERACTION,
-    MSG_SCENE_INIT, MSG_VARIABLE_UPDATE,
+    MSG_ANIMATOR, MSG_EVENT, MSG_INTERACTION_UPDATE, MSG_PLAYER_POS, MSG_PUSH_IMPULSE,
+    MSG_SCALED_INTERACTION, MSG_SCENE_INIT, MSG_VARIABLE_UPDATE,
 };
 use crate::room::Room;
 use crate::room::RoomMap;
@@ -181,6 +181,31 @@ async fn handle_binary(
             let z = read_f32(data, 9);
             let mut r = room.write().await;
             r.player_positions.insert(client_id, [x, y, z]);
+        }
+
+        MSG_PUSH_IMPULSE => {
+            // [0x0D][u16 obj_id][f32 vx][f32 vy][f32 vz] = 15 bytes
+            if data.len() < 15 {
+                return;
+            }
+            let obj_id = u16::from_le_bytes([data[1], data[2]]);
+            let vx = read_f32(data, 3);
+            let vy = read_f32(data, 7);
+            let vz = read_f32(data, 11);
+
+            // Rate-limit sanity cap: 50 m/s is bigger than most intentional
+            // pushes and protects against runaway impulses if a client goes wrong.
+            const MAX_PUSH_SPEED: f32 = 50.0;
+            let speed_sq = vx * vx + vy * vy + vz * vz;
+            if speed_sq > MAX_PUSH_SPEED * MAX_PUSH_SPEED {
+                return;
+            }
+
+            let pw_opt = room.read().await.physics_world.clone();
+            if let Some(pw_arc) = pw_opt {
+                let mut pw = pw_arc.lock().await;
+                pw.apply_push_impulse(obj_id, [vx, vy, vz]);
+            }
         }
 
         MSG_INTERACTION_UPDATE | MSG_SCALED_INTERACTION => {

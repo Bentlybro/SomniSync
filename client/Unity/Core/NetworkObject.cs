@@ -80,16 +80,6 @@ namespace SomniumSpace.Worlds.bently.networking
         private Quaternion _lastSentRot;
         private Vector3 _lastSentScale;
 
-        // =====================================================================
-        // Auto-claim / push state
-        // =====================================================================
-
-        private const float AUTO_RELEASE_DELAY = 1.0f;
-        private const float RECLAIM_COOLDOWN   = 0.5f;
-        private float _lastContactTime;
-        private float _lastReleaseTime;
-        private bool  _autoClaimedByPush;
-
         // Core component
         private Rigidbody _rb;
         private bool      _hasRb;
@@ -133,7 +123,7 @@ namespace SomniumSpace.Worlds.bently.networking
 
         /// <summary>
         /// Called once per frame by NetworkManager for every registered object.
-        /// Handles interpolation and auto-release in one pass.
+        /// Advances interpolation toward the most recent server state.
         /// </summary>
         internal void NetworkUpdate(float deltaTime, float currentTime)
         {
@@ -146,19 +136,6 @@ namespace SomniumSpace.Worlds.bently.networking
                 transform.rotation = Quaternion.Slerp(_fromRot, _toRot, _interpT);
                 if (syncScale)
                     transform.localScale = Vector3.Lerp(_fromScale, _toScale, _interpT);
-            }
-
-            // Auto-release when push-grabbed object settles
-            if (_autoClaimedByPush && IsClaimedLocally && _hasRb)
-            {
-                bool touching = (currentTime - _lastContactTime) < 0.1f;
-                bool settled  = _rb.linearVelocity.sqrMagnitude  < 0.05f
-                             && _rb.angularVelocity.sqrMagnitude < 0.05f;
-                if (!touching && settled)
-                {
-                    _autoClaimedByPush = false;
-                    Release();
-                }
             }
         }
 

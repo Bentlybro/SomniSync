@@ -126,6 +126,22 @@ namespace SomniumSpace.Worlds.bently.networking
             SendBinary(buf);
         }
 
+        /// <summary>
+        /// Send a push impulse — server applies momentum to the object via Rapier.
+        /// Used by <see cref="PlayerPushDetector"/> when the local player walks
+        /// into a pushable object. No claim involved — pure server-side effect.
+        /// </summary>
+        public void SendPushImpulse(ushort objectId, Vector3 velocity)
+        {
+            byte[] buf = new byte[15];
+            buf[0] = Protocol.MSG_PUSH_IMPULSE;
+            WriteU16(buf, 1, objectId);
+            Protocol.WriteFloat(buf, 3,  velocity.x);
+            Protocol.WriteFloat(buf, 7,  velocity.y);
+            Protocol.WriteFloat(buf, 11, velocity.z);
+            SendBinary(buf);
+        }
+
         // =====================================================================
         // Player position (0x0C) — local player head/body for server-side AOI
         // Format: [0x0C][f32 x][f32 y][f32 z] = 13 bytes
