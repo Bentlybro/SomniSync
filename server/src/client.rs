@@ -3,6 +3,7 @@ use log::warn;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
 
@@ -47,6 +48,25 @@ pub fn new_client(addr: SocketAddr, sink: Tx) -> Arc<Client> {
     client
 }
 
+/// Maximum time a single sink.send call is allowed to block before we
+/// declare the client unreachable and tear the send task down.
+///
+/// Why this exists: if a peer's TCP receive buffer fills (Windows
+/// Unity editor minimised, VR client frozen mid-GC, laptop lid closed),
+/// kernel-level TCP just stops accepting our writes. `sink.send` awaits
+/// forever. The mpsc channel between handler and send task fills up,
+/// broadcast_* starts dropping 20 msg/sec into a full buffer, and
+/// nothing in the pipeline notices because the previous zombie-client
+/// detector (client.rs / handler.rs tx.is_closed() poll) fires on send
+/// task *exit*, not send task *stall*. 31-second stalls observed in
+/// the wild. Kernel TCP keepalive doesn't help — default is 2 hours.
+///
+/// 5s is aggressive but physically reasonable: our broadcast rate is
+/// 20Hz and our per-client send buffer is 8 slots, so a healthy client
+/// drains a single message in <50ms. Anything taking >5s to write one
+/// ~2KB WebSocket frame is dead.
+const SEND_TIMEOUT: Duration = Duration::from_secs(5);
+
 fn spawn_send_task(mut sink: Tx, mut rx: mpsc::Receiver<ClientMsg>, addr: SocketAddr) {
     tokio::spawn(async move {
         use futures_util::SinkExt;
@@ -55,12 +75,26 @@ fn spawn_send_task(mut sink: Tx, mut rx: mpsc::Receiver<ClientMsg>, addr: Socket
                 ClientMsg::Binary(b) => Message::Binary(b.into()),
                 ClientMsg::Pong(d)   => Message::Pong(d.into()),
             };
-            if let Err(e) = sink.send(ws_msg).await {
-                warn!("[Send] Error to {}: {}", addr, e);
-                break;
+            match tokio::time::timeout(SEND_TIMEOUT, sink.send(ws_msg)).await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    warn!("[Send] Error to {}: {}", addr, e);
+                    break;
+                }
+                Err(_) => {
+                    warn!(
+                        "[Send] Timeout (>{}s) sending to {} — peer TCP stalled, killing client",
+                        SEND_TIMEOUT.as_secs(),
+                        addr
+                    );
+                    break;
+                }
             }
         }
-        // Channel closed (client disconnected) — sink is dropped here, closing the WS.
+        // Loop exit — sink is dropped here, closing the WS. The receive side
+        // mpsc rx is also dropped, which flips `client.tx.is_closed()` to
+        // true, which the handler's 2-second poll detects and uses as its
+        // cue to tear down the rest of the connection cleanly.
     });
 }
 
