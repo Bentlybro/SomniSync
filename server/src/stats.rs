@@ -277,24 +277,52 @@ pub fn bump_client_disconnected() {
 
 // ── Sysinfo refresh loop ────────────────────────────────────────────────────
 /// Run forever, refreshing CPU% + RSS at 1 Hz. Spawn once from main().
+///
+/// Two refresh calls per tick:
+///   1. `refresh_cpu_usage()` — rebuilds global CPU time counters. Without
+///      this every tick, `Process::cpu_usage()` returns 0 forever because
+///      it needs a recent global sample to compute its delta against.
+///   2. `refresh_processes_specifics(...)` — updates our own process's
+///      CPU/mem snapshot.
+///
+/// Sysinfo also requires at least one full sample *before* cpu_usage()
+/// returns non-zero (it needs two samples to differentiate), which is why
+/// the first reading after startup will briefly read 0 — it recovers
+/// after one interval.
 pub async fn sysinfo_loop(stats: Arc<Stats>) {
     use sysinfo::{ProcessRefreshKind, System};
 
     let pid = sysinfo::get_current_pid().ok();
     let mut sys = System::new();
 
+    // Initial refresh — seeds the global CPU time counter so the very next
+    // refresh_cpu_usage() call has a baseline to diff against.
+    sys.refresh_cpu_usage();
+    if let Some(pid) = pid {
+        sys.refresh_processes_specifics(
+            sysinfo::ProcessesToUpdate::Some(&[pid]),
+            true,
+            ProcessRefreshKind::everything().with_cpu(),
+        );
+    }
+
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
     interval.tick().await; // immediate first tick
     loop {
         interval.tick().await;
         if let Some(pid) = pid {
+            // Global CPU first, then process — if we skip the global call,
+            // Process::cpu_usage() has nothing to compare against and
+            // silently returns 0. That was the whole-dashboard-says-0.00%
+            // bug reported in the first export.
+            sys.refresh_cpu_usage();
             sys.refresh_processes_specifics(
                 sysinfo::ProcessesToUpdate::Some(&[pid]),
                 true,
-                ProcessRefreshKind::everything(),
+                ProcessRefreshKind::everything().with_cpu(),
             );
             if let Some(proc) = sys.process(pid) {
-                let cpu = proc.cpu_usage(); // already in percent
+                let cpu = proc.cpu_usage(); // already in percent (per-core scale)
                 stats.cpu_percent_x100.store((cpu * 100.0) as u32, Ordering::Relaxed);
                 stats.rss_bytes.store(proc.memory(), Ordering::Relaxed);
             }
