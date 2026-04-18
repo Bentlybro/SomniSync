@@ -67,11 +67,6 @@ namespace SomniumSpace.Worlds.bently.networking
         private float _interpDuration = 0.016f;
         private float _lastUpdateReceivedTime = -1f;
 
-        private Vector3 _drVelocity;
-        private Vector3 _drBasePos;
-        private float   _drBaseTime;
-        private bool    _deadReckoning;
-
         // =====================================================================
         // Delta tracking for held-object sends
         // =====================================================================

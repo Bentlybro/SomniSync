@@ -3,9 +3,9 @@ using UnityEngine;
 namespace SomniumSpace.Worlds.bently.networking
 {
     /// <summary>
-    /// Position/rotation interpolation and dead reckoning for NetworkObject.
-    /// Rotation is a quaternion throughout — Euler encoding caused visible
-    /// gimbal-lock flicker on free-rotating objects at slow speeds.
+    /// Position/rotation interpolation for NetworkObject. Rotation is a quaternion
+    /// throughout — Euler encoding caused visible gimbal-lock flicker on
+    /// free-rotating objects at slow speeds.
     /// </summary>
     public partial class NetworkObject
     {
@@ -22,7 +22,6 @@ namespace SomniumSpace.Worlds.bently.networking
                 transform.rotation = rot;
                 if (syncScale && scale.HasValue) transform.localScale = scale.Value;
                 _lastUpdateReceivedTime = Time.time;
-                _deadReckoning = false;
                 return;
             }
 
@@ -35,41 +34,19 @@ namespace SomniumSpace.Worlds.bently.networking
             if (syncScale && scale.HasValue) { _fromScale = transform.localScale; _toScale = scale.Value; }
             _interpT        = 0f;
             _interpDuration = duration;
-            _deadReckoning  = false;
         }
 
         // =====================================================================
         // Receive — position + velocity update (0x0B)
+        // Velocity is still on the wire but unused; the server's Rapier sim is
+        // the physics truth, and client-side extrapolation punched bouncing
+        // objects through the floor before bounce packets arrived.
         // =====================================================================
 
         public void ApplyUpdate(Vector3 pos, Quaternion rot, Vector3 velocity, Vector3? scale = null)
         {
-            // Velocity is still read off the wire in case future features want it,
-            // but we no longer extrapolate with it — the server's Rapier sim is
-            // the physics truth, and linear extrapolation punched bouncing objects
-            // through the floor before bounce packets arrived.
-            _drVelocity    = velocity;
-            _deadReckoning = false;
-
-            float baseDuration = GetSmoothingDuration();
-            if (baseDuration <= 0f)
-            {
-                transform.position = pos;
-                transform.rotation = rot;
-                if (syncScale && scale.HasValue) transform.localScale = scale.Value;
-                _lastUpdateReceivedTime = Time.time;
-                return;
-            }
-
-            float duration = AdaptiveDuration(baseDuration);
-            _lastUpdateReceivedTime = Time.time;
-            _fromPos = transform.position;
-            _fromRot = transform.rotation;
-            _toPos   = pos;
-            _toRot   = rot;
-            if (syncScale && scale.HasValue) { _fromScale = transform.localScale; _toScale = scale.Value; }
-            _interpT        = 0f;
-            _interpDuration = duration;
+            _ = velocity; // intentionally ignored
+            ApplyUpdate(pos, rot, scale);
         }
 
         // =====================================================================
@@ -88,7 +65,6 @@ namespace SomniumSpace.Worlds.bently.networking
                 _fromScale = _toScale = scale.Value;
             }
             _interpT = 1f;
-            _deadReckoning = false;
             _lastUpdateReceivedTime = -1f;
         }
 
