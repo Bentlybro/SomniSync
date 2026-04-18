@@ -109,6 +109,19 @@ namespace SomniumSpace.Worlds.bently.networking
         public void OnRemoteRelease(Vector3 pos, Quaternion rot, ulong serverMs)
         {
             ClaimedByClient = 0;
+
+            // Reject older releases than what we've already seen. Matters
+            // for late-joiner replay: the server sends us the stored
+            // last-release for each object right after welcome, and that
+            // replay can race with a live release broadcast that happened
+            // between add_client and the replay. Without this guard the
+            // older replay would overwrite the newer live release and
+            // NetworkNPC would re-anchor its wander to stale state.
+            // Zero serverMs is the "no authoritative pose" sentinel
+            // (empty release); always accept it so reset paths still work.
+            if (serverMs != 0 && serverMs < LastReleaseServerMs)
+                return;
+
             if (_hasRb)
                 _rb.isKinematic = true;
 

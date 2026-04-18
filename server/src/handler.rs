@@ -107,12 +107,51 @@ pub async fn handle_connection(
     // local simulation and waits for server broadcasts. The payload carries
     // scene_ready_ms so late joiners get the shared anchor even if they missed
     // the original broadcast.
+    //
+    // We also replay the per-object authoritative state every currently-
+    // connected client has already been told about — last CTRL_RELEASE per
+    // object (so NetworkNPC wander anchors match), plus currently-active
+    // claims (so the new client's IsClaimedByRemote lines up and their
+    // NetworkNPC doesn't immediately try to chase an NPC someone else
+    // already holds).
+    //
+    // Without this, a late joiner computes NPC wander from scene_ready_ms
+    // while existing clients are anchored to a chase-release that happened
+    // minutes ago — NPCs appear at visibly different positions until the
+    // next chase/release cycle re-syncs them. Exactly the "friend joined
+    // and saw NPCs far from me, they teleported when I walked over" bug
+    // reported in the wild.
     if physics_already_active {
         send(
             &client,
             ctrl_msg(CTRL_PHYSICS_READY, &scene_ready_ms.to_le_bytes()),
         )
         .await;
+
+        // Snapshot both maps under a single read lock, then drop the lock
+        // before sending (sends await the mpsc and can race with the next
+        // broadcast harmlessly — mpsc preserves order per-client).
+        let (release_replays, active_claims) = {
+            let r = room.read().await;
+            (
+                r.last_release_bytes.values().cloned().collect::<Vec<_>>(),
+                r.claimed_objects
+                    .iter()
+                    .map(|(&obj_id, &owner)| (obj_id, owner))
+                    .collect::<Vec<_>>(),
+            )
+        };
+        for bytes in release_replays {
+            send(&client, bytes).await;
+        }
+        for (obj_id, owner_id) in active_claims {
+            let mut claim_msg = Vec::with_capacity(6);
+            claim_msg.push(0xFF);
+            claim_msg.push(CTRL_CLAIM);
+            claim_msg.extend_from_slice(&obj_id.to_le_bytes());
+            claim_msg.extend_from_slice(&owner_id.to_le_bytes());
+            send(&client, claim_msg).await;
+        }
     }
 
     const IDLE_TIMEOUT_SECS: u64 = 60;
@@ -614,6 +653,7 @@ async fn physics_tick_task(
                         r.claimed_objects.remove(obj_id);
                         let pose = poses.get(i).copied().flatten();
                         let msg = build_release_broadcast(*obj_id, *owner, pose);
+                        r.last_release_bytes.insert(*obj_id, msg.clone());
                         crate::client::broadcast_all(&r.clients, &msg);
                         info!(
                             "[Room:{}] stale claim on obj_{} (owner client_{}) auto-released",
@@ -733,6 +773,10 @@ async fn handle_control(
             room_w.claimed_objects.remove(&obj_id);
             debug!("[Room:{}] client_{} released object {}", room_id, client_id, obj_id);
             let msg = build_release_broadcast(obj_id, client_id, pose);
+            // Remember the latest release per object so late joiners land on
+            // the same wander anchor that currently-connected clients are
+            // using — see Room::last_release_bytes.
+            room_w.last_release_bytes.insert(obj_id, msg.clone());
             // Broadcast to ALL including the releaser so even the chaser
             // re-anchors from the same authoritative pose + timestamp.
             crate::client::broadcast_all(&room_w.clients, &msg);
@@ -895,8 +939,11 @@ async fn handle_despawn(
 
     let pw_opt = {
         let mut r = room.write().await;
-        // Clear any claim on the object being despawned.
+        // Clear any claim + stored release bytes on the object being
+        // despawned — the id is retired, no late joiner should replay
+        // stale state for it.
         r.claimed_objects.remove(&obj_id);
+        r.last_release_bytes.remove(&obj_id);
         r.physics_world.clone()
     };
 
@@ -1139,10 +1186,13 @@ async fn handle_disconnect(room: &Arc<RwLock<Room>>, client_id: u16, room_id: &s
         }
 
         if !released_ids.is_empty() {
-            let room_r = room.read().await;
+            // Write lock — we need to record each release into
+            // last_release_bytes for late-joiner replay.
+            let mut room_w = room.write().await;
             for (obj_id, pose) in poses {
                 let msg = build_release_broadcast(obj_id, client_id, pose);
-                crate::client::broadcast_all(&room_r.clients, &msg);
+                room_w.last_release_bytes.insert(obj_id, msg.clone());
+                crate::client::broadcast_all(&room_w.clients, &msg);
             }
         }
     }

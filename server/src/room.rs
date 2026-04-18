@@ -49,6 +49,19 @@ pub struct Room {
     /// rather than each client stamping its own local join time. 0 until the
     /// first SCENE_INIT.
     pub scene_ready_ms: u64,
+
+    /// Per-object record of the most recent CTRL_RELEASE broadcast bytes.
+    /// Replayed to late joiners right after CTRL_PHYSICS_READY so their
+    /// deterministic subsystems (NetworkNPC wander epoch) land on the same
+    /// authoritative anchor existing clients are already using. Without this,
+    /// a late joiner computes wander from scene_ready_ms while the others
+    /// are anchored to LastReleaseServerMs — and NPCs appear at different
+    /// positions on their screen until the next chase cycle re-syncs them.
+    ///
+    /// Keyed by object local_id, value is the full 34-byte CTRL_RELEASE
+    /// frame so replay just calls `send(new_client, bytes)` — the client
+    /// already has the handler for it, no new protocol surface.
+    pub last_release_bytes: HashMap<u16, Vec<u8>>,
 }
 
 impl Room {
@@ -63,6 +76,7 @@ impl Room {
             physics_world: None,
             next_runtime_id: 0,
             scene_ready_ms: 0,
+            last_release_bytes: HashMap::new(),
         }
     }
 
