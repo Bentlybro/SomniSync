@@ -4,12 +4,13 @@ Optional debug overlay. Press **F3** to toggle.
 
 ## What It Shows
 
-- Connection status (connected/disconnected)
-- Role (Master / Spectator)
+- Connection status (connected / disconnected)
+- Physics-ready state (server Rapier world is live)
 - Client ID
 - Object count (registered NetworkObjects)
-- Bytes sent/received per second
-- Messages sent/received per second
+- Bytes sent / received per second
+- Messages sent / received per second
+- Current ServerTime offset + best RTT (clock-sync health)
 
 ## Setup
 

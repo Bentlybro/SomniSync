@@ -45,15 +45,16 @@ Client D ─┘                         │  • Rapier3D physics (50Hz)   │
 
 ## Features
 
-- **11 networking components** — position sync, variables, RPCs, animations, particles, timers, deterministic waypoints
+- **Drop-in components** — position, variables, RPCs, animations, particles, timers, deterministic waypoints, NPC AI
+- **NetworkNPC** — one-component wandering + chase-aggro with deterministic zero-bandwidth idle paths
 - **Instant-feel grabs** — client-side prediction with server reconciliation; server rejects conflicting claims and the loser unwinds cleanly
 - **Per-object interaction flags** — `pushable` / `grabbable` per NetworkObject
 - **Scale sync** — opt-in, adds 6 bytes per entity
 - **Targeted RPCs** — `Send()` (all), `SendToAuthority()`, `SendToProxies()`
-- **Connection events** — `OnNetworkReady`, `OnDisconnected`
-- **Quantized binary wire format** — 22 bytes/entity (f32 position + quaternion rotation), 28 bytes with velocity
+- **Quantized binary wire format** — 22 B/entity compact, 28 B with velocity (dead-reckoning) or scale
 - **Deterministic IDs** — no GUID overhead, objects sorted identically on every client
-- **SQLite player persistence** — key/value per stable player ID (Somnium account UUID or device UUID fallback)
+- **SQLite player persistence** — typed Save/Load API keyed by Somnium account UUID (or device UUID fallback)
+- **Live HTTP dashboard** — second port exposes `/metrics` + `/export` with CPU / RSS / per-client stats / physics tick percentiles / live log tail / downloadable snapshot JSON
 
 ## Components
 
@@ -61,15 +62,18 @@ Every synced object needs **NetworkObject**. Everything else is optional.
 
 | Component | What it does | Docs |
 |-----------|-------------|------|
-| **NetworkManager** | Connection, object registration, AOI, local player tracking | [→ Docs](docs/components/network-manager.md) |
+| **NetworkManager** | Connection, object registration, AOI, clock sync, local player tracking | [→ Docs](docs/components/network-manager.md) |
 | **NetworkObject** | Position/rotation/scale sync, grab/push interaction | [→ Docs](docs/components/network-object.md) |
+| **NetworkNPC** | Deterministic wander + optional chase-aggro AI — zero idle bandwidth | [→ Docs](docs/components/network-npc.md) |
 | **NetworkVariables** | Sync custom data — int, float, bool, string | [→ Docs](docs/components/network-variables.md) |
 | **NetworkEvents** | RPCs — broadcast, to authority, or to proxies | [→ Docs](docs/components/network-events.md) |
 | **NetworkAnimator** | Sync Animator state, parameters, triggers | [→ Docs](docs/components/network-animator.md) |
 | **NetworkParticle** | Sync ParticleSystem play/stop and properties | [→ Docs](docs/components/network-particle.md) |
 | **NetworkTimer** | Networked countdowns | [→ Docs](docs/components/network-timer.md) |
-| **NetworkWaypoint** | Deterministic NPC pathing — zero bandwidth, driven by shared clock | — |
+| **NetworkPersistence** (static) | Per-player server-backed Save/Load — float/int/bool/string, namespaced | [→ Docs](docs/components/network-persistence.md) |
+| **NetworkWaypoint** | Deterministic waypoint pathing — zero bandwidth, driven by shared clock | — |
 | **NetworkStats** | F3 debug overlay — FPS, bandwidth, connection status | [→ Docs](docs/components/network-stats.md) |
+| **NetworkDebug** | Per-tick CSV dump for desync diagnosis — pairs with `tools/netdbg_diff.py` | — |
 | **PlayerPushDetector** | Auto-attached collision detection for push-to-grab | [→ Docs](docs/components/player-push-detector.md) |
 | **SomniumBridgeIntegration** | One-line Somnium Space player identity hookup | — |
 
@@ -92,28 +96,41 @@ Rust relay running `tokio` + `tokio-tungstenite` + `rapier3d`. Zero-copy broadca
 ```bash
 cd server
 cargo build --release
-./target/release/somnium-relay              # default: ws://0.0.0.0:9090
-./target/release/somnium-relay 0.0.0.0:8080 # custom port
+./target/release/somnium-relay                          # defaults: ws :9090 + dashboard :9091
+./target/release/somnium-relay 0.0.0.0:9090 127.0.0.1:9091  # production shape: game public, dashboard local-only
 ```
 
-Minimal resource usage — a single-vCPU VPS handles hundreds of connections and thousands of physics bodies.
+Two positional args: WebSocket bind and HTTP dashboard bind. The dashboard is a separate opt-in listener — if its port is taken, the relay keeps serving game traffic.
 
 ## Performance
 
-Recent tests on a 2Gbps droplet:
+Most recent measured run on a single-vCPU DigitalOcean droplet:
 
-| Objects | Concurrent clients | Status |
-|---------|-------------------|--------|
-| 1000 physics spheres | 1 | Smooth, all falling at once |
-| *your numbers here* | *here* | *here* |
+| Scenario | Result |
+|---|---|
+| 1016 scene objects + 2 real players, ~15 min | CPU **21 %**, RSS 15 MB, 0 drops |
+| Physics tick p99 | **6.4 ms** (budget 20 ms at 50 Hz) |
+| Broadcast build p99 | **90 µs** |
+| Per-client peak downlink | ≈ 250 KB/s |
 
-Typical per-client downlink bandwidth at 1000 dynamic objects × 20Hz broadcast: ≤ 560 KB/s (before AOI trims it further). Sleeping bodies are skipped entirely — a quiet room is nearly free.
+40-user load-testing via the bot-swarm harness (`tools/bot_client.py`) is the next validation. Numbers past "a thousand objects with two players" are being tested, not claimed.
 
 Bandwidth math:
 - Per-entity wire size: 22 B (compact) / 28 B (with velocity) / 28 B (with scale)
-- Broadcast rate: 20 Hz (50 ms)
-- AOI tiers: near (0–25m, every tick) · mid (25–60m, every 3rd) · far (60–150m, every 10th) · beyond 150m not broadcast
-- Claim updates (held objects) sent at client `sendRate` (default 60Hz) — one client per object
+- Broadcast rate: 20 Hz (50 ms ticks)
+- AOI tiers: near (0–25 m, every tick) · mid (25–60 m, every 3rd) · far (60–150 m, every 10th) · beyond 150 m not broadcast
+- Claim updates (held objects) sent at client `sendRate` (default 60 Hz) — one client per object
+- Sleeping Rapier bodies skipped entirely from broadcasts — an idle world is nearly free
+
+## Benchmarking
+
+Three tools in the repo let you test scale without 40 real humans:
+
+- `benchmarks/bench.py` — ping RTT, event relay latency, connection storm.
+- `tools/bot_client.py` — headless bot swarm that speaks the full binary protocol; `--interact` adds claim/release/drive cycles to stress the Rapier write path.
+- `tools/netdbg_diff.py` — offline CSV diff for inter-client NPC position agreement.
+
+See [docs/ops/benchmarking.md](docs/ops/benchmarking.md) for full usage.
 
 ## License
 

@@ -65,12 +65,12 @@ When a player grabs and throws:
 
 ## ⚠️ Warning: Don't Use on Bulk Physics Objects
 
-NetworkRigidbody sends 15 bytes per object per sync tick. On a few objects this is nothing. On thousands it will destroy your frame rate:
+NetworkRigidbody sends 15 bytes per object per sync tick. On a few objects this is nothing. On hundreds or thousands it adds up fast:
 
-- 50 objects at 10Hz = 500 updates/sec ✅
-- 4000 objects at 30Hz = 120,000 updates/sec ❌ (this will kill performance)
+- 50 objects at 10 Hz = 500 updates/sec ✅
+- 1000 objects at 30 Hz = 30,000 updates/sec ❌ (bulk objects should not be using this)
 
-**Rule:** Only add NetworkRigidbody to objects that **individually matter** — a thrown ball, a vehicle, a wrecking ball. For bulk physics objects (stacked cubes, debris piles), `NetworkObject` alone is enough.
+**Rule:** Only add NetworkRigidbody to objects that **individually matter** — a thrown ball, a vehicle, a wrecking ball. For bulk physics objects (stacked cubes, debris piles), `NetworkObject` alone is enough. The server's authoritative 0x0B broadcast already carries velocity per entity for dead-reckoning extrapolation on every client; NetworkRigidbody is only for cases where you need to write velocity *from* the client (thrower) rather than read it from the server.
 
 ## Tips
 

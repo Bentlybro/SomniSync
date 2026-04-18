@@ -17,14 +17,24 @@ const sidebars: SidebarsConfig = {
       items: [
         'components/network-manager',
         'components/network-object',
+        'components/network-npc',
         'components/network-variables',
         'components/network-events',
         'components/network-animator',
         'components/network-rigidbody',
         'components/network-particle',
         'components/network-timer',
+        'components/network-persistence',
         'components/network-stats',
         'components/player-push-detector',
+      ],
+    },
+    {
+      type: 'category',
+      label: 'Operations',
+      items: [
+        'ops/dashboard',
+        'ops/benchmarking',
       ],
     },
     {

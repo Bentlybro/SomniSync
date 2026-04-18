@@ -17,7 +17,7 @@ Every synced object needs `NetworkObject`. Everything else is optional.
 
 | Component | Description | Docs |
 |-----------|-------------|------|
-| **NetworkManager** | Connection, master/spectator logic, object registration | [→ Docs](components/network-manager.md) |
+| **NetworkManager** | Connection, object registration, shared clock, AOI, local player tracking | [→ Docs](components/network-manager.md) |
 | **NetworkObject** | Position/rotation sync, ownership, interaction (pushable/grabbable) | [→ Docs](components/network-object.md) |
 
 ### Optional
