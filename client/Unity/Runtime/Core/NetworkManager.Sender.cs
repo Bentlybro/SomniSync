@@ -212,6 +212,42 @@ namespace SomniumSpace.Worlds.bently.networking
         }
 
         /// <summary>
+        /// Convenience overload: look up a prefab in <see cref="networkedPrefabs"/>
+        /// by its GameObject name and spawn it. Case-sensitive. Logs an error
+        /// and no-ops if the name isn't found.
+        ///
+        /// Network identity is still index-based on the wire — this is a
+        /// local lookup only. Every client must have the same prefab list
+        /// in the same order; renaming a prefab in one build without
+        /// updating others will silently spawn the wrong thing.
+        /// </summary>
+        public void Spawn(string prefabName, Vector3 pos, Quaternion rot)
+        {
+            int idx = GetPrefabIndex(prefabName);
+            if (idx < 0)
+            {
+                Debug.LogError($"[Net] Spawn: no prefab named '{prefabName}' in networkedPrefabs");
+                return;
+            }
+            Spawn(idx, pos, rot);
+        }
+
+        /// <summary>
+        /// Resolve a prefab name to its index in <see cref="networkedPrefabs"/>.
+        /// Returns -1 if not found. First-match wins if names collide.
+        /// </summary>
+        public int GetPrefabIndex(string prefabName)
+        {
+            if (networkedPrefabs == null || string.IsNullOrEmpty(prefabName)) return -1;
+            for (int i = 0; i < networkedPrefabs.Count; i++)
+            {
+                var p = networkedPrefabs[i];
+                if (p != null && p.name == prefabName) return i;
+            }
+            return -1;
+        }
+
+        /// <summary>
         /// Ask the server to destroy a previously-spawned networked object.
         /// Every client will receive the despawn broadcast and tear down
         /// their local copy.

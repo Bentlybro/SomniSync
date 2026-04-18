@@ -6,3 +6,4 @@ website/.docusaurus/
 __pycache__/
 *.pyc
 botlogs/
+.claude/
