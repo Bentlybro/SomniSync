@@ -6,14 +6,25 @@ Built for [Somnium Space](https://somniumspace.com) VR but works with any Unity 
 
 📖 **[Full Documentation](https://bentlybro.github.io/SomniSync/)**
 
+## Install
+
+In Unity: **Window → Package Manager → + → Add package from git URL** and paste:
+
+```
+https://github.com/Bentlybro/SomniSync.git?path=client/Unity
+```
+
+Unity 6 (6000.0+) required.
+
 ## Quick Start
 
-1. Add `NetworkManager` to a GameObject in your scene
-2. Set the `Server URL` (e.g. `ws://localhost:9090`)
-3. Set a `Room ID` (e.g. `my-world`)
-4. Add `NetworkObject` to every object you want synced
-5. *(Optional)* Set `Local Player` on NetworkManager to your player transform — enables server-side AOI filtering
-6. Done.
+1. After installing the package, **Tools → SomniSync → Create Quick Start Scene** will scaffold a working sample for you.
+2. Or wire your own scene manually:
+   - Add `NetworkManager` to a GameObject
+   - Set the `Server URL` (e.g. `ws://localhost:9090`) and `Room ID`
+   - Add `NetworkObject` to every object you want synced
+   - *(Optional)* Set `Local Player` on NetworkManager for server-side AOI filtering
+3. Run **Tools → SomniSync → Validate Scene** to catch common setup mistakes before you hit Play.
 
 Physics syncs automatically. Players can grab/push objects. First client to connect bootstraps the server's physics world.
 

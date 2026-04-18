@@ -1,0 +1,14 @@
+{
+    "name": "SomniSync.Runtime",
+    "rootNamespace": "SomniumSpace.Worlds.bently.networking",
+    "references": [],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

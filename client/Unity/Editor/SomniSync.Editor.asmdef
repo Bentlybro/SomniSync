@@ -1,0 +1,18 @@
+{
+    "name": "SomniSync.Editor",
+    "rootNamespace": "SomniumSpace.Worlds.bently.networking.Editor",
+    "references": [
+        "SomniSync.Runtime"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}
