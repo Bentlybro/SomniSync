@@ -4,14 +4,22 @@
 /// the world; clients only send inputs (claims, held-object positions, events,
 /// variables). Clients never simulate physics on behalf of other clients.
 ///
-/// Entity format (compact): 14 bytes per entity
-///   [u16 local_id][half x][half y][half z][u16 rx][u16 ry][u16 rz]
+/// Entity formats (client ↔ server):
+///   Compact held-object  (MSG_INTERACTION_UPDATE 0x03): 22 bytes
+///     [u16 local_id][f32 x][f32 y][f32 z][i16 qx][i16 qy][i16 qz][i16 qw]
+///     Quaternion components are i16 quantized over [-1, 1] (divide by 32767).
 ///
-/// Velocity entity: 20 bytes
-///   compact + [half vx][half vy][half vz]
+///   Scaled held-object   (MSG_SCALED_INTERACTION 0x09): 28 bytes
+///     compact (22 B) + [f16 sx][f16 sy][f16 sz]
 ///
-/// MSG_POSITION_VELOCITY (0x0B):
-///   [u8 type][u16 sender_client_id][u16 sequence][u16 count][N × 20B entity]
+///   Authoritative entity (MSG_POSITION_VELOCITY 0x0B): 28 bytes
+///     [u16 obj_id][f32 x][f32 y][f32 z][i16 qx][i16 qy][i16 qz][i16 qw]
+///     [f16 vx][f16 vy][f16 vz]
+///     Positions are full f32 (clients apply these directly); velocities are
+///     f16 (lower precision is fine for visuals, hint for extrapolation).
+///
+/// MSG_POSITION_VELOCITY framing (0x0B):
+///   [u8 type][u16 sender_client_id][u16 sequence][u16 count][N × 28B entity]
 ///   Server → clients only. sender_client_id = 0 means "server".
 ///
 /// Persistence protocol (all inside 0xFF control messages):
@@ -59,4 +67,35 @@ pub fn ctrl_msg(ctrl_type: u8, payload: &[u8]) -> Vec<u8> {
     buf.push(ctrl_type);
     buf.extend_from_slice(payload);
     buf
+}
+
+// ─── Little-endian binary read helpers ───────────────────────────────────────
+//
+// The wire protocol is little-endian throughout. These are the canonical
+// readers used by every module (handler.rs, physics.rs, ...). Callers are
+// responsible for bounds-checking the slice before calling — these panic on
+// out-of-range reads, which is the desired behaviour for the protocol parser
+// (a malformed frame is a bug on the caller side, not a silent default).
+
+#[inline]
+pub fn read_f32(data: &[u8], offset: usize) -> f32 {
+    f32::from_le_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]])
+}
+
+#[inline]
+pub fn read_i16(data: &[u8], offset: usize) -> i16 {
+    i16::from_le_bytes([data[offset], data[offset + 1]])
+}
+
+#[inline]
+pub fn read_u16(data: &[u8], offset: usize) -> u16 {
+    u16::from_le_bytes([data[offset], data[offset + 1]])
+}
+
+#[inline]
+pub fn read_u64(data: &[u8], offset: usize) -> u64 {
+    u64::from_le_bytes([
+        data[offset], data[offset + 1], data[offset + 2], data[offset + 3],
+        data[offset + 4], data[offset + 5], data[offset + 6], data[offset + 7],
+    ])
 }

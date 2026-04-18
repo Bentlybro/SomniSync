@@ -2,16 +2,15 @@ use log::{debug, error, info, warn};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tokio::time::{Duration, Instant};
+use tokio::time::Duration;
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::client::{broadcast_except, new_client, send, send_try, Client, ClientMsg};
+use crate::client::{broadcast_except, new_client, send, Client, ClientMsg};
 use crate::persistence::PersistenceDb;
-use crate::physics::{build_filtered_message, parse_scene_init, PhysicsWorld};
 use crate::protocol::{
-    ctrl_msg, CTRL_CLAIM, CTRL_CLAIM_REJECTED, CTRL_DESPAWN, CTRL_ERROR, CTRL_PERSIST_DATA,
-    CTRL_PERSIST_GET, CTRL_PERSIST_SET, CTRL_PHYSICS_READY, CTRL_PLAYER_IDENT, CTRL_RELEASE,
-    CTRL_SPAWN, CTRL_SPAWN_REQUEST, CTRL_TIME_PONG, CTRL_WELCOME, MSG_ANIMATOR, MSG_EVENT,
+    ctrl_msg, read_f32, read_i16, read_u16, read_u64, CTRL_CLAIM, CTRL_CLAIM_REJECTED,
+    CTRL_DESPAWN, CTRL_PERSIST_GET, CTRL_PERSIST_SET, CTRL_PHYSICS_READY, CTRL_PLAYER_IDENT,
+    CTRL_RELEASE, CTRL_SPAWN_REQUEST, CTRL_TIME_PONG, CTRL_WELCOME, MSG_ANIMATOR, MSG_EVENT,
     MSG_INTERACTION_UPDATE, MSG_PLAYER_POS, MSG_PUSH_IMPULSE, MSG_SCALED_INTERACTION,
     MSG_SCENE_INIT, MSG_TIME_PING, MSG_VARIABLE_UPDATE,
 };
@@ -232,6 +231,13 @@ pub async fn handle_connection(
     }
 }
 
+/// Maximum inbound WebSocket frame the server will process. Frames larger
+/// than this are a protocol error — the widest legitimate message is a
+/// SCENE_INIT with a few thousand bodies (≈120 KB), so 256 KB leaves headroom
+/// without letting a misbehaving or malicious client amplify MSG_VARIABLE_UPDATE
+/// / MSG_EVENT / MSG_ANIMATOR relays into a DoS against every other peer.
+const MAX_FRAME_BYTES: usize = 256 * 1024;
+
 /// Handle a binary message from a client.
 async fn handle_binary(
     room: &Arc<RwLock<Room>>,
@@ -241,6 +247,14 @@ async fn handle_binary(
     room_id: &str,
     db: &PersistenceDb,
 ) {
+    if data.len() > MAX_FRAME_BYTES {
+        warn!(
+            "[Room:{}] client_{} sent oversized frame ({} bytes > {}); dropping",
+            room_id, client_id, data.len(), MAX_FRAME_BYTES
+        );
+        return;
+    }
+
     stats::bump_rx(data.len());
     stats::bump_rx_type(data);
     stats::bump_client_rx(client_id, data.len());
@@ -248,7 +262,7 @@ async fn handle_binary(
 
     match msg_type {
         MSG_SCENE_INIT => {
-            handle_scene_init(room, &room_id.to_string(), data).await;
+            crate::scene::handle_scene_init(room, &room_id.to_string(), data).await;
         }
 
         MSG_PLAYER_POS => {
@@ -285,10 +299,7 @@ async fn handle_binary(
             if data.len() < 9 {
                 return;
             }
-            let client_ms = u64::from_le_bytes([
-                data[1], data[2], data[3], data[4],
-                data[5], data[6], data[7], data[8],
-            ]);
+            let client_ms = read_u64(data, 1);
             let server_ms = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_millis() as u64)
@@ -304,7 +315,7 @@ async fn handle_binary(
             if data.len() < 15 {
                 return;
             }
-            let obj_id = u16::from_le_bytes([data[1], data[2]]);
+            let obj_id = read_u16(data, 1);
             let vx = read_f32(data, 3);
             let vy = read_f32(data, 7);
             let vz = read_f32(data, 11);
@@ -363,11 +374,18 @@ async fn handle_held_object_update(room: &Arc<RwLock<Room>>, client_id: u16, dat
     }
     let is_scaled = data[0] == MSG_SCALED_INTERACTION;
     let bytes_per_entity = if is_scaled { 28 } else { 22 };
-    let count = u16::from_le_bytes([data[1], data[2]]) as usize;
+    let count = read_u16(data, 1) as usize;
     if data.len() < 3 + count * bytes_per_entity {
         return;
     }
 
+    // We snapshot (clone) `claimed_objects` instead of holding the room read
+    // lock across the physics mutex + broadcast below. MSG_PLAYER_POS acquires
+    // a room WRITE lock every frame per client (see handler::handle_binary ->
+    // MSG_PLAYER_POS), so holding a read lock here would serialize the entire
+    // write path against held-object updates. The map is small (only
+    // actively-claimed objects, typically <20 entries), so the clone is a
+    // sub-microsecond copy — much cheaper than the contention it avoids.
     let (claimed_snapshot, pw_opt) = {
         let r = room.read().await;
         (r.claimed_objects.clone(), r.physics_world.clone())
@@ -384,7 +402,7 @@ async fn handle_held_object_update(room: &Arc<RwLock<Room>>, client_id: u16, dat
 
     let mut offset = 3usize;
     for _ in 0..count {
-        let obj_id = u16::from_le_bytes([data[offset], data[offset + 1]]);
+        let obj_id = read_u16(data, offset);
         if claimed_snapshot.get(&obj_id) != Some(&client_id) {
             offset += bytes_per_entity;
             continue;
@@ -418,254 +436,6 @@ async fn handle_held_object_update(room: &Arc<RwLock<Room>>, client_id: u16, dat
     broadcast_except(&room_r.clients, client_id, &relay);
 }
 
-/// Handle a SCENE_INIT (0x10) — bootstrap the authoritative physics world.
-async fn handle_scene_init(room: &Arc<RwLock<Room>>, room_id: &str, data: &[u8]) {
-    // First SCENE_INIT wins; ignore the rest.
-    {
-        let r = room.read().await;
-        if r.physics_ready {
-            debug!("[Room:{}] SCENE_INIT ignored (physics already ready)", room_id);
-            return;
-        }
-    }
-
-    let objects = match parse_scene_init(data) {
-        Some(objs) => objs,
-        None => {
-            warn!("[Room:{}] Failed to parse SCENE_INIT", room_id);
-            return;
-        }
-    };
-
-    info!(
-        "[Room:{}] SCENE_INIT received: {} physics objects. Entering physics mode.",
-        room_id,
-        objects.len()
-    );
-
-    let mut world = PhysicsWorld::new();
-    for desc in &objects {
-        world.add_object(desc);
-    }
-
-    let pw_arc = Arc::new(tokio::sync::Mutex::new(world));
-
-    // Mark physics ready and broadcast to every connected client. Stamp the
-    // room-wide scene_ready_ms here — it's the single canonical "physics went
-    // live at T" value every client anchors deterministic subsystems to. The
-    // CTRL_PHYSICS_READY broadcast carries it so clients that connected before
-    // SCENE_INIT landed learn the value now.
-    let initial_object_count = objects.len() as u16;
-    let scene_ready_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0);
-    {
-        let mut r = room.write().await;
-        r.physics_ready = true;
-        r.physics_world = Some(pw_arc.clone());
-        // Runtime spawns get IDs starting right after the baked-in scene objects.
-        r.next_runtime_id = initial_object_count;
-        r.scene_ready_ms = scene_ready_ms;
-        let ready_msg = ctrl_msg(CTRL_PHYSICS_READY, &scene_ready_ms.to_le_bytes());
-        crate::client::broadcast_all(&r.clients, &ready_msg);
-    }
-
-    // Spawn the physics tick task.
-    let room_weak = Arc::downgrade(room);
-    let room_id_owned = room_id.to_string();
-
-    tokio::spawn(async move {
-        physics_tick_task(room_weak, pw_arc, room_id_owned).await;
-    });
-}
-
-/// Physics tick task — 50Hz simulation, 20Hz broadcast.
-async fn physics_tick_task(
-    room_weak: std::sync::Weak<RwLock<Room>>,
-    pw_arc: Arc<tokio::sync::Mutex<PhysicsWorld>>,
-    room_id: String,
-) {
-    const PHYSICS_HZ: u64 = 50;
-    const BROADCAST_HZ: u64 = 20;
-    const PHYSICS_INTERVAL: Duration = Duration::from_millis(1000 / PHYSICS_HZ);
-    const BROADCAST_INTERVAL: Duration = Duration::from_millis(1000 / BROADCAST_HZ);
-    const ROOM_CHECK_INTERVAL: Duration = Duration::from_secs(2);
-    /// If a claimed body hasn't received an update in this long, assume the
-    /// grabbing client's socket stalled and auto-release so other clients can
-    /// interact again. TCP idle-kick is 60s but that's way too long to leave
-    /// grabbed objects frozen in-world.
-    const STALE_CLAIM_TIMEOUT: Duration = Duration::from_secs(5);
-    const STALE_CLAIM_CHECK_INTERVAL: Duration = Duration::from_secs(2);
-
-    let mut last_physics = Instant::now();
-    let mut last_broadcast = Instant::now();
-    let mut last_room_check = Instant::now();
-    let mut last_claim_check = Instant::now();
-    let mut server_sequence: u16 = 0;
-    let mut tick: u32 = 0;
-
-    info!("[Room:{}] Physics tick task started (50Hz sim / 20Hz broadcast)", room_id);
-
-    loop {
-        let now = Instant::now();
-        let next_physics = last_physics + PHYSICS_INTERVAL;
-        let next_broadcast = last_broadcast + BROADCAST_INTERVAL;
-        let next_check = last_room_check + ROOM_CHECK_INTERVAL;
-        let next_claim_check = last_claim_check + STALE_CLAIM_CHECK_INTERVAL;
-
-        let wake_at = next_physics
-            .min(next_broadcast)
-            .min(next_check)
-            .min(next_claim_check);
-        if wake_at > now {
-            tokio::time::sleep_until(wake_at).await;
-        }
-
-        let now = Instant::now();
-        let do_physics = now >= next_physics;
-        let do_broadcast = now >= next_broadcast;
-
-        // Single physics-mutex acquisition per tick: step + snapshot for broadcast.
-        let buckets_opt = if do_physics || do_broadcast {
-            let mut pw = pw_arc.lock().await;
-            if do_physics {
-                last_physics = now;
-                let t0 = Instant::now();
-                pw.step();
-                let us = t0.elapsed().as_micros() as u64;
-                if let Some(s) = crate::stats::get() {
-                    s.record_physics_tick(us);
-                }
-            }
-            if do_broadcast {
-                last_broadcast = now;
-                Some(pw.snapshot_dynamic())
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
-        if do_broadcast {
-            let buckets = match buckets_opt {
-                Some(s) => s,
-                None => continue,
-            };
-
-            server_sequence = server_sequence.wrapping_add(1);
-            let seq = server_sequence;
-            tick = tick.wrapping_add(1);
-
-            let room_arc = match room_weak.upgrade() {
-                Some(r) => r,
-                None => {
-                    info!("[Room:{}] Physics task: room deallocated, stopping", room_id);
-                    return;
-                }
-            };
-
-            let (clients_clone, player_pos_clone): (
-                Vec<(u16, Arc<Client>)>,
-                std::collections::HashMap<u16, [f32; 3]>,
-            ) = {
-                let r = room_arc.read().await;
-                if r.client_count() == 0 {
-                    info!("[Room:{}] Physics task: no clients, stopping", room_id);
-                    return;
-                }
-                (
-                    r.clients.iter().map(|(&id, c)| (id, c.clone())).collect(),
-                    r.player_positions.clone(),
-                )
-            };
-
-            let bc_start = Instant::now();
-            for (cid, client) in &clients_clone {
-                let pp = player_pos_clone.get(cid).copied();
-                if let Some(msg) = build_filtered_message(
-                    &buckets.awake,
-                    &buckets.just_slept,
-                    pp,
-                    tick,
-                    seq,
-                ) {
-                    send_try(client, bytes::Bytes::from(msg));
-                }
-            }
-            if let Some(s) = crate::stats::get() {
-                s.record_physics_broadcast(bc_start.elapsed().as_micros() as u64);
-            }
-        }
-
-        if now >= next_check {
-            last_room_check = now;
-            let room_arc = match room_weak.upgrade() {
-                Some(r) => r,
-                None => {
-                    info!("[Room:{}] Physics task: room deallocated, stopping", room_id);
-                    return;
-                }
-            };
-            if room_arc.read().await.client_count() == 0 {
-                info!("[Room:{}] Physics task: no clients remain, stopping", room_id);
-                return;
-            }
-        }
-
-        // ── Stale claim cleanup ───────────────────────────────────────────
-        // If a client grabs something and their send loop stalls (TCP keeps
-        // the socket nominally alive but no packets flow), the object stays
-        // frozen kinematic and unclaimable by anyone else until the 60s idle
-        // disconnect fires. Sweep periodically so grabs self-release sooner.
-        if now >= next_claim_check {
-            last_claim_check = now;
-            let stale = {
-                let pw = pw_arc.lock().await;
-                pw.stale_claims(STALE_CLAIM_TIMEOUT)
-            };
-            if !stale.is_empty() {
-                let room_arc = match room_weak.upgrade() {
-                    Some(r) => r,
-                    None => return,
-                };
-
-                // Snapshot poses BEFORE release_stale (which may reset kinematic
-                // state), so broadcasts carry authoritative pre-release position.
-                let mut poses = Vec::with_capacity(stale.len());
-                {
-                    let pw = pw_arc.lock().await;
-                    for (obj_id, _) in &stale {
-                        poses.push(pw.read_body_pose(*obj_id));
-                    }
-                }
-                {
-                    let mut pw = pw_arc.lock().await;
-                    for (obj_id, _) in &stale {
-                        pw.release_stale(*obj_id);
-                    }
-                }
-
-                let mut r = room_arc.write().await;
-                for (i, (obj_id, owner)) in stale.iter().enumerate() {
-                    if r.claimed_objects.get(obj_id) == Some(owner) {
-                        r.claimed_objects.remove(obj_id);
-                        let pose = poses.get(i).copied().flatten();
-                        let msg = build_release_broadcast(*obj_id, *owner, pose);
-                        r.last_release_bytes.insert(*obj_id, msg.clone());
-                        crate::client::broadcast_all(&r.clients, &msg);
-                        info!(
-                            "[Room:{}] stale claim on obj_{} (owner client_{}) auto-released",
-                            room_id, obj_id, owner
-                        );
-                    }
-                }
-            }
-        }
-    }
-}
-
 /// Handle control messages (0xFF).
 async fn handle_control(
     room: &Arc<RwLock<Room>>,
@@ -680,27 +450,27 @@ async fn handle_control(
     }
     let ctrl = data[1];
 
-    // Persistence
+    // Persistence (delegated to persist_rpc module)
     if ctrl == CTRL_PLAYER_IDENT {
-        handle_player_ident(room, client_id, data, room_id).await;
+        crate::persist_rpc::handle_player_ident(room, client_id, data, room_id).await;
         return;
     }
     if ctrl == CTRL_PERSIST_SET {
-        handle_persist_set(room, client, client_id, data, room_id, db).await;
+        crate::persist_rpc::handle_persist_set(room, client, client_id, data, room_id, db).await;
         return;
     }
     if ctrl == CTRL_PERSIST_GET {
-        handle_persist_get(room, client, client_id, data, room_id, db).await;
+        crate::persist_rpc::handle_persist_get(room, client, client_id, data, room_id, db).await;
         return;
     }
 
-    // Runtime spawn / despawn
+    // Runtime spawn / despawn (delegated to spawn module)
     if ctrl == CTRL_SPAWN_REQUEST {
-        handle_spawn_request(room, client_id, data, room_id).await;
+        crate::spawn::handle_spawn_request(room, client_id, data, room_id).await;
         return;
     }
     if ctrl == CTRL_DESPAWN {
-        handle_despawn(room, client_id, data, room_id).await;
+        crate::spawn::handle_despawn(room, client_id, data, room_id).await;
         return;
     }
 
@@ -708,7 +478,7 @@ async fn handle_control(
     if data.len() < 6 {
         return;
     }
-    let obj_id = u16::from_le_bytes([data[2], data[3]]);
+    let obj_id = read_u16(data, 2);
 
     match ctrl {
         CTRL_CLAIM => {
@@ -752,6 +522,13 @@ async fn handle_control(
             }
         }
         CTRL_RELEASE => {
+            // Snapshot physics handle + pose under the read lock so we don't
+            // hold a physics mutex across the room write lock we're about to
+            // take. Ownership is RE-VERIFIED under the write lock below —
+            // between these two critical sections the physics tick's stale-
+            // claim sweep can auto-release the same object, and without the
+            // second check we'd emit a duplicate release broadcast and
+            // overwrite last_release_bytes with a stale pose.
             let physics_world_opt = {
                 let room_r = room.read().await;
                 if room_r.claimed_objects.get(&obj_id) != Some(&client_id) {
@@ -770,6 +547,13 @@ async fn handle_control(
             };
 
             let mut room_w = room.write().await;
+            // Re-check ownership — the stale-claim sweep (or a disconnect
+            // handler) may have released this object while we were reading
+            // the pose. If they did, they already broadcast a release and
+            // populated last_release_bytes; silently bail.
+            if room_w.claimed_objects.get(&obj_id) != Some(&client_id) {
+                return;
+            }
             room_w.claimed_objects.remove(&obj_id);
             debug!("[Room:{}] client_{} released object {}", room_id, client_id, obj_id);
             let msg = build_release_broadcast(obj_id, client_id, pose);
@@ -802,7 +586,7 @@ async fn handle_control(
 ///   [i16 qx][i16 qy][i16 qz][i16 qw]   (quantised quaternion, /32767 to decode)
 ///   [u64 server_unix_ms]
 ///   = 34 bytes
-fn build_release_broadcast(
+pub(crate) fn build_release_broadcast(
     obj_id: u16,
     client_id: u16,
     pose: Option<([f32; 3], [f32; 4])>,
@@ -832,323 +616,6 @@ fn build_release_broadcast(
     }
     buf.extend_from_slice(&server_ms.to_le_bytes());
     buf
-}
-
-/// Client asked to spawn an object at runtime. Assign it an id, add it to
-/// Rapier, broadcast the full descriptor (now with id) to every client.
-///
-/// Wire format:
-///   request:   [0xFF][0x0B][u8 prefab_idx][60B scene_object]                    = 63 bytes
-///   broadcast: [0xFF][0x0C][u16 id][u8 prefab_idx][60B scene_object][u64 spawn_ms] = 73 bytes
-///
-/// The scene_object layout mirrors SCENE_INIT entries — same 60 bytes, same
-/// parser, so bodies spawned at runtime look identical to baked-in ones.
-/// The trailing spawn_ms is the server unix time at broadcast, letting every
-/// client anchor deterministic subsystems (NetworkNPC wander) to a shared
-/// per-object birth timestamp rather than each client's local Instantiate time.
-async fn handle_spawn_request(
-    room: &Arc<RwLock<Room>>,
-    _client_id: u16,
-    data: &[u8],
-    room_id: &str,
-) {
-    const HEADER: usize = 3; // [0xFF][0x0B][u8 prefab_idx]
-    const SCENE_OBJECT_BYTES: usize = 60;
-    if data.len() < HEADER + SCENE_OBJECT_BYTES {
-        return;
-    }
-    let prefab_idx = data[2];
-
-    // Parse scene_object using the SCENE_INIT parser — feed it a matching
-    // framed buffer: [0x10][u16 count=1][60B object].
-    let mut framed = Vec::with_capacity(3 + SCENE_OBJECT_BYTES);
-    framed.push(MSG_SCENE_INIT);
-    framed.extend_from_slice(&1u16.to_le_bytes());
-    framed.extend_from_slice(&data[HEADER..HEADER + SCENE_OBJECT_BYTES]);
-    let mut desc = match parse_scene_init(&framed) {
-        Some(mut list) if !list.is_empty() => list.swap_remove(0),
-        _ => {
-            warn!("[Room:{}] CTRL_SPAWN_REQUEST failed to parse scene object", room_id);
-            return;
-        }
-    };
-
-    // Need physics world + next id.
-    let (pw_opt, assigned_id) = {
-        let mut r = room.write().await;
-        if !r.physics_ready || r.physics_world.is_none() {
-            warn!("[Room:{}] CTRL_SPAWN_REQUEST before physics ready", room_id);
-            return;
-        }
-        let id = r.next_runtime_id;
-        if id == u16::MAX {
-            warn!("[Room:{}] CTRL_SPAWN_REQUEST: ran out of u16 ids", room_id);
-            return;
-        }
-        r.next_runtime_id = id.wrapping_add(1);
-        (r.physics_world.clone(), id)
-    };
-    desc.id = assigned_id;
-
-    if let Some(pw_arc) = pw_opt {
-        let mut pw = pw_arc.lock().await;
-        pw.add_object(&desc);
-    }
-
-    // Broadcast to every client:
-    //   [0xFF][0x0C][u16 id][u8 prefab_idx][60B scene_object][u64 spawn_server_ms]
-    let spawn_server_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0);
-
-    let mut msg = Vec::with_capacity(2 + 2 + 1 + SCENE_OBJECT_BYTES + 8);
-    msg.push(0xFF);
-    msg.push(CTRL_SPAWN);
-    msg.extend_from_slice(&assigned_id.to_le_bytes());
-    msg.push(prefab_idx);
-    msg.extend_from_slice(&data[HEADER..HEADER + SCENE_OBJECT_BYTES]);
-    // Patch the scene_object's own id field (its first 2 bytes) to match the
-    // server-assigned id — client's parser will read it from there.
-    const SCENE_OBJ_ID_OFFSET: usize = 5; // after [0xFF][0x0C][u16 outer_id][u8 prefab]
-    msg[SCENE_OBJ_ID_OFFSET]     = (assigned_id & 0xFF) as u8;
-    msg[SCENE_OBJ_ID_OFFSET + 1] = (assigned_id >> 8) as u8;
-    msg.extend_from_slice(&spawn_server_ms.to_le_bytes());
-
-    let r = room.read().await;
-    crate::client::broadcast_all(&r.clients, &msg);
-    info!(
-        "[Room:{}] spawned object id={} prefab={} spawn_ms={}",
-        room_id, assigned_id, prefab_idx, spawn_server_ms
-    );
-}
-
-/// Either direction: destroy a runtime-spawned object. Either a client asks
-/// to destroy one they own, or the server is tearing one down. Server removes
-/// from Rapier, clears any claim, broadcasts to all clients.
-async fn handle_despawn(
-    room: &Arc<RwLock<Room>>,
-    _client_id: u16,
-    data: &[u8],
-    room_id: &str,
-) {
-    if data.len() < 4 {
-        return;
-    }
-    let obj_id = u16::from_le_bytes([data[2], data[3]]);
-
-    let pw_opt = {
-        let mut r = room.write().await;
-        // Clear any claim + stored release bytes on the object being
-        // despawned — the id is retired, no late joiner should replay
-        // stale state for it.
-        r.claimed_objects.remove(&obj_id);
-        r.last_release_bytes.remove(&obj_id);
-        r.physics_world.clone()
-    };
-
-    if let Some(pw_arc) = pw_opt {
-        let mut pw = pw_arc.lock().await;
-        pw.remove_object(obj_id);
-    }
-
-    let mut msg = vec![0xFF, CTRL_DESPAWN];
-    msg.extend_from_slice(&obj_id.to_le_bytes());
-    let r = room.read().await;
-    crate::client::broadcast_all(&r.clients, &msg);
-    info!("[Room:{}] despawned object id={}", room_id, obj_id);
-}
-
-async fn handle_player_ident(room: &Arc<RwLock<Room>>, client_id: u16, data: &[u8], room_id: &str) {
-    {
-        let room_r = room.read().await;
-        if room_r.player_ids.contains_key(&client_id) {
-            warn!(
-                "[Room:{}] client_{} tried to re-register identity — ignored",
-                room_id, client_id
-            );
-            return;
-        }
-    }
-    if data.len() < 4 {
-        return;
-    }
-    let len = data[2] as usize;
-    const MAX_ID_LEN: usize = 64;
-    if len > MAX_ID_LEN || data.len() < 3 + len {
-        return;
-    }
-    if let Ok(uuid) = std::str::from_utf8(&data[3..3 + len]) {
-        let uuid = uuid.to_string();
-        let mut room = room.write().await;
-        room.player_ids.insert(client_id, uuid.clone());
-        info!("[Room:{}] client_{} identified as player '{}'", room_id, client_id, uuid);
-    }
-}
-
-async fn handle_persist_set(
-    room: &Arc<RwLock<Room>>,
-    client: &Arc<Client>,
-    client_id: u16,
-    data: &[u8],
-    room_id: &str,
-    db: &PersistenceDb,
-) {
-    let mut offset = 2usize;
-    if data.len() < offset + 1 {
-        return;
-    }
-
-    const MAX_NS_LEN: usize = 64;
-    const MAX_KEY_LEN: usize = 128;
-    const MAX_VALUE_LEN: usize = 4096;
-
-    let ns_len = data[offset] as usize;
-    offset += 1;
-    if ns_len > MAX_NS_LEN || data.len() < offset + ns_len {
-        return;
-    }
-    let namespace = match std::str::from_utf8(&data[offset..offset + ns_len]) {
-        Ok(s) => s.to_string(),
-        Err(_) => return,
-    };
-    offset += ns_len;
-
-    if data.len() < offset + 1 {
-        return;
-    }
-    let key_len = data[offset] as usize;
-    offset += 1;
-    if key_len > MAX_KEY_LEN || data.len() < offset + key_len {
-        return;
-    }
-    let key = match std::str::from_utf8(&data[offset..offset + key_len]) {
-        Ok(s) => s.to_string(),
-        Err(_) => return,
-    };
-    offset += key_len;
-
-    if data.len() < offset + 2 {
-        return;
-    }
-    let val_len = u16::from_le_bytes([data[offset], data[offset + 1]]) as usize;
-    offset += 2;
-    if val_len > MAX_VALUE_LEN {
-        warn!(
-            "[Room:{}] Persist SET from client_{} exceeded max value size ({} bytes)",
-            room_id, client_id, val_len
-        );
-        send(client, ctrl_msg(CTRL_ERROR, b"persist_value_too_large")).await;
-        return;
-    }
-    if data.len() < offset + val_len {
-        return;
-    }
-    let value = match std::str::from_utf8(&data[offset..offset + val_len]) {
-        Ok(s) => s.to_string(),
-        Err(_) => return,
-    };
-
-    let player_id = {
-        let room = room.read().await;
-        room.player_ids.get(&client_id).cloned()
-    };
-
-    if let Some(pid) = player_id {
-        debug!(
-            "[Room:{}] Persist SET player='{}' ns='{}' key='{}'",
-            room_id, pid, namespace, key
-        );
-        let db = db.clone();
-        tokio::task::spawn_blocking(move || db.set(&pid, &namespace, &key, &value))
-            .await
-            .ok();
-    } else {
-        warn!(
-            "[Room:{}] Persist SET from client_{} with no registered player ID",
-            room_id, client_id
-        );
-    }
-}
-
-async fn handle_persist_get(
-    room: &Arc<RwLock<Room>>,
-    client: &Arc<Client>,
-    client_id: u16,
-    data: &[u8],
-    room_id: &str,
-    db: &PersistenceDb,
-) {
-    let mut offset = 2usize;
-    if data.len() < offset + 2 {
-        return;
-    }
-    let req_id = u16::from_le_bytes([data[offset], data[offset + 1]]);
-    offset += 2;
-
-    const MAX_NS_LEN: usize = 64;
-    const MAX_KEY_LEN: usize = 128;
-
-    if data.len() < offset + 1 {
-        return;
-    }
-    let ns_len = data[offset] as usize;
-    offset += 1;
-    if ns_len > MAX_NS_LEN || data.len() < offset + ns_len {
-        return;
-    }
-    let namespace = match std::str::from_utf8(&data[offset..offset + ns_len]) {
-        Ok(s) => s.to_string(),
-        Err(_) => return,
-    };
-    offset += ns_len;
-
-    if data.len() < offset + 1 {
-        return;
-    }
-    let key_len = data[offset] as usize;
-    offset += 1;
-    if key_len > MAX_KEY_LEN || data.len() < offset + key_len {
-        return;
-    }
-    let key = match std::str::from_utf8(&data[offset..offset + key_len]) {
-        Ok(s) => s.to_string(),
-        Err(_) => return,
-    };
-
-    let player_id = {
-        let room = room.read().await;
-        room.player_ids.get(&client_id).cloned()
-    };
-
-    let value = if let Some(pid) = player_id {
-        debug!(
-            "[Room:{}] Persist GET player='{}' ns='{}' key='{}'",
-            room_id, pid, namespace, key
-        );
-        let db = db.clone();
-        tokio::task::spawn_blocking(move || db.get(&pid, &namespace, &key))
-            .await
-            .unwrap_or(None)
-    } else {
-        warn!(
-            "[Room:{}] Persist GET from client_{} with no registered player ID",
-            room_id, client_id
-        );
-        None
-    };
-
-    let found = value.is_some();
-    let val_bytes = value.as_deref().unwrap_or("").as_bytes();
-    let mut resp = Vec::with_capacity(7 + val_bytes.len());
-    resp.push(0xFF);
-    resp.push(CTRL_PERSIST_DATA);
-    resp.extend_from_slice(&req_id.to_le_bytes());
-    resp.push(if found { 1 } else { 0 });
-    resp.extend_from_slice(&(val_bytes.len() as u16).to_le_bytes());
-    resp.extend_from_slice(val_bytes);
-
-    send(client, resp).await;
 }
 
 /// On disconnect: release any held objects (restore Rapier to Dynamic), clean
@@ -1196,16 +663,4 @@ async fn handle_disconnect(room: &Arc<RwLock<Room>>, client_id: u16, room_id: &s
             }
         }
     }
-}
-
-// ─── Inline binary helpers ────────────────────────────────────────────────────
-
-#[inline]
-fn read_f32(data: &[u8], offset: usize) -> f32 {
-    f32::from_le_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]])
-}
-
-#[inline]
-fn read_i16(data: &[u8], offset: usize) -> i16 {
-    i16::from_le_bytes([data[offset], data[offset + 1]])
 }

@@ -374,10 +374,15 @@ namespace SomniumSpace.Worlds.bently.networking
                 qys / 32767f,
                 qzs / 32767f,
                 qws / 32767f);
-            // Re-normalise — quantisation can nudge |q| slightly off 1.
+            // Re-normalise — quantisation can nudge |q| slightly off 1. If the
+            // quaternion arrives degenerate (magnitude near zero, e.g. bit
+            // corruption or pre-normalised garbage), fall back to identity
+            // rather than dividing by ~0 and producing NaN/flip rotations.
             float mag = Mathf.Sqrt(rot.x * rot.x + rot.y * rot.y + rot.z * rot.z + rot.w * rot.w);
-            if (mag > 1e-5f)
+            if (mag > 1e-3f)
                 rot = new Quaternion(rot.x / mag, rot.y / mag, rot.z / mag, rot.w / mag);
+            else
+                rot = Quaternion.identity;
 
             releaseObj.OnRemoteRelease(pos, rot, serverMs);
 

@@ -2,10 +2,13 @@ mod client;
 mod config;
 mod handler;
 mod metrics_server;
+mod persist_rpc;
 mod persistence;
 mod physics;
 mod protocol;
 mod room;
+mod scene;
+mod spawn;
 mod stats;
 
 use log::info;

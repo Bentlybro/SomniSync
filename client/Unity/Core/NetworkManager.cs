@@ -232,7 +232,7 @@ namespace SomniumSpace.Worlds.bently.networking
         {
             if (_ws == null || _ws.State != WebSocketState.Open) return;
             ulong clientMs = (ulong)(Time.timeAsDouble * 1000.0);
-            byte[] buf = new byte[9];
+            byte[] buf = System.Buffers.ArrayPool<byte>.Shared.Rent(9);
             buf[0] = Protocol.MSG_TIME_PING;
             buf[1] = (byte)(clientMs       & 0xFF);
             buf[2] = (byte)((clientMs >> 8)  & 0xFF);
@@ -242,7 +242,7 @@ namespace SomniumSpace.Worlds.bently.networking
             buf[6] = (byte)((clientMs >> 40) & 0xFF);
             buf[7] = (byte)((clientMs >> 48) & 0xFF);
             buf[8] = (byte)((clientMs >> 56) & 0xFF);
-            SendBinary(buf);
+            SendBinaryPooled(buf, 9);
         }
 
         // =====================================================================

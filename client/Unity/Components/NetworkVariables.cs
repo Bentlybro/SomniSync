@@ -10,7 +10,7 @@ namespace SomniumSpace.Worlds.bently.networking
     /// Add alongside NetworkObject. Any client can set variables on objects
     /// they own (master owns unowned objects, spectators own claimed objects).
     /// </summary>
-    public class NetworkVariables : MonoBehaviour
+    public class NetworkVariables : NetworkComponent
     {
         // =====================================================================
         // Types
@@ -58,7 +58,6 @@ namespace SomniumSpace.Worlds.bently.networking
         public event Action<string, VarType> OnValueChanged;
 
         private Dictionary<string, VarDefinition> _varMap = new Dictionary<string, VarDefinition>();
-        private NetworkObject _netObj;
         private bool _initialized;
 
         // =====================================================================
@@ -67,14 +66,7 @@ namespace SomniumSpace.Worlds.bently.networking
 
         protected virtual void Start()
         {
-            _netObj = GetComponent<NetworkObject>();
-            if (_netObj == null)
-            {
-                Debug.LogError("[NetVars] NetworkVariables requires a NetworkObject on the same GameObject!");
-                enabled = false;
-                return;
-            }
-
+            // NetObj already resolved + null-checked by base Awake.
             InitializeVariables();
         }
 
@@ -159,6 +151,7 @@ namespace SomniumSpace.Worlds.bently.networking
 
         public void SetInt(string name, int value)
         {
+            if (!CheckAuthorityForWrite(name)) return;
             var v = GetOrCreate(name, VarType.Int);
             v.currentValue = BitConverter.GetBytes(value);
             MarkDirty(v);
@@ -166,6 +159,7 @@ namespace SomniumSpace.Worlds.bently.networking
 
         public void SetFloat(string name, float value)
         {
+            if (!CheckAuthorityForWrite(name)) return;
             var v = GetOrCreate(name, VarType.Float);
             v.currentValue = BitConverter.GetBytes(value);
             MarkDirty(v);
@@ -173,6 +167,7 @@ namespace SomniumSpace.Worlds.bently.networking
 
         public void SetBool(string name, bool value)
         {
+            if (!CheckAuthorityForWrite(name)) return;
             var v = GetOrCreate(name, VarType.Bool);
             v.currentValue = new byte[] { (byte)(value ? 1 : 0) };
             MarkDirty(v);
@@ -180,9 +175,30 @@ namespace SomniumSpace.Worlds.bently.networking
 
         public void SetString(string name, string value)
         {
+            if (!CheckAuthorityForWrite(name)) return;
             var v = GetOrCreate(name, VarType.String);
             v.currentValue = Encoding.UTF8.GetBytes(value ?? "");
             MarkDirty(v);
+        }
+
+        /// <summary>
+        /// Reject writes from clients that don't hold authority over this
+        /// object. Previously a non-authority write silently updated the
+        /// local value and then failed to sync (the Update loop skips sends
+        /// for non-authorities) — looked to users like the value stuck,
+        /// then flipped back on the next remote update. Now surface a clear
+        /// warning and bail before corrupting local state.
+        ///
+        /// The check is skipped when NetworkManager hasn't registered this
+        /// object yet (LocalId == 0) so Awake/Start initialisation can still
+        /// populate defaults before any claim state is known.
+        /// </summary>
+        private bool CheckAuthorityForWrite(string name)
+        {
+            if (NetObj == null || NetObj.LocalId == 0) return true;
+            if (HasAuthority()) return true;
+            Debug.LogWarning($"[NetVars] '{this.name}' cannot set '{name}' — no authority (object claimed by another client).");
+            return false;
         }
 
         // =====================================================================
@@ -215,7 +231,6 @@ namespace SomniumSpace.Worlds.bently.networking
         // =====================================================================
 
         /// <summary>Can this client set variables on this object?</summary>
-        private bool HasAuthority() => _netObj.HasAuthority();
 
         // =====================================================================
         // Serialization — Send
@@ -256,7 +271,7 @@ namespace SomniumSpace.Worlds.bently.networking
 
             byte[] buf = new byte[totalSize];
             buf[0] = 0x04;
-            WriteU16(buf, 1, _netObj.LocalId);
+            Protocol.WriteU16(buf, 1, NetObj.LocalId);
             buf[3] = (byte)sendCount;
 
             int offset = 4;
@@ -275,7 +290,7 @@ namespace SomniumSpace.Worlds.bently.networking
                 buf[offset++] = (byte)v.type;
 
                 int valLen = v.currentValue?.Length ?? 0;
-                WriteU16(buf, offset, (ushort)valLen);
+                Protocol.WriteU16(buf, offset, (ushort)valLen);
                 offset += 2;
 
                 if (valLen > 0)
@@ -314,7 +329,7 @@ namespace SomniumSpace.Worlds.bently.networking
                 VarType type = (VarType)data[offset++];
 
                 if (offset + 2 > data.Length) break;
-                int valLen = ReadU16(data, offset);
+                int valLen = Protocol.ReadU16(data, offset);
                 offset += 2;
 
                 if (valLen < 0 || offset + valLen > data.Length) break;
@@ -368,7 +383,7 @@ namespace SomniumSpace.Worlds.bently.networking
 
                 buf[offset++] = (byte)v.type;
 
-                WriteU16(buf, offset, (ushort)v.currentValue.Length);
+                Protocol.WriteU16(buf, offset, (ushort)v.currentValue.Length);
                 offset += 2;
 
                 Array.Copy(v.currentValue, 0, buf, offset, v.currentValue.Length);
@@ -399,7 +414,7 @@ namespace SomniumSpace.Worlds.bently.networking
                 VarType type = (VarType)data[offset++];
 
                 if (offset + 2 > data.Length) break;
-                int valLen = ReadU16(data, offset);
+                int valLen = Protocol.ReadU16(data, offset);
                 offset += 2;
 
                 if (valLen < 0 || offset + valLen > data.Length) break;
@@ -477,15 +492,5 @@ namespace SomniumSpace.Worlds.bently.networking
             }
         }
 
-        private static void WriteU16(byte[] buf, int offset, ushort value)
-        {
-            buf[offset] = (byte)(value & 0xFF);
-            buf[offset + 1] = (byte)(value >> 8);
-        }
-
-        private static ushort ReadU16(byte[] buf, int offset)
-        {
-            return (ushort)(buf[offset] | (buf[offset + 1] << 8));
-        }
     }
 }

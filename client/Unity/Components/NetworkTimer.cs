@@ -19,7 +19,7 @@ namespace SomniumSpace.Worlds.bently.networking
     ///   timer.OnTick.AddListener((remaining) => UpdateUI(remaining));
     /// </summary>
     [RequireComponent(typeof(NetworkObject))]
-    public class NetworkTimer : MonoBehaviour
+    public class NetworkTimer : NetworkComponent
     {
         [Header("Timer Settings")]
         [Tooltip("Duration in seconds (can also be set via StartTimer())")]
@@ -39,7 +39,6 @@ namespace SomniumSpace.Worlds.bently.networking
         public UnityEvent OnFinished;
         public UnityEvent<float> OnTick; // remaining seconds
 
-        private NetworkObject _netObj;
         private NetworkVariables _vars;
 
         private bool _running;
@@ -51,10 +50,7 @@ namespace SomniumSpace.Worlds.bently.networking
         private const string VAR_RUNNING = "_timer_running";
         private const string VAR_DURATION = "_timer_duration";
 
-        protected virtual void Awake()
-        {
-            _netObj = GetComponent<NetworkObject>();
-        }
+        // NetObj binding handled by NetworkComponent.Awake — no override needed here.
 
         protected virtual void Start()
         {
@@ -67,7 +63,7 @@ namespace SomniumSpace.Worlds.bently.networking
             _vars.DefineVariable(VAR_DURATION, NetworkVariables.VarType.Float);
             _vars.OnValueChanged += OnVarChanged;
 
-            if (autoStart && _netObj.HasAuthority())
+            if (autoStart && HasAuthority())
             {
                 StartTimer(duration);
             }
@@ -75,7 +71,7 @@ namespace SomniumSpace.Worlds.bently.networking
 
         protected virtual void Update()
         {
-            if (_netObj.HasAuthority())
+            if (HasAuthority())
                 AuthorityUpdate();
             else
                 SpectatorUpdate();
@@ -129,7 +125,7 @@ namespace SomniumSpace.Worlds.bently.networking
 
         private void OnVarChanged(string name, NetworkVariables.VarType type)
         {
-            if (_netObj.HasAuthority()) return;
+            if (HasAuthority()) return;
 
             switch (name)
             {
@@ -160,7 +156,7 @@ namespace SomniumSpace.Worlds.bently.networking
         /// <summary>Start a countdown. Authority only — syncs to all clients.</summary>
         public void StartTimer(float seconds)
         {
-            if (!_netObj.HasAuthority())
+            if (!HasAuthority())
             {
                 Debug.LogWarning("[NetworkTimer] Only authority can start timer");
                 return;
@@ -181,7 +177,7 @@ namespace SomniumSpace.Worlds.bently.networking
         /// <summary>Stop the timer. Authority only.</summary>
         public void StopTimer()
         {
-            if (!_netObj.HasAuthority()) return;
+            if (!HasAuthority()) return;
 
             _running = false;
             _vars.SetBool(VAR_RUNNING, false);
@@ -191,7 +187,7 @@ namespace SomniumSpace.Worlds.bently.networking
         /// <summary>Reset to full duration without starting. Authority only.</summary>
         public void ResetTimer()
         {
-            if (!_netObj.HasAuthority()) return;
+            if (!HasAuthority()) return;
 
             _remaining = duration;
             _running = false;

@@ -9,7 +9,7 @@ use rapier3d::prelude::{
     RigidBodyBuilder, RigidBodyHandle, RigidBodySet, RigidBodyType, vector,
 };
 
-use crate::protocol::MSG_POSITION_VELOCITY;
+use crate::protocol::{read_f32, read_u16, MSG_POSITION_VELOCITY};
 
 /// Description of one physics object sent in a SCENE_INIT message.
 pub struct ObjectDesc {
@@ -490,20 +490,32 @@ impl PhysicsWorld {
         let mut awake = Vec::with_capacity(self.object_to_body.len());
         let mut just_slept = Vec::new();
 
+        // Single pass: decide bucket membership AND update awake_prev inline.
+        // Previously this ran two loops over object_to_body — one to build
+        // buckets, one to refresh awake_prev — which doubled hashmap
+        // iterations and Rapier body fetches per physics broadcast tick.
+        // Bodies we skip early (claimed / missing handle / non-dynamic) still
+        // need awake_prev maintained, otherwise a body transitioning in or
+        // out of being claimed can leave stale sleep state.
         for (&obj_id, &handle) in &self.object_to_body {
-            if self.claimed.contains_key(&obj_id) {
-                continue;
-            }
             let rb = match self.rigid_bodies.get(handle) {
                 Some(r) => r,
                 None => continue,
             };
-            if rb.body_type() != RigidBodyType::Dynamic {
+            let is_awake_now = !rb.is_sleeping();
+
+            if self.claimed.contains_key(&obj_id) || rb.body_type() != RigidBodyType::Dynamic {
+                self.awake_prev.insert(obj_id, is_awake_now);
                 continue;
             }
 
-            let is_awake = !rb.is_sleeping();
             let was_awake = self.awake_prev.get(&obj_id).copied().unwrap_or(false);
+            self.awake_prev.insert(obj_id, is_awake_now);
+
+            if !is_awake_now && !was_awake {
+                // Already asleep last tick too — nothing to broadcast.
+                continue;
+            }
 
             let pos = *rb.translation();
             let rot = rb.rotation();
@@ -515,18 +527,11 @@ impl PhysicsWorld {
                 vel: [vel.x, vel.y, vel.z],
             };
 
-            if is_awake {
+            if is_awake_now {
                 awake.push(snap);
-            } else if was_awake {
+            } else {
                 // Awake→sleeping transition — final resting state for all clients.
                 just_slept.push(snap);
-            }
-        }
-
-        // Update wake-state tracking after building the buckets.
-        for (&obj_id, &handle) in &self.object_to_body {
-            if let Some(rb) = self.rigid_bodies.get(handle) {
-                self.awake_prev.insert(obj_id, !rb.is_sleeping());
             }
         }
 
@@ -725,7 +730,7 @@ pub fn parse_scene_init(data: &[u8]) -> Option<Vec<ObjectDesc>> {
         return None;
     }
 
-    let count = u16::from_le_bytes([data[1], data[2]]) as usize;
+    let count = read_u16(data, 1) as usize;
     let expected = HEADER_BYTES + count * OBJECT_BYTES;
     if data.len() < expected {
         warn!(
@@ -739,7 +744,7 @@ pub fn parse_scene_init(data: &[u8]) -> Option<Vec<ObjectDesc>> {
     let mut offset = HEADER_BYTES;
 
     for _ in 0..count {
-        let id         = u16::from_le_bytes([data[offset], data[offset + 1]]);
+        let id         = read_u16(data, offset);
         let body_type  = data[offset + 2];
         let shape_type = data[offset + 3];
         offset += 4;
@@ -778,9 +783,4 @@ pub fn parse_scene_init(data: &[u8]) -> Option<Vec<ObjectDesc>> {
     }
 
     Some(objects)
-}
-
-#[inline]
-fn read_f32(data: &[u8], offset: usize) -> f32 {
-    f32::from_le_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]])
 }

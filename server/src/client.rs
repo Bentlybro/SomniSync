@@ -122,17 +122,20 @@ pub fn send_try(client: &Client, data: Bytes) {
     }
 }
 
-/// Broadcast a binary message to all clients except the sender.
+/// Broadcast a binary message to every client in `clients`, optionally
+/// excluding a single sender.
 ///
-/// Uses `try_send` (non-blocking) — if a client's buffer is full the message is dropped
-/// for that client only. This is correct for real-time game data: a full buffer means the
-/// client is already behind and stale frames should be skipped.
+/// Uses `try_send` (non-blocking) — if a client's buffer is full the message
+/// is dropped for that client only. This is correct for real-time game data:
+/// a full buffer means the client is already behind and stale frames should
+/// be skipped.
 ///
-/// Zero-copy: one `Bytes::copy_from_slice` produces an Arc'd buffer; each clone is O(1).
-/// Each client's send task runs on the tokio thread pool so all N sends are truly parallel.
-pub fn broadcast_except(
+/// Zero-copy: one `Bytes::copy_from_slice` produces an Arc'd buffer; each
+/// recipient clone is O(1). Each client's send task runs on the tokio thread
+/// pool so all N sends are truly parallel.
+pub fn broadcast(
     clients: &HashMap<u16, Arc<Client>>,
-    sender_id: u16,
+    exclude: Option<u16>,
     data: &[u8],
 ) {
     let bytes = Bytes::copy_from_slice(data);
@@ -140,26 +143,10 @@ pub fn broadcast_except(
     let mut delivered: u64 = 0;
     let mut dropped: u64 = 0;
     for (&id, client) in clients {
-        if id != sender_id {
-            // O(1) Arc reference-count bump — no memory copy per recipient.
-            if client.tx.try_send(ClientMsg::Binary(bytes.clone())).is_ok() {
-                delivered += 1;
-            } else {
-                dropped += 1;
-            }
+        if Some(id) == exclude {
+            continue;
         }
-    }
-    stats::bump_tx_batch(len, delivered);
-    for _ in 0..dropped { stats::bump_dropped(); }
-}
-
-/// Broadcast a binary message to ALL clients (e.g. server-generated control messages).
-pub fn broadcast_all(clients: &HashMap<u16, Arc<Client>>, data: &[u8]) {
-    let bytes = Bytes::copy_from_slice(data);
-    let len = data.len();
-    let mut delivered: u64 = 0;
-    let mut dropped: u64 = 0;
-    for client in clients.values() {
+        // O(1) Arc reference-count bump — no memory copy per recipient.
         if client.tx.try_send(ClientMsg::Binary(bytes.clone())).is_ok() {
             delivered += 1;
         } else {
@@ -168,4 +155,20 @@ pub fn broadcast_all(clients: &HashMap<u16, Arc<Client>>, data: &[u8]) {
     }
     stats::bump_tx_batch(len, delivered);
     for _ in 0..dropped { stats::bump_dropped(); }
+}
+
+/// Broadcast to every client except the sender. Thin wrapper kept for
+/// readability at call sites where the exclusion is the important fact.
+pub fn broadcast_except(
+    clients: &HashMap<u16, Arc<Client>>,
+    sender_id: u16,
+    data: &[u8],
+) {
+    broadcast(clients, Some(sender_id), data);
+}
+
+/// Broadcast to ALL clients — e.g. server-generated control messages where
+/// the sender should also re-anchor from the authoritative payload.
+pub fn broadcast_all(clients: &HashMap<u16, Arc<Client>>, data: &[u8]) {
+    broadcast(clients, None, data);
 }

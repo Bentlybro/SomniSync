@@ -19,7 +19,7 @@ namespace SomniumSpace.Worlds.bently.networking
     ///   netAnim.SetTrigger("attack");  // Syncs to all clients
     ///   netAnim.SetBool("walking", true);  // Syncs to all clients
     /// </summary>
-    public class NetworkAnimator : MonoBehaviour
+    public class NetworkAnimator : NetworkComponent
     {
         // Protocol: uses 0x07 for animator state sync
         // [0x07][u16 object_id][i32 state_hash][f32 normalized_time][u8 param_count][per param: u8 name_len, name, u8 type, 4B value]
@@ -28,7 +28,6 @@ namespace SomniumSpace.Worlds.bently.networking
         [Tooltip("How often to check for state changes (per second)")]
         public int syncRate = 10;
 
-        private NetworkObject _netObj;
         private Animator _animator;
         private NetworkEvents _events;
         private float _syncInterval;
@@ -52,12 +51,12 @@ namespace SomniumSpace.Worlds.bently.networking
 
         protected virtual void Start()
         {
-            _netObj = GetComponent<NetworkObject>();
+            // NetObj already bound + null-checked by base Awake; we only need
+            // to verify the Animator here.
             _animator = GetComponent<Animator>();
-
-            if (_netObj == null || _animator == null)
+            if (_animator == null)
             {
-                Debug.LogError("[NetAnim] Requires NetworkObject + Animator on the same GameObject!");
+                Debug.LogError($"[NetAnim] '{name}' requires an Animator on the same GameObject — disabling.");
                 enabled = false;
                 return;
             }
@@ -178,8 +177,8 @@ namespace SomniumSpace.Worlds.bently.networking
             byte[] buf = new byte[size];
             int offset = 0;
             buf[offset++] = 0x07;
-            buf[offset++] = (byte)(_netObj.LocalId & 0xFF);
-            buf[offset++] = (byte)(_netObj.LocalId >> 8);
+            buf[offset++] = (byte)(NetObj.LocalId & 0xFF);
+            buf[offset++] = (byte)(NetObj.LocalId >> 8);
 
             byte[] hashBytes = BitConverter.GetBytes(_lastStateHash);
             Array.Copy(hashBytes, 0, buf, offset, 4); offset += 4;
@@ -239,8 +238,8 @@ namespace SomniumSpace.Worlds.bently.networking
             byte[] buf = new byte[1 + 2 + 4 + 4 + 1 + 1 + nameBytes.Length + 1 + 4];
             int offset = 0;
             buf[offset++] = 0x07;
-            buf[offset++] = (byte)(_netObj.LocalId & 0xFF);
-            buf[offset++] = (byte)(_netObj.LocalId >> 8);
+            buf[offset++] = (byte)(NetObj.LocalId & 0xFF);
+            buf[offset++] = (byte)(NetObj.LocalId >> 8);
             // state hash = 0 (means "trigger only")
             offset += 4;
             offset += 4;
@@ -304,6 +303,5 @@ namespace SomniumSpace.Worlds.bently.networking
             }
         }
 
-        private bool HasAuthority() => _netObj.HasAuthority();
     }
 }

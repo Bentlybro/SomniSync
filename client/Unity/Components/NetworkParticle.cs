@@ -17,7 +17,7 @@ namespace SomniumSpace.Worlds.bently.networking
     /// No custom protocol needed — built on existing 0x04 and 0x06 messages.
     /// </summary>
     [RequireComponent(typeof(NetworkObject))]
-    public class NetworkParticle : MonoBehaviour
+    public class NetworkParticle : NetworkComponent
     {
         [Header("What to Sync")]
         [Tooltip("Sync play/stop state")]
@@ -39,7 +39,6 @@ namespace SomniumSpace.Worlds.bently.networking
         [Tooltip("How often to check for property changes (Hz)")]
         public float syncRate = 5f;
 
-        private NetworkObject _netObj;
         private NetworkEvents _events;
         private NetworkVariables _vars;
         private ParticleSystem _ps;
@@ -53,11 +52,12 @@ namespace SomniumSpace.Worlds.bently.networking
         private float _lastSpeed;
         private float _lastSize;
 
-        protected virtual void Awake()
+        protected override void Awake()
         {
-            _netObj = GetComponent<NetworkObject>();
-            _ps = GetComponent<ParticleSystem>();
+            base.Awake(); // NetObj binding + null-check
+            if (!enabled) return; // base.Awake disabled us (no NetworkObject)
 
+            _ps = GetComponent<ParticleSystem>();
             if (_ps == null)
             {
                 Debug.LogWarning($"[NetworkParticle] No ParticleSystem on {name}, disabling");
@@ -113,7 +113,7 @@ namespace SomniumSpace.Worlds.bently.networking
 
         protected virtual void Update()
         {
-            if (!_netObj.HasAuthority()) return;
+            if (!HasAuthority()) return;
 
             _syncTimer += Time.deltaTime;
 
@@ -185,19 +185,19 @@ namespace SomniumSpace.Worlds.bently.networking
 
         private void OnRemotePlay()
         {
-            if (!_netObj.HasAuthority() && _ps != null)
+            if (!HasAuthority() && _ps != null)
                 _ps.Play();
         }
 
         private void OnRemoteStop()
         {
-            if (!_netObj.HasAuthority() && _ps != null)
+            if (!HasAuthority() && _ps != null)
                 _ps.Stop();
         }
 
         private void OnVarChanged(string name, NetworkVariables.VarType type)
         {
-            if (_netObj.HasAuthority()) return;
+            if (HasAuthority()) return;
             if (_ps == null || _vars == null) return;
 
             switch (name)

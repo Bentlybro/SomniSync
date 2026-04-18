@@ -25,24 +25,13 @@ namespace SomniumSpace.Worlds.bently.networking
         Proxies = 2     // Everyone EXCEPT the authority
     }
 
-    public class NetworkEvents : MonoBehaviour
+    public class NetworkEvents : NetworkComponent
     {
         // Protocol: 0x06 = event message
         // [0x06][u16 object_id][u8 target][u8 name_len][name][u8 param_count][per param: u8 type, u16 len, value]
 
-        private NetworkObject _netObj;
         private Dictionary<string, List<Action<object[]>>> _handlers = new Dictionary<string, List<Action<object[]>>>();
         private readonly List<byte[]> _paramDataCache = new List<byte[]>();
-
-        protected virtual void Start()
-        {
-            _netObj = GetComponent<NetworkObject>();
-            if (_netObj == null)
-            {
-                Debug.LogError("[NetEvents] Requires NetworkObject on the same GameObject!");
-                enabled = false;
-            }
-        }
 
         // =====================================================================
         // Public API — Listen
@@ -175,8 +164,8 @@ namespace SomniumSpace.Worlds.bently.networking
             byte[] buf = new byte[size];
             int offset = 0;
             buf[offset++] = 0x06;
-            buf[offset++] = (byte)(_netObj.LocalId & 0xFF);
-            buf[offset++] = (byte)(_netObj.LocalId >> 8);
+            buf[offset++] = (byte)(NetObj.LocalId & 0xFF);
+            buf[offset++] = (byte)(NetObj.LocalId >> 8);
             buf[offset++] = (byte)target;
             buf[offset++] = (byte)nameBytes.Length;
             Array.Copy(nameBytes, 0, buf, offset, nameBytes.Length);
@@ -196,7 +185,7 @@ namespace SomniumSpace.Worlds.bently.networking
             NetworkManager.Instance.SendBinaryPublic(buf);
 
             // Fire locally if targeting allows it
-            bool isAuthority = _netObj.HasAuthority();
+            bool isAuthority = HasAuthority();
             bool shouldFireLocally = target == EventTarget.All ||
                                      (target == EventTarget.Authority && isAuthority) ||
                                      (target == EventTarget.Proxies && !isAuthority);
@@ -212,7 +201,7 @@ namespace SomniumSpace.Worlds.bently.networking
             EventTarget target = (EventTarget)data[offset++];
 
             // Filter by target
-            bool isAuthority = _netObj.HasAuthority();
+            bool isAuthority = HasAuthority();
             if (target == EventTarget.Authority && !isAuthority) return;
             if (target == EventTarget.Proxies && isAuthority) return;
 

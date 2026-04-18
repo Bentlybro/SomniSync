@@ -109,21 +109,21 @@ namespace SomniumSpace.Worlds.bently.networking
         /// <summary>Send a claim message (called by NetworkObject.Grab()).</summary>
         public void SendClaim(ushort objectId)
         {
-            byte[] buf = new byte[6];
+            byte[] buf = ArrayPool<byte>.Shared.Rent(6);
             buf[0] = 0xFF; buf[1] = Protocol.CTRL_CLAIM;
             WriteU16(buf, 2, objectId);
             WriteU16(buf, 4, ClientId);
-            SendBinary(buf);
+            SendBinaryPooled(buf, 6);
         }
 
         /// <summary>Send a release message (called by NetworkObject.Release()).</summary>
         public void SendRelease(ushort objectId)
         {
-            byte[] buf = new byte[6];
+            byte[] buf = ArrayPool<byte>.Shared.Rent(6);
             buf[0] = 0xFF; buf[1] = Protocol.CTRL_RELEASE;
             WriteU16(buf, 2, objectId);
             WriteU16(buf, 4, ClientId);
-            SendBinary(buf);
+            SendBinaryPooled(buf, 6);
         }
 
         // =====================================================================
@@ -219,11 +219,11 @@ namespace SomniumSpace.Worlds.bently.networking
         public void Despawn(ushort localId)
         {
             if (_ws == null || _ws.State != System.Net.WebSockets.WebSocketState.Open) return;
-            byte[] buf = new byte[4];
+            byte[] buf = ArrayPool<byte>.Shared.Rent(4);
             buf[0] = 0xFF;
             buf[1] = Protocol.CTRL_DESPAWN;
             Protocol.WriteU16(buf, 2, localId);
-            SendBinary(buf);
+            SendBinaryPooled(buf, 4);
         }
 
         /// <summary>
@@ -233,13 +233,13 @@ namespace SomniumSpace.Worlds.bently.networking
         /// </summary>
         public void SendPushImpulse(ushort objectId, Vector3 velocity)
         {
-            byte[] buf = new byte[15];
+            byte[] buf = ArrayPool<byte>.Shared.Rent(15);
             buf[0] = Protocol.MSG_PUSH_IMPULSE;
             WriteU16(buf, 1, objectId);
             Protocol.WriteFloat(buf, 3,  velocity.x);
             Protocol.WriteFloat(buf, 7,  velocity.y);
             Protocol.WriteFloat(buf, 11, velocity.z);
-            SendBinary(buf);
+            SendBinaryPooled(buf, 15);
         }
 
         // =====================================================================
@@ -257,20 +257,33 @@ namespace SomniumSpace.Worlds.bently.networking
         private const float DefaultPlayerRadius = 0.3f;
         private const float DefaultPlayerHalfHeight = 0.6f;
 
+        /// <summary>Cached CharacterController on the local player. Looked up lazily
+        /// (the local player rig may spawn after NetworkManager) then reused every
+        /// frame — GetComponent in a per-frame hot path was showing up in the GC
+        /// profile. Invalidated when _localPlayerTransform changes (see
+        /// NetworkManager.cs SetLocalPlayerTransform).</summary>
+        private CharacterController _cachedPlayerCC;
+        private Transform _cachedPlayerCCTransform;
+
         private void SendPlayerPosition()
         {
             if (_localPlayerTransform == null) return;
 
-            Vector3 p = _localPlayerTransform.position;
+            // Refresh the cached CharacterController reference if the local
+            // player rig changed (scene reload, avatar swap). The lookup walks
+            // children, so we don't want to repeat it every frame.
+            if (_cachedPlayerCCTransform != _localPlayerTransform)
+            {
+                _cachedPlayerCCTransform = _localPlayerTransform;
+                _cachedPlayerCC = _localPlayerTransform.GetComponent<CharacterController>()
+                    ?? _localPlayerTransform.GetComponentInChildren<CharacterController>();
+            }
 
+            Vector3 p = _localPlayerTransform.position;
             float radius = DefaultPlayerRadius;
             float halfHeight = DefaultPlayerHalfHeight;
 
-            // Prefer a CharacterController on the local player — it's the
-            // collider Somnium / the user rig actually uses for locomotion.
-            var cc = _localPlayerTransform.GetComponent<CharacterController>();
-            if (cc == null)
-                cc = _localPlayerTransform.GetComponentInChildren<CharacterController>();
+            var cc = _cachedPlayerCC;
             if (cc != null)
             {
                 radius = cc.radius;
@@ -283,14 +296,14 @@ namespace SomniumSpace.Worlds.bently.networking
                 p = cc.transform.TransformPoint(cc.center);
             }
 
-            byte[] buf = new byte[21];
+            byte[] buf = ArrayPool<byte>.Shared.Rent(21);
             buf[0] = Protocol.MSG_PLAYER_POS;
             Protocol.WriteFloat(buf, 1,  p.x);
             Protocol.WriteFloat(buf, 5,  p.y);
             Protocol.WriteFloat(buf, 9,  p.z);
             Protocol.WriteFloat(buf, 13, radius);
             Protocol.WriteFloat(buf, 17, halfHeight);
-            SendBinary(buf);
+            SendBinaryPooled(buf, 21);
         }
 
         // =====================================================================
