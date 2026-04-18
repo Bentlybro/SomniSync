@@ -355,6 +355,10 @@ namespace SomniumSpace.Worlds.bently.networking
                 rot = new Quaternion(rot.x / mag, rot.y / mag, rot.z / mag, rot.w / mag);
 
             releaseObj.OnRemoteRelease(pos, rot, serverMs);
+
+            // Log to the debug overlay (if one is in the scene) so we can
+            // cross-reference what every client received at a given instant.
+            NetworkDebug.Instance?.LogReleaseReceived(releaseObjId, pos, rot, serverMs);
         }
 
         private void HandleDespawn(ushort localId)

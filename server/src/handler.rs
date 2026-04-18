@@ -711,6 +711,11 @@ fn build_release_broadcast(
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0);
 
+    info!(
+        "[Release=>] obj={} by_client={} pos=({:.3},{:.3},{:.3}) serverMs={}",
+        obj_id, client_id, pos[0], pos[1], pos[2], server_ms
+    );
+
     let mut buf = Vec::with_capacity(34);
     buf.push(0xFF);
     buf.push(CTRL_RELEASE);

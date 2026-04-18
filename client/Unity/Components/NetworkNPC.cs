@@ -76,6 +76,12 @@ namespace SomniumSpace.Worlds.bently.networking
         private double _wanderEpoch = -1;       // ServerTime when current wander anchor was set
         private ulong _anchoredReleaseMs;       // LastReleaseServerMs we last re-anchored against
 
+        // Read-only views of internal wander state — used by NetworkDebug to
+        // compare what the NPC's logic is doing on each client side-by-side.
+        public Vector3 DebugOrigin           => _origin;
+        public double  DebugWanderEpoch      => _wanderEpoch;
+        public ulong   DebugAnchoredReleaseMs => _anchoredReleaseMs;
+
         // Chase state
         private float _nextClaimAttemptTime;
 
