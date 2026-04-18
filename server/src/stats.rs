@@ -275,59 +275,138 @@ pub fn bump_client_disconnected() {
     }
 }
 
-// ── Sysinfo refresh loop ────────────────────────────────────────────────────
+// ── CPU/RSS refresh loop ────────────────────────────────────────────────────
 /// Run forever, refreshing CPU% + RSS at 1 Hz. Spawn once from main().
 ///
-/// Two refresh calls per tick:
-///   1. `refresh_cpu_usage()` — rebuilds global CPU time counters. Without
-///      this every tick, `Process::cpu_usage()` returns 0 forever because
-///      it needs a recent global sample to compute its delta against.
-///   2. `refresh_processes_specifics(...)` — updates our own process's
-///      CPU/mem snapshot.
+/// On Linux, sysinfo 0.32's `Process::cpu_usage()` silently returns 0 on
+/// some virtualised hosts (observed on a DigitalOcean droplet) even though
+/// memory readings are fine. Rather than fight the abstraction we parse
+/// `/proc` directly — same source of truth as `top`/`htop`, fully
+/// deterministic, and half the code.
 ///
-/// Sysinfo also requires at least one full sample *before* cpu_usage()
-/// returns non-zero (it needs two samples to differentiate), which is why
-/// the first reading after startup will briefly read 0 — it recovers
-/// after one interval.
+/// On non-Linux we fall back to `sysinfo`. Handy for local dev on Windows
+/// / macOS where we don't care about an exact number.
 pub async fn sysinfo_loop(stats: Arc<Stats>) {
-    use sysinfo::{ProcessRefreshKind, System};
-
-    let pid = sysinfo::get_current_pid().ok();
-    let mut sys = System::new();
-
-    // Initial refresh — seeds the global CPU time counter so the very next
-    // refresh_cpu_usage() call has a baseline to diff against.
-    sys.refresh_cpu_usage();
-    if let Some(pid) = pid {
-        sys.refresh_processes_specifics(
-            sysinfo::ProcessesToUpdate::Some(&[pid]),
-            true,
-            ProcessRefreshKind::everything().with_cpu(),
-        );
-    }
-
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
     interval.tick().await; // immediate first tick
-    loop {
-        interval.tick().await;
+
+    #[cfg(target_os = "linux")]
+    {
+        let ncpu = num_cpus_linux().unwrap_or(1).max(1);
+        let mut prev: Option<(u64, u64, Instant)> = None;
+        loop {
+            interval.tick().await;
+            let now = Instant::now();
+            let proc_jiffies = read_self_cpu_jiffies();
+            let total_jiffies = read_total_cpu_jiffies();
+            let rss = read_self_rss_bytes();
+            if let (Some(p), Some(t)) = (proc_jiffies, total_jiffies) {
+                if let Some((pp, pt, _)) = prev {
+                    let dp = p.saturating_sub(pp);
+                    let dt = t.saturating_sub(pt);
+                    if dt > 0 {
+                        // `top`-style percent: a process using 100% of one
+                        // core on a 4-core box reads 100% (not 25%). This
+                        // matches sysinfo's behaviour on other platforms.
+                        let pct = (dp as f64 / dt as f64) * 100.0 * ncpu as f64;
+                        stats.cpu_percent_x100.store((pct * 100.0) as u32, Ordering::Relaxed);
+                    }
+                }
+                prev = Some((p, t, now));
+            }
+            if let Some(rss) = rss {
+                stats.rss_bytes.store(rss, Ordering::Relaxed);
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        use sysinfo::{ProcessRefreshKind, System};
+        let pid = sysinfo::get_current_pid().ok();
+        let mut sys = System::new();
+        // Prime the samples so the first real reading has a delta to compute.
+        sys.refresh_cpu_usage();
         if let Some(pid) = pid {
-            // Global CPU first, then process — if we skip the global call,
-            // Process::cpu_usage() has nothing to compare against and
-            // silently returns 0. That was the whole-dashboard-says-0.00%
-            // bug reported in the first export.
-            sys.refresh_cpu_usage();
             sys.refresh_processes_specifics(
                 sysinfo::ProcessesToUpdate::Some(&[pid]),
                 true,
                 ProcessRefreshKind::everything().with_cpu(),
             );
-            if let Some(proc) = sys.process(pid) {
-                let cpu = proc.cpu_usage(); // already in percent (per-core scale)
-                stats.cpu_percent_x100.store((cpu * 100.0) as u32, Ordering::Relaxed);
-                stats.rss_bytes.store(proc.memory(), Ordering::Relaxed);
+        }
+        loop {
+            interval.tick().await;
+            if let Some(pid) = pid {
+                sys.refresh_cpu_usage();
+                sys.refresh_processes_specifics(
+                    sysinfo::ProcessesToUpdate::Some(&[pid]),
+                    true,
+                    ProcessRefreshKind::everything().with_cpu(),
+                );
+                if let Some(proc) = sys.process(pid) {
+                    let cpu = proc.cpu_usage();
+                    stats.cpu_percent_x100.store((cpu * 100.0) as u32, Ordering::Relaxed);
+                    stats.rss_bytes.store(proc.memory(), Ordering::Relaxed);
+                }
             }
         }
     }
+}
+
+// ── /proc parsers (Linux only) ─────────────────────────────────────────────
+/// Sum of utime + stime from /proc/self/stat, in clock ticks.
+///
+/// `/proc/[pid]/stat` format is documented in `proc(5)`. Fields after the
+/// `comm` field (index 1, parenthesised) are space-separated. utime is
+/// field 14 (1-indexed), stime is field 15. `comm` can contain spaces and
+/// close-parens, so we find the LAST ')' and parse from there.
+#[cfg(target_os = "linux")]
+fn read_self_cpu_jiffies() -> Option<u64> {
+    let data = std::fs::read_to_string("/proc/self/stat").ok()?;
+    let close = data.rfind(')')?;
+    let tail = data.get(close + 2..)?; // skip ") "
+    let fields: Vec<&str> = tail.split_whitespace().collect();
+    // Indexing: tail[0]=state (field 3), so utime (field 14) is tail[11],
+    // stime (field 15) is tail[12].
+    let utime: u64 = fields.get(11)?.parse().ok()?;
+    let stime: u64 = fields.get(12)?.parse().ok()?;
+    Some(utime + stime)
+}
+
+/// Sum of all CPU time columns from /proc/stat's first line. This is the
+/// total jiffies the kernel has distributed across all CPUs since boot.
+#[cfg(target_os = "linux")]
+fn read_total_cpu_jiffies() -> Option<u64> {
+    let data = std::fs::read_to_string("/proc/stat").ok()?;
+    let first = data.lines().next()?;
+    let mut parts = first.split_whitespace();
+    if parts.next()? != "cpu" { return None; }
+    let mut total: u64 = 0;
+    for p in parts {
+        total = total.saturating_add(p.parse::<u64>().ok()?);
+    }
+    Some(total)
+}
+
+/// VmRSS from /proc/self/status, converted kB → bytes.
+#[cfg(target_os = "linux")]
+fn read_self_rss_bytes() -> Option<u64> {
+    let data = std::fs::read_to_string("/proc/self/status").ok()?;
+    for line in data.lines() {
+        if let Some(rest) = line.strip_prefix("VmRSS:") {
+            let kb: u64 = rest.trim().split_whitespace().next()?.parse().ok()?;
+            return Some(kb * 1024);
+        }
+    }
+    None
+}
+
+/// Count CPU cores by counting `processor` entries in /proc/cpuinfo.
+/// Cheap: only called once at startup.
+#[cfg(target_os = "linux")]
+fn num_cpus_linux() -> Option<usize> {
+    let data = std::fs::read_to_string("/proc/cpuinfo").ok()?;
+    Some(data.lines().filter(|l| l.starts_with("processor")).count())
 }
 
 // ── log::Log implementation that tees stdout + ring buffer ──────────────────
