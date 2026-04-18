@@ -19,7 +19,7 @@ namespace SomniumSpace.Worlds.bently.networking
         private HashSet<Transform> _tracked = new HashSet<Transform>();
         private float _nextScan;
 
-        private void Update()
+        protected virtual void Update()
         {
             if (Time.time < _nextScan) return;
             _nextScan = Time.time + 1f; // Scan once per second

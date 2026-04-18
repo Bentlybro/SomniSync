@@ -140,7 +140,7 @@ namespace SomniumSpace.Worlds.bently.networking
         // Unity lifecycle
         // =====================================================================
 
-        private void Awake()
+        protected virtual void Awake()
         {
             _rb    = GetComponent<Rigidbody>();
             _hasRb = _rb != null;

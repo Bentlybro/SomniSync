@@ -57,7 +57,7 @@ namespace SomniumSpace.Worlds.bently.networking
         private bool _valid;
         private Vector3 _startPos;
 
-        private void Awake()
+        protected virtual void Awake()
         {
             _startPos = transform.position;
             BuildPath();
@@ -103,7 +103,7 @@ namespace SomniumSpace.Worlds.bently.networking
             _valid = _totalCycleTime > 0.0001f && _points.Length >= 1;
         }
 
-        private void Update()
+        protected virtual void Update()
         {
             if (!_valid) return;
             if (NetworkManager.Instance == null || !NetworkManager.Instance.IsNetworkReady) return;

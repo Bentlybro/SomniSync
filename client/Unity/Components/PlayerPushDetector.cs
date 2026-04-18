@@ -33,7 +33,7 @@ namespace SomniumSpace.Worlds.bently.networking
         private CharacterController _cc;
         private readonly Dictionary<ushort, float> _lastPushed = new Dictionary<ushort, float>();
 
-        private void Awake()
+        protected virtual void Awake()
         {
             _cc = GetComponent<CharacterController>();
         }

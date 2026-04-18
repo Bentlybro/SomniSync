@@ -50,7 +50,7 @@ namespace SomniumSpace.Worlds.bently.networking
         private int _lastStateHash;
         private float _lastNormalizedTime;
 
-        private void Start()
+        protected virtual void Start()
         {
             _netObj = GetComponent<NetworkObject>();
             _animator = GetComponent<Animator>();
@@ -85,7 +85,7 @@ namespace SomniumSpace.Worlds.bently.networking
             }
         }
 
-        private void Update()
+        protected virtual void Update()
         {
             if (NetworkManager.Instance == null || !NetworkManager.Instance.IsConnected) return;
             if (!HasAuthority()) return;

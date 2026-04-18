@@ -32,12 +32,12 @@ namespace SomniumSpace.Worlds.bently.networking
 
         private bool _playerRegistered;
 
-        private void Start()
+        protected virtual void Start()
         {
             NetworkPersistence.PlayerIdProvider = GetPlayerId;
         }
 
-        private void Update()
+        protected virtual void Update()
         {
             if (_playerRegistered) return;
             if (NetworkManager.Instance == null) return;

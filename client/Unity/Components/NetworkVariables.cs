@@ -65,7 +65,7 @@ namespace SomniumSpace.Worlds.bently.networking
         // Init
         // =====================================================================
 
-        private void Start()
+        protected virtual void Start()
         {
             _netObj = GetComponent<NetworkObject>();
             if (_netObj == null)
@@ -96,7 +96,7 @@ namespace SomniumSpace.Worlds.bently.networking
         // Update — send dirty vars
         // =====================================================================
 
-        private void Update()
+        protected virtual void Update()
         {
             if (!_initialized || NetworkManager.Instance == null || !NetworkManager.Instance.IsConnected)
                 return;

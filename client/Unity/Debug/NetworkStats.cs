@@ -15,7 +15,7 @@ namespace SomniumSpace.Worlds.bently.networking
         private float _fps;
         private GUIStyle _style;
 
-        private void Update()
+        protected virtual void Update()
         {
             if (Input.GetKeyDown(KeyCode.F3))
                 _show = !_show;

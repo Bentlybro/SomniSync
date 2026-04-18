@@ -51,12 +51,12 @@ namespace SomniumSpace.Worlds.bently.networking
         private const string VAR_RUNNING = "_timer_running";
         private const string VAR_DURATION = "_timer_duration";
 
-        private void Awake()
+        protected virtual void Awake()
         {
             _netObj = GetComponent<NetworkObject>();
         }
 
-        private void Start()
+        protected virtual void Start()
         {
             _vars = GetComponent<NetworkVariables>();
             if (_vars == null)
@@ -73,7 +73,7 @@ namespace SomniumSpace.Worlds.bently.networking
             }
         }
 
-        private void Update()
+        protected virtual void Update()
         {
             if (_netObj.HasAuthority())
                 AuthorityUpdate();

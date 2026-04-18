@@ -34,7 +34,7 @@ namespace SomniumSpace.Worlds.bently.networking
         private Dictionary<string, List<Action<object[]>>> _handlers = new Dictionary<string, List<Action<object[]>>>();
         private readonly List<byte[]> _paramDataCache = new List<byte[]>();
 
-        private void Start()
+        protected virtual void Start()
         {
             _netObj = GetComponent<NetworkObject>();
             if (_netObj == null)

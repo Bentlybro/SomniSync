@@ -53,7 +53,7 @@ namespace SomniumSpace.Worlds.bently.networking
         private float _lastSpeed;
         private float _lastSize;
 
-        private void Awake()
+        protected virtual void Awake()
         {
             _netObj = GetComponent<NetworkObject>();
             _ps = GetComponent<ParticleSystem>();
@@ -69,7 +69,7 @@ namespace SomniumSpace.Worlds.bently.networking
             _main = _ps.main;
         }
 
-        private void Start()
+        protected virtual void Start()
         {
             // Get or add required components
             _events = GetComponent<NetworkEvents>();
@@ -111,7 +111,7 @@ namespace SomniumSpace.Worlds.bently.networking
             _lastSize = _main.startSize.constant;
         }
 
-        private void Update()
+        protected virtual void Update()
         {
             if (!_netObj.HasAuthority()) return;
 

@@ -66,7 +66,7 @@ namespace SomniumSpace.Worlds.bently.networking
         [Tooltip("Random seed for the wander path. -1 uses NetworkObject.LocalId so every NPC has a unique path that every client computes identically.")]
         public int seedOverride = -1;
 
-        private NetworkObject _netObj;
+        protected NetworkObject _netObj;
 
         // Wander state. Re-anchor happens when NetworkObject.LastReleaseServerMs
         // advances past _anchoredReleaseMs — meaning we've just received a new
@@ -80,9 +80,12 @@ namespace SomniumSpace.Worlds.bently.networking
         // that as the epoch puts every client on a different slice of the same
         // deterministic wander path. The resulting position disagreement is
         // exactly (client_A_join_gap_seconds * wanderSpeed) metres.
-        private Vector3 _origin;
-        private double _wanderEpoch = -1;       // Server unix-seconds anchor for the current wander segment
-        private ulong _anchoredReleaseMs;       // LastReleaseServerMs we last re-anchored against
+        //
+        // Exposed as `protected` so subclasses can layer custom behaviour on
+        // top of the wander/chase logic without forking the whole component.
+        protected Vector3 _origin;
+        protected double _wanderEpoch = -1;       // Server unix-seconds anchor for the current wander segment
+        protected ulong _anchoredReleaseMs;       // LastReleaseServerMs we last re-anchored against
 
         // Read-only views of internal wander state — used by NetworkDebug to
         // compare what the NPC's logic is doing on each client side-by-side.
@@ -91,9 +94,9 @@ namespace SomniumSpace.Worlds.bently.networking
         public ulong   DebugAnchoredReleaseMs => _anchoredReleaseMs;
 
         // Chase state
-        private float _nextClaimAttemptTime;
+        protected float _nextClaimAttemptTime;
 
-        private void Awake()
+        protected virtual void Awake()
         {
             _netObj = GetComponent<NetworkObject>();
 
@@ -109,7 +112,12 @@ namespace SomniumSpace.Worlds.bently.networking
             _origin = transform.position;
         }
 
-        private void Update()
+        /// <summary>
+        /// Per-frame tick. Subclasses can override to add custom behaviour;
+        /// call <c>base.Update()</c> to keep the built-in wander / chase logic,
+        /// or ignore the base and drive the NPC entirely yourself.
+        /// </summary>
+        protected virtual void Update()
         {
             var mgr = NetworkManager.Instance;
             if (mgr == null || !mgr.IsNetworkReady) return;
@@ -195,7 +203,12 @@ namespace SomniumSpace.Worlds.bently.networking
                 ApplyFacing(forward);
         }
 
-        private void ApplyFacing(Vector3 forward)
+        /// <summary>
+        /// Smoothly rotate the transform to face a direction. Subclasses can
+        /// override to use a different facing strategy (head-look, lerp
+        /// rather than angular-cap, etc.).
+        /// </summary>
+        protected virtual void ApplyFacing(Vector3 forward)
         {
             if (forward.sqrMagnitude < 0.0001f) return;
             Quaternion want = Quaternion.LookRotation(forward);
@@ -206,7 +219,18 @@ namespace SomniumSpace.Worlds.bently.networking
 
         // ── Deterministic wander sampler ──────────────────────────────────
 
-        private Vector3 SampleWander(double t, int seed, out Vector3 forward)
+        /// <summary>
+        /// Compute the NPC's wander position at wander-time <paramref name="t"/>
+        /// (seconds since <see cref="_wanderEpoch"/>) for the given seed.
+        /// All clients call this with the same inputs, so every client
+        /// computes the same position — zero bandwidth.
+        ///
+        /// Override to implement a different movement style (patrol routes,
+        /// scripted paths, chasing a moving point, etc.). The out-parameter
+        /// <paramref name="forward"/> is the facing direction the NPC should
+        /// rotate toward; return zero-vector to leave facing unchanged.
+        /// </summary>
+        protected virtual Vector3 SampleWander(double t, int seed, out Vector3 forward)
         {
             forward = Vector3.zero;
             if (t < 0) t = 0;

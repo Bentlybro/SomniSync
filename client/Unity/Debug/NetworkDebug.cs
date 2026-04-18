@@ -55,7 +55,7 @@ namespace SomniumSpace.Worlds.bently.networking
         private StreamWriter _csv;
         private string _csvPathResolved;
 
-        private void Update()
+        protected virtual void Update()
         {
             if (!enableLogging) return;
             if (Time.time < _nextDumpTime) return;
@@ -252,13 +252,13 @@ namespace SomniumSpace.Worlds.bently.networking
         }
         private static NetworkDebug _instance;
 
-        private void OnEnable() => _instance = this;
-        private void OnDisable()
+        protected virtual void OnEnable() => _instance = this;
+        protected virtual void OnDisable()
         {
             if (_instance == this) _instance = null;
             CloseCsv();
         }
-        private void OnDestroy() => CloseCsv();
-        private void OnApplicationQuit() => CloseCsv();
+        protected virtual void OnDestroy() => CloseCsv();
+        protected virtual void OnApplicationQuit() => CloseCsv();
     }
 }

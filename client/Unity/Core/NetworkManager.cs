@@ -154,7 +154,7 @@ namespace SomniumSpace.Worlds.bently.networking
         public static int BytesSent;
         public static int BytesReceived;
 
-        private void Awake()
+        protected virtual void Awake()
         {
             if (Instance != null) { Destroy(gameObject); return; }
             Instance = this;
@@ -162,18 +162,18 @@ namespace SomniumSpace.Worlds.bently.networking
             _playerPosInterval = 1f / Mathf.Max(1, playerPosSendRate);
         }
 
-        private void Start()
+        protected virtual void Start()
         {
             StartCoroutine(ConnectLoop());
         }
 
-        private void OnDestroy()
+        protected virtual void OnDestroy()
         {
             _cts?.Cancel();
             Instance = null;
         }
 
-        private void Update()
+        protected virtual void Update()
         {
             if (!_sceneReady)
             {
