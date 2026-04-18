@@ -202,12 +202,12 @@ namespace SomniumSpace.Worlds.bently.networking
             }
 
             // Periodic NTP-style ping to tighten the ServerTime offset.
+            // Ping every 1 s so clock drift / NTP adjustments on the server
+            // converge quickly across clients. An EMA in HandleTimePong smooths
+            // out per-sample RTT noise, so 1 Hz is stable, not jittery.
             if (IsNetworkReady && Time.time >= _nextTimePingTime)
             {
-                // Faster cadence at first (2s) so initial convergence is quick,
-                // then back off. The offset only needs re-measuring when the
-                // network path changes significantly.
-                _nextTimePingTime = Time.time + (BestRttSeconds == double.MaxValue ? 2f : 10f);
+                _nextTimePingTime = Time.time + 1f;
                 SendTimePing();
             }
         }
@@ -402,6 +402,7 @@ namespace SomniumSpace.Worlds.bently.networking
             // Discard the RTT sample history — new session, new network path.
             BestRttSeconds = double.MaxValue;
             _nextTimePingTime = 0;
+            _timeSyncInitialised = false;
             // Release any objects we were holding so reconnect doesn't leave the
             // client stuck believing it still owns objects the server has long
             // since returned to Dynamic.

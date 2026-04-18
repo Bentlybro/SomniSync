@@ -382,6 +382,13 @@ namespace SomniumSpace.Worlds.bently.networking
         // Payload: [u64 client_local_ms_echoed][u64 server_ms_when_processed]
         // =====================================================================
 
+        // Exponential moving-average weight for each ping sample. Small enough
+        // to reject per-sample RTT jitter, large enough to track server-side
+        // clock adjustments (NTP on the server, process pauses) within a few
+        // seconds. Combined with the 1 Hz ping cadence this converges in ~5 s.
+        private const double OffsetEmaAlpha = 0.35;
+        private bool _timeSyncInitialised;
+
         private void HandleTimePong(byte[] data, int length)
         {
             if (length < 18) return;
@@ -392,22 +399,38 @@ namespace SomniumSpace.Worlds.bently.networking
             double localNowMs = Time.timeAsDouble * 1000.0;
             double rttMs = localNowMs - clientSentMs;
 
-            // Filter out garbage — negative (clock jump?) or absurdly high.
-            if (rttMs < 0 || rttMs > 5000) return;
+            // Reject obviously bad samples — negative (clock jumped?) or
+            // absurdly high (>2 s RTT — the pong was almost certainly delayed
+            // by a GC pause on either side, carrying no useful timing info).
+            if (rttMs < 0 || rttMs > 2000) return;
 
             double rttSec = rttMs / 1000.0;
-            // Prefer smallest-RTT sample seen so far. Smaller RTT means less
-            // jitter error in our symmetric one-way-delay assumption.
-            if (rttSec >= BestRttSeconds && BestRttSeconds != double.MaxValue) return;
-
-            BestRttSeconds = rttSec;
+            if (rttSec < BestRttSeconds) BestRttSeconds = rttSec;
 
             // Estimate server's clock at the moment the pong arrived: the
             // server's stamp (when it processed the ping) plus the one-way
             // delay on the return leg (assumed symmetric = RTT/2).
             double estimatedServerMsNow = serverMs + (rttMs * 0.5);
-            double offsetSeconds = (localNowMs - estimatedServerMsNow) / 1000.0;
-            SetServerTimeOffsetSeconds(offsetSeconds);
+            double sampleOffsetSec = (localNowMs - estimatedServerMsNow) / 1000.0;
+
+            if (!_timeSyncInitialised)
+            {
+                // First sample: commit directly so deterministic components
+                // have a sensible ServerTime immediately.
+                SetServerTimeOffsetSeconds(sampleOffsetSec);
+                _timeSyncInitialised = true;
+                return;
+            }
+
+            // EMA towards the new sample. Previously we kept "min RTT ever"
+            // which locked in a single moment's error — if server clock
+            // drifted / was NTP-adjusted later in the session, we stayed
+            // wrong by that amount until an even-lower-RTT sample happened
+            // to land, which could be never. EMA tracks the true offset
+            // continuously and converges at the ping cadence.
+            double blended = ServerTimeOffsetSeconds * (1.0 - OffsetEmaAlpha)
+                           + sampleOffsetSec * OffsetEmaAlpha;
+            SetServerTimeOffsetSeconds(blended);
         }
 
         private static ulong ReadU64(byte[] buf, int offset)
