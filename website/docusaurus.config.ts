@@ -4,8 +4,8 @@ import type * as Preset from '@docusaurus/preset-classic';
 
 const config: Config = {
   title: 'SomniSync',
-  tagline: 'High-performance real-time physics networking for Unity',
-  favicon: 'img/favicon.ico',
+  tagline: 'Shared worlds. Less wire traffic.',
+  favicon: 'img/somnisync-mark.svg',
   url: 'https://bentlybro.github.io',
   baseUrl: '/SomniSync/',
   organizationName: 'Bentlybro',
@@ -43,12 +43,26 @@ const config: Config = {
   themeConfig: {
     navbar: {
       title: 'SomniSync',
+      logo: {
+        alt: 'SomniSync',
+        src: 'img/somnisync-mark.svg',
+      },
       items: [
         {
           type: 'docSidebar',
           sidebarId: 'docsSidebar',
           position: 'left',
           label: 'Docs',
+        },
+        {
+          to: '/docs/getting-started/setup',
+          label: 'Get Started',
+          position: 'left',
+        },
+        {
+          to: '/docs/ops/benchmarking',
+          label: 'Benchmarks',
+          position: 'left',
         },
         {
           href: 'https://github.com/Bentlybro/SomniSync',
@@ -75,7 +89,7 @@ const config: Config = {
           ],
         },
       ],
-      copyright: `SomniSync — Mozilla Public License 2.0`,
+      copyright: `SomniSync · Mozilla Public License 2.0`,
     },
     prism: {
       theme: prismThemes.github,

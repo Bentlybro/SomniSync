@@ -3,7 +3,7 @@ name: Deploy Docs to GitHub Pages
 on:
   push:
     branches: [master]
-    paths: ['website/**', 'docs/**']
+    paths: ['website/**', 'docs/**', '.github/workflows/deploy-docs.yml']
   workflow_dispatch:
 
 permissions:
@@ -21,6 +21,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - uses: actions/configure-pages@v5
+
       - uses: actions/setup-node@v7
         with:
           node-version: 20
@@ -35,7 +37,7 @@ jobs:
         working-directory: website
         run: npm run build
 
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v4
         with:
           path: website/build
 

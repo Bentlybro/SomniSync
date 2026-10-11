@@ -1,5 +1,7 @@
 # SomniSync
 
+**Website and guides:** https://bentlybro.github.io/SomniSync/
+
 SomniSync is a server-authoritative networking system for Unity and Somnium Space worlds. A Rust relay runs Rapier3D physics; Unity clients send player movement, interactions and game events, then receive compact object updates. Sleeping objects send no position updates. Distance filtering reduces traffic when the local player is known.
 
 **Status:** tested as a working preview, with further real-world validation needed before a general release. The relay has no player authentication or private-room access control. [Deployment guidance](docs/getting-started/server-deployment.md) explains the current security boundaries.
