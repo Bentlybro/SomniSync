@@ -63,13 +63,12 @@ pub(crate) async fn handle_spawn_request(
     };
 
     // Need physics world + next id.
-    let (pw_opt, assigned_id) = {
-        let mut r = room.write().await;
+    let mut r = room.write().await;
+    let assigned_id = {
         if !r.physics_ready || r.physics_world.is_none() {
             warn!("[Room:{}] CTRL_SPAWN_REQUEST before physics ready", room_id);
             return;
         }
-        let id = r.next_runtime_id;
         if r.runtime_spawn_count >= MAX_RUNTIME_SPAWNS {
             warn!(
                 "[Room:{}] CTRL_SPAWN_REQUEST: runtime spawn cap hit ({} >= {}); refusing",
@@ -77,13 +76,21 @@ pub(crate) async fn handle_spawn_request(
             );
             return;
         }
-        r.next_runtime_id = id.wrapping_add(1);
+        let Ok(id) = u16::try_from(r.next_runtime_id) else {
+            warn!(
+                "[Room:{}] CTRL_SPAWN_REQUEST: object ID space exhausted",
+                room_id
+            );
+            return;
+        };
+        r.next_runtime_id += 1;
         r.runtime_spawn_count = r.runtime_spawn_count.saturating_add(1);
-        (r.physics_world.clone(), id)
+        r.state_epoch = r.state_epoch.wrapping_add(1);
+        id
     };
     desc.id = assigned_id;
 
-    if let Some(pw_arc) = pw_opt {
+    if let Some(pw_arc) = r.physics_world.clone() {
         let mut pw = pw_arc.lock().await;
         pw.add_object(&desc);
     }
@@ -108,7 +115,6 @@ pub(crate) async fn handle_spawn_request(
     msg[SCENE_OBJ_ID_OFFSET + 1] = (assigned_id >> 8) as u8;
     msg.extend_from_slice(&spawn_server_ms.to_le_bytes());
 
-    let mut r = room.write().await;
     r.runtime_spawns.insert(assigned_id, msg.clone());
     r.runtime_spawn_owners.insert(assigned_id, client_id);
     broadcast_all(&r.clients, &msg);
@@ -132,8 +138,8 @@ pub(crate) async fn handle_despawn(
     }
     let obj_id = read_u16(data, 2);
 
+    let mut r = room.write().await;
     let pw_opt = {
-        let mut r = room.write().await;
         let Some(owner) = r.runtime_spawn_owners.get(&obj_id).copied() else {
             warn!(
                 "[Room:{}] client_{} tried to despawn non-runtime or unknown object id={}",
@@ -154,9 +160,11 @@ pub(crate) async fn handle_despawn(
         // stale state for it.
         r.claimed_objects.remove(&obj_id);
         r.last_release_bytes.remove(&obj_id);
+        r.variable_state.remove_object(obj_id);
         r.runtime_spawns.remove(&obj_id);
         r.runtime_spawn_owners.remove(&obj_id);
         r.runtime_spawn_count = r.runtime_spawn_count.saturating_sub(1);
+        r.state_epoch = r.state_epoch.wrapping_add(1);
         r.physics_world.clone()
     };
 
@@ -167,7 +175,6 @@ pub(crate) async fn handle_despawn(
 
     let mut msg = vec![0xFF, CTRL_DESPAWN];
     msg.extend_from_slice(&obj_id.to_le_bytes());
-    let r = room.read().await;
     broadcast_all(&r.clients, &msg);
     info!(
         "[Room:{}] client_{} despawned object id={}",

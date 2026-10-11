@@ -25,46 +25,59 @@ namespace SomniumSpace.Worlds.bently.networking
 
         private void SendInteractionUpdates()
         {
-            if (_objects.Count == 0) return;
+            if (_claimedObjects.Count == 0) return;
 
-            int maxSize = 3 + _objects.Count * Protocol.BYTES_PER_ENTITY_SCALED;
-
-            byte[] buf     = ArrayPool<byte>.Shared.Rent(maxSize);
-            byte[] scalBuf = ArrayPool<byte>.Shared.Rent(maxSize);
-
-            buf[0]     = Protocol.MSG_INTERACTION_UPDATE;
-            scalBuf[0] = Protocol.MSG_SCALED_INTERACTION;
+            int maxSize = 3 + _claimedObjects.Count * Protocol.BYTES_PER_ENTITY_SCALED;
+            byte[] buf = null;
+            byte[] scalBuf = null;
             int offset     = 3;
             int scalOffset = 3;
             int count      = 0;
             int scalCount  = 0;
 
-            for (int i = 0; i < _objects.Count; i++)
+            for (int i = _claimedObjects.Count - 1; i >= 0; i--)
             {
-                var obj = _objects[i];
-                if (obj == null) continue;
-                if (!obj.IsClaimedLocally) continue;
+                var obj = _claimedObjects[i];
+                if (obj == null || !obj.IsClaimedLocally)
+                {
+                    _claimedObjects.RemoveAt(i);
+                    continue;
+                }
                 if (!obj.HasMoved(positionThreshold, rotationThreshold)) continue;
 
                 if (obj.syncScale)
                 {
+                    if (scalBuf == null)
+                    {
+                        scalBuf = ArrayPool<byte>.Shared.Rent(maxSize);
+                        scalBuf[0] = Protocol.MSG_SCALED_INTERACTION;
+                    }
                     scalOffset = Protocol.WriteEntityScaled(scalBuf, scalOffset, obj.LocalId,
                         obj.transform.position, obj.transform.rotation, obj.transform.localScale);
                     scalCount++;
                 }
                 else
                 {
+                    if (buf == null)
+                    {
+                        buf = ArrayPool<byte>.Shared.Rent(maxSize);
+                        buf[0] = Protocol.MSG_INTERACTION_UPDATE;
+                    }
                     offset = Protocol.WriteEntityCompact(buf, offset, obj.LocalId,
                         obj.transform.position, obj.transform.rotation);
                     count++;
                 }
-                obj.MarkSent();
             }
 
             if (count > 0)
             {
                 WriteU16(buf, 1, (ushort)count);
-                SendBinaryPooled(buf, offset);
+                if (SendBinaryPooled(buf, offset))
+                {
+                    foreach (var obj in _claimedObjects)
+                        if (obj != null && !obj.syncScale && obj.HasMoved(positionThreshold, rotationThreshold))
+                            obj.MarkSent();
+                }
                 buf = null;
             }
             if (buf != null) ArrayPool<byte>.Shared.Return(buf);
@@ -72,7 +85,12 @@ namespace SomniumSpace.Worlds.bently.networking
             if (scalCount > 0)
             {
                 WriteU16(scalBuf, 1, (ushort)scalCount);
-                SendBinaryPooled(scalBuf, scalOffset);
+                if (SendBinaryPooled(scalBuf, scalOffset))
+                {
+                    foreach (var obj in _claimedObjects)
+                        if (obj != null && obj.syncScale && obj.HasMoved(positionThreshold, rotationThreshold))
+                            obj.MarkSent();
+                }
                 scalBuf = null;
             }
             if (scalBuf != null) ArrayPool<byte>.Shared.Return(scalBuf);
@@ -91,8 +109,7 @@ namespace SomniumSpace.Worlds.bently.networking
                 WriteU16(buf, 1, 1);
                 Protocol.WriteEntityScaled(buf, 3, obj.LocalId,
                     obj.transform.position, obj.transform.rotation, obj.transform.localScale);
-                obj.MarkSent();
-                SendBinaryPooled(buf, size);
+                if (SendBinaryPooled(buf, size)) obj.MarkSent();
             }
             else
             {
@@ -102,8 +119,7 @@ namespace SomniumSpace.Worlds.bently.networking
                 WriteU16(buf, 1, 1);
                 Protocol.WriteEntityCompact(buf, 3, obj.LocalId,
                     obj.transform.position, obj.transform.rotation);
-                obj.MarkSent();
-                SendBinaryPooled(buf, size);
+                if (SendBinaryPooled(buf, size)) obj.MarkSent();
             }
         }
 
@@ -301,6 +317,10 @@ namespace SomniumSpace.Worlds.bently.networking
         /// NetworkManager.cs SetLocalPlayerTransform).</summary>
         private CharacterController _cachedPlayerCC;
         private Transform _cachedPlayerCCTransform;
+        private bool _hasSentPlayerPosition;
+        private Vector3 _lastSentPlayerPosition;
+        private float _lastSentPlayerRadius, _lastSentPlayerHalfHeight;
+        private float _lastPlayerPositionTime;
 
         private void SendPlayerPosition()
         {
@@ -333,6 +353,16 @@ namespace SomniumSpace.Worlds.bently.networking
                 p = cc.transform.TransformPoint(cc.center);
             }
 
+            // Stationary players need only a periodic refresh. The first
+            // update after reconnect is always sent so the server can rebuild
+            // AOI state and the Rapier player capsule.
+            if (_hasSentPlayerPosition
+                && (p - _lastSentPlayerPosition).sqrMagnitude < 0.0001f
+                && Mathf.Abs(radius - _lastSentPlayerRadius) < 0.001f
+                && Mathf.Abs(halfHeight - _lastSentPlayerHalfHeight) < 0.001f
+                && Time.time - _lastPlayerPositionTime < 2f)
+                return;
+
             byte[] buf = ArrayPool<byte>.Shared.Rent(21);
             buf[0] = Protocol.MSG_PLAYER_POS;
             Protocol.WriteFloat(buf, 1,  p.x);
@@ -340,7 +370,12 @@ namespace SomniumSpace.Worlds.bently.networking
             Protocol.WriteFloat(buf, 9,  p.z);
             Protocol.WriteFloat(buf, 13, radius);
             Protocol.WriteFloat(buf, 17, halfHeight);
-            SendBinaryPooled(buf, 21);
+            if (!SendBinaryPooled(buf, 21)) return;
+            _hasSentPlayerPosition = true;
+            _lastSentPlayerPosition = p;
+            _lastSentPlayerRadius = radius;
+            _lastSentPlayerHalfHeight = halfHeight;
+            _lastPlayerPositionTime = Time.time;
         }
 
         // =====================================================================
@@ -358,10 +393,13 @@ namespace SomniumSpace.Worlds.bently.networking
         ///
         /// MeshColliders are skipped (no analytic Rapier shape).
         /// </summary>
-        public void SendSceneInit()
+        public bool SendSceneInit()
         {
             var allColliders = FindObjectsByType<Collider>(FindObjectsSortMode.None);
-            int maxObjects = _objects.Count + allColliders.Length;
+            // Cap the scratch buffer even if the scene has thousands of ignored
+            // colliders. Reject the first supported collider beyond the relay cap.
+            int maxObjects = Mathf.Min(Protocol.MAX_SCENE_OBJECTS + 1,
+                _objects.Count + allColliders.Length);
             int maxSize = 3 + maxObjects * Protocol.BYTES_PER_SCENE_OBJECT;
 
             byte[] buf = ArrayPool<byte>.Shared.Rent(maxSize);
@@ -390,6 +428,12 @@ namespace SomniumSpace.Worlds.bently.networking
 
                 if (!TryGetColliderShape(col, obj.transform, out shapeType, out shapeParams))
                     continue;
+                if (count >= Protocol.MAX_SCENE_OBJECTS)
+                {
+                    ArrayPool<byte>.Shared.Return(buf);
+                    Debug.LogError($"[Net] SendSceneInit: more than {Protocol.MAX_SCENE_OBJECTS} physics colliders; simplify the scene or combine static colliders.");
+                    return false;
+                }
 
                 float mass           = rb != null ? rb.mass           : 0f;
                 float linearDamping  = rb != null ? rb.linearDamping  : 0f;
@@ -433,6 +477,12 @@ namespace SomniumSpace.Worlds.bently.networking
                 Vector3 shapeParams;
                 if (!TryGetColliderShape(col, col.transform, out shapeType, out shapeParams))
                     continue;
+                if (count >= Protocol.MAX_SCENE_OBJECTS)
+                {
+                    ArrayPool<byte>.Shared.Return(buf);
+                    Debug.LogError($"[Net] SendSceneInit: more than {Protocol.MAX_SCENE_OBJECTS} physics colliders; simplify the scene or combine static colliders.");
+                    return false;
+                }
 
                 float restitution = col.sharedMaterial != null ? col.sharedMaterial.bounciness      : 0.3f;
                 float friction    = col.sharedMaterial != null ? col.sharedMaterial.dynamicFriction : 0.4f;
@@ -449,13 +499,14 @@ namespace SomniumSpace.Worlds.bently.networking
             {
                 ArrayPool<byte>.Shared.Return(buf);
                 Debug.LogWarning("[Net] SendSceneInit: no physics-relevant colliders found, nothing sent");
-                return;
+                return false;
             }
 
             Protocol.WriteU16(buf, 1, (ushort)count);
-            SendBinaryPooled(buf, offset);
+            if (!SendBinaryPooled(buf, offset)) return false;
             int netObjs = Mathf.Min(_objects.Count, count);
             Debug.Log($"[Net] Sent SCENE_INIT: {count} objects ({netObjs} networked + {count - netObjs} static) to server");
+            return true;
         }
 
         /// <summary>Returns the world-space centre of a collider (respects the local center offset).</summary>

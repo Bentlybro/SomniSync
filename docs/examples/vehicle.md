@@ -17,6 +17,9 @@ Vehicle
 ## Script
 
 ```csharp
+using UnityEngine;
+using SomniumSpace.Worlds.bently.networking; // Use your creator namespace in a Somnium world.
+
 public class Vehicle : MonoBehaviour
 {
     private NetworkObject _netObj;
@@ -35,8 +38,8 @@ public class Vehicle : MonoBehaviour
         _events = GetComponent<NetworkEvents>();
         _rb = GetComponent<Rigidbody>();
 
-        _vars.DefineVariable("driver", VarType.String, SyncMode.Immediate, persist: true);
-        _vars.DefineVariable("engine", VarType.Bool, SyncMode.Immediate, persist: true);
+        _vars.DefineVariable("driver", NetworkVariables.VarType.String, NetworkVariables.SyncMode.Immediate, persist: true);
+        _vars.DefineVariable("engine", NetworkVariables.VarType.Bool, NetworkVariables.SyncMode.Immediate, persist: true);
 
         _events.On("enter", (string playerName) =>
         {
@@ -84,8 +87,8 @@ public class Vehicle : MonoBehaviour
 
 1. Player walks up to vehicle → `EnterVehicle()` claims ownership via `Grab()`
 2. Held-object updates drive the server body while the driver owns the claim
-3. `NetworkVariables` tracks who's driving (persists for late joiners)
-4. Player exits → `Release()` returns vehicle to master authority
+3. `NetworkVariables` broadcasts who is driving and replays the latest persistent value to late joiners
+4. Player exits → `Release()` returns vehicle to relay physics authority
 5. Vehicle coasts to a stop under server physics, then sleeps
 
 ## Why Claiming Matters Here

@@ -42,13 +42,13 @@ Scene
     └── NetworkObject (entityType: "ball")
 ```
 
-## What Happens
+## What happens
 
-- First player to join becomes **master** (runs physics for everything)
-- Other players join as **spectators** (see synced positions, can interact)
-- Walk into any object → auto-claimed → local physics → auto-released when settled
-- Master disconnects → next player auto-promoted, no interruption
-- Objects start frozen (kinematic) — physics enabled per-object as needed
+- The first client describes supported colliders to the relay; the relay runs physics for the room.
+- All clients receive authoritative position updates for moving objects. Resting bodies stop sending updates.
+- Each client sends its local player position for area-of-interest filtering when a local player transform is available.
+- Grabbing requires your interaction code to call `NetworkObject.Grab()` and `Release()`. Walking into a pushable body can affect server physics through the player capsule; the optional `PlayerPushDetector` adds a one-shot impulse.
+- The relay continues simulating if the first client disconnects. There is no client master role.
 
 ## Per-Object Control
 

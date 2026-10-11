@@ -7,6 +7,7 @@ Full documentation for SomniSync — high-performance real-time physics networki
 New here? Start with these:
 
 - [**Setup Guide**](getting-started/setup.md) — Install, configure, and connect
+- [**Server Deployment**](getting-started/server-deployment.md) — Docker Compose, persistent data, TLS and operational limits
 - [**Which Components Do I Need?**](getting-started/which-components.md) — Pick the right components for your objects
 
 ## Components

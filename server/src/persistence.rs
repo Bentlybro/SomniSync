@@ -5,7 +5,6 @@
 ///
 /// All values are stored as UTF-8 strings — the client encodes/decodes
 /// typed values (float, int, bool) using string representation.
-
 use log::error;
 use rusqlite::{params, Connection, OptionalExtension, Result};
 use std::sync::{Arc, Mutex};
@@ -53,7 +52,10 @@ impl Db {
              VALUES (?1, ?2, ?3, ?4, unixepoch())",
             params![player_id, namespace, key, value],
         ) {
-            error!("[DB] Set failed for player={} ns={} key={}: {}", player_id, namespace, key, e);
+            error!(
+                "[DB] Set failed for player={} ns={} key={}: {}",
+                player_id, namespace, key, e
+            );
         }
     }
 
@@ -74,7 +76,10 @@ impl Db {
         )
         .optional()
         .unwrap_or_else(|e| {
-            error!("[DB] Get failed for player={} ns={} key={}: {}", player_id, namespace, key, e);
+            error!(
+                "[DB] Get failed for player={} ns={} key={}: {}",
+                player_id, namespace, key, e
+            );
             None
         })
     }

@@ -15,7 +15,7 @@ The server's kinematic player-capsule integration in Rapier is the main push mec
 
 Unity's `CharacterController` doesn't participate in the normal physics collision pipeline — it uses its own sweep-based movement and fires `OnControllerColliderHit` on itself rather than `OnCollisionEnter` on the thing it hit.
 
-PlayerPushDetector sits on the `CharacterController` and receives those callbacks. On a hit against a GameObject with a `NetworkObject`, it calls `OnPlayerPush()` which optimistically claims the object and sends a push impulse.
+PlayerPushDetector sits on the `CharacterController` and receives those callbacks. On a hit against a GameObject with a `NetworkObject`, it sends `MSG_PUSH_IMPULSE` to the relay. It does not claim the object.
 
 ## Inspector (if you attach it yourself)
 

@@ -3,7 +3,7 @@
 //! Serves two routes on a separate port from the WebSocket listener:
 //!   * `/`         — embedded HTML dashboard (no build step, zero JS deps).
 //!   * `/metrics`  — JSON snapshot of counters, room state, physics timing,
-//!                   and the in-memory log ring buffer.
+//!     and the in-memory log ring buffer.
 //!
 //! The dashboard is a standalone single file that polls `/metrics` every
 //! second. Rates (bytes/sec, msgs/sec) are computed here per-request as
@@ -157,7 +157,7 @@ struct RoomSnapshot {
     id: String,
     clients: usize,
     physics_ready: bool,
-    object_count: u16,
+    object_count: usize,
     claimed_count: usize,
     scene_ready_ms: u64,
 }
@@ -257,7 +257,7 @@ async fn build_snapshot(state: &AppState, full_log: bool) -> MetricsSnapshot {
                     id: id.clone(),
                     clients: cc,
                     physics_ready: r.physics_ready,
-                    object_count: r.next_runtime_id,
+                    object_count: r.scene_object_count as usize + r.runtime_spawn_count as usize,
                     claimed_count: r.claimed_objects.len(),
                     scene_ready_ms: r.scene_ready_ms,
                 });
@@ -391,7 +391,9 @@ fn msg_type_name(b: u8) -> String {
         0x0C => "MSG_PLAYER_POS (0x0C)",
         0x0D => "MSG_PUSH_IMPULSE (0x0D)",
         0x0E => "MSG_TIME_PING (0x0E)",
+        0x0F => "MSG_POSITION_COMPACT (0x0F)",
         0x10 => "MSG_SCENE_INIT (0x10)",
+        0x12 => "MSG_VARIABLE_SNAPSHOT (0x12)",
         0xFF => "MSG_CONTROL (0xFF)",
         _ => return format!("unknown (0x{:02X})", b),
     }
@@ -401,6 +403,8 @@ fn msg_type_name(b: u8) -> String {
 fn ctrl_subtype_name(b: u8) -> String {
     match b {
         0x01 => "CTRL_WELCOME (0x01)",
+        0x02 => "CTRL_CLIENT_CAPS (0x02)",
+        0x03 => "CTRL_STATE_WRITER (0x03)",
         0x05 => "CTRL_CLAIM (0x05)",
         0x06 => "CTRL_RELEASE (0x06)",
         0x07 => "CTRL_CLAIM_REJECTED (0x07)",

@@ -20,11 +20,12 @@ namespace SomniumSpace.Worlds.bently.networking
         // =====================================================================
 
         public const byte MSG_INTERACTION_UPDATE      = 0x03; // client → server: held-object position
-        public const byte MSG_VARIABLE_UPDATE         = 0x04; // NetworkVariables (any → others)
+        public const byte MSG_VARIABLE_UPDATE         = 0x04; // writer/holder → server → others
         public const byte MSG_EVENT                   = 0x06; // fire-and-forget RPCs (any → others)
         public const byte MSG_ANIMATOR                = 0x07; // animator state (any → others)
         public const byte MSG_SCALED_INTERACTION      = 0x09; // scaled held-object position
         public const byte MSG_POSITION_VELOCITY       = 0x0B; // server → clients: authoritative position + velocity
+        public const byte MSG_POSITION_COMPACT        = 0x0F; // server → capable clients: position + rotation, no unused velocity
         /// <summary>Client → server: local player position/capsule (for server-side AOI and player collision). [0x0C][f32 x][f32 y][f32 z][f32 radius][f32 half_height]</summary>
         public const byte MSG_PLAYER_POS              = 0x0C;
         /// <summary>Client → server: apply a push impulse to an object. [0x0D][u16 obj_id][f32 vx][f32 vy][f32 vz]</summary>
@@ -33,14 +34,17 @@ namespace SomniumSpace.Worlds.bently.networking
         public const byte MSG_TIME_PING               = 0x0E;
         /// <summary>Client → server: physics scene description. [0x10][u16 count][N × 60B objects]</summary>
         public const byte MSG_SCENE_INIT              = 0x10;
+        public const byte MSG_VARIABLE_SNAPSHOT       = 0x12; // server → joiner: cached variable records
         public const byte MSG_CONTROL                 = 0xFF;
 
         // =====================================================================
         // Control subtypes  (second byte inside 0xFF messages)
         // =====================================================================
 
-        /// <summary>Server → client on connect: [u16 client_id][u8 needs_scene_init][u64 unix_ms][u64 scene_ready_ms]. scene_ready_ms = 0 until the first SCENE_INIT lands; otherwise the moment physics went live in this room.</summary>
+        /// <summary>Server → client on connect: [u16 client_id][u8 needs_scene_init][u64 unix_ms][u64 scene_ready_ms][u8 persistence_available].</summary>
         public const byte CTRL_WELCOME           = 0x01;
+        public const byte CTRL_CLIENT_CAPS       = 0x02; // client → server: [u8 flags], bit 0 = compact positions
+        public const byte CTRL_STATE_WRITER      = 0x03; // server → client: [u16 elected writer for unclaimed state]
         public const byte CTRL_CLAIM             = 0x05;
         public const byte CTRL_RELEASE           = 0x06;
         /// <summary>Server → requester: the claim was rejected (someone else owns the object). [0xFF][0x07][u16 obj_id]</summary>
@@ -271,6 +275,7 @@ namespace SomniumSpace.Worlds.bently.networking
 
         /// <summary>Wire size of one physics object in a SCENE_INIT message (bytes).</summary>
         public const int BYTES_PER_SCENE_OBJECT = 60;
+        public const int MAX_SCENE_OBJECTS = 16384;
 
         /// <summary>
         /// Write one object's physics description into <paramref name="buf"/> at <paramref name="offset"/>.

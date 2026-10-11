@@ -84,11 +84,11 @@ namespace SomniumSpace.Worlds.bently.networking
         /// True if this client is allowed to write sibling-component state
         /// (NetworkVariables, NetworkAnimator, NetworkTimer, NetworkEvents).
         ///
-        /// Rule: yes if we hold this object, or nobody does. That way grabbed
-        /// items are written by the grabber, and free-floating objects (NPCs,
-        /// ambient props) accept writes from any client — the server just relays.
+        /// Claimed objects are written by their local holder. Unclaimed state
+        /// is written by the room's elected writer, announced by the relay.
         /// </summary>
-        public bool HasAuthority() => IsClaimedLocally || !IsClaimedByRemote;
+        public bool HasAuthority() => IsClaimedLocally ||
+            (!IsClaimedByRemote && NetworkManager.Instance != null && NetworkManager.Instance.IsRoomStateWriter);
 
         // =====================================================================
         // Interpolation + dead reckoning (used by NetworkObject.Interpolation.cs)
@@ -100,6 +100,8 @@ namespace SomniumSpace.Worlds.bently.networking
         private float _interpT        = 1f;
         private float _interpDuration = 0.016f;
         private float _lastUpdateReceivedTime = -1f;
+        internal bool InterpolationTracked;
+        internal bool IsInterpolating => !IsClaimedLocally && _interpT < 1f;
 
         // =====================================================================
         // Delta tracking for held-object sends
@@ -164,7 +166,7 @@ namespace SomniumSpace.Worlds.bently.networking
         /// Called once per frame by NetworkManager for every registered object.
         /// Advances interpolation toward the most recent server state.
         /// </summary>
-        internal void NetworkUpdate(float deltaTime, float currentTime)
+        internal void NetworkUpdate(float deltaTime)
         {
             if (!IsClaimedLocally && _interpT < 1f)
             {

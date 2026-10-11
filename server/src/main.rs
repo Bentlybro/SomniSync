@@ -10,12 +10,13 @@ mod room;
 mod scene;
 mod spawn;
 mod stats;
+mod variable_state;
 
 use log::info;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::net::TcpListener;
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, Semaphore};
 
 use config::ServerConfig;
 use persistence::Db;
@@ -31,20 +32,30 @@ async fn main() {
 
     let config = ServerConfig::from_args();
 
-    // Ensure data directory exists before opening SQLite
-    std::fs::create_dir_all("./data").expect("Failed to create ./data directory");
-    let db = Db::open("./data/persistence.db").expect("Failed to open persistence database");
-    info!("[Server] Persistence database ready at ./data/persistence.db");
+    // Keep persistence independent of the process working directory in service installs.
+    std::fs::create_dir_all(&config.data_dir).expect("Failed to create data directory");
+    let db_path = std::path::Path::new(&config.data_dir).join("persistence.db");
+    let db = Db::open(db_path.to_str().expect("Data path is not UTF-8"))
+        .expect("Failed to open persistence database");
+    info!(
+        "[Server] Persistence database ready at {}",
+        db_path.display()
+    );
 
     let listener = TcpListener::bind(&config.addr)
         .await
         .expect("Failed to bind");
 
-    info!("[Server] SomniSync Relay v2.2 started on ws://{}/", config.addr);
+    info!(
+        "[Server] SomniSync Relay v2.2 started on ws://{}/",
+        config.addr
+    );
     info!("[Server] Multi-room — connect to ws://server/{{room_id}}");
     info!("[Server] Ready for connections...");
 
     let rooms: RoomMap = Arc::new(RwLock::new(HashMap::new()));
+    // Bound concurrent handshakes as well as established WebSockets.
+    let connection_slots = Arc::new(Semaphore::new(512));
 
     // Background: refresh CPU% / RSS at 1 Hz for the dashboard.
     tokio::spawn(stats::sysinfo_loop(stats.clone()));
@@ -67,6 +78,10 @@ async fn main() {
     loop {
         tokio::select! {
             Ok((stream, addr)) = listener.accept() => {
+                let Ok(permit) = connection_slots.clone().try_acquire_owned() else {
+                    log::warn!("[Server] Connection limit reached; rejecting {}", client::redact_peer(addr));
+                    continue;
+                };
                 // Disable Nagle's algorithm — game updates are small and latency-sensitive.
                 // Without this, the kernel may buffer small packets for up to 40 ms.
                 if let Err(e) = stream.set_nodelay(true) {
@@ -74,7 +89,10 @@ async fn main() {
                 }
                 let rooms = rooms.clone();
                 let db = db.clone();
-                tokio::spawn(handler::handle_connection(stream, addr, rooms, db));
+                tokio::spawn(async move {
+                    let _permit = permit;
+                    handler::handle_connection(stream, addr, rooms, db).await;
+                });
             }
             _ = &mut shutdown => {
                 info!("[Server] Shutting down...");

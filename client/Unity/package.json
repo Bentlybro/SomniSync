@@ -2,7 +2,8 @@
   "name": "com.bently.somnisync",
   "version": "1.0.0",
   "displayName": "SomniSync",
-  "description": "Server-authoritative real-time physics networking for Unity VR worlds. Pairs with the SomniSync Rust relay server (Rapier3D physics, 50 Hz sim / 20 Hz broadcast, per-client area-of-interest filtering).",
+  "description": "Server-authoritative physics networking for Unity and Somnium worlds. Includes a setup wizard, Somnium world-script exporter, compact position updates and area-of-interest filtering.",
+  "license": "MPL-2.0",
   "unity": "6000.0",
   "author": {
     "name": "Bently",

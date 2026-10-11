@@ -19,7 +19,7 @@ Every synced object needs **NetworkObject** — it's the foundation that handles
 - `NetworkObject`
 
 ### Throwable ball
-- `NetworkObject` — server-authoritative position/rotation updates include velocity hints from Rapier
+- `NetworkObject` — server-authoritative position/rotation updates use 22-byte compact entities for capable clients
 
 ### Interactive door
 - `NetworkObject` — syncs position
@@ -46,7 +46,7 @@ Every synced object needs **NetworkObject** — it's the foundation that handles
 
 ## Fast-Moving Physics Objects
 
-Older SomniSync docs referenced a separate `NetworkRigidbody` component. The current server-authoritative architecture does not need that component: the relay simulates dynamic bodies in Rapier and broadcasts position, rotation, and velocity in `MSG_POSITION_VELOCITY`.
+Older SomniSync docs referenced a separate `NetworkRigidbody` component. The current server-authoritative architecture does not need that component: the relay simulates dynamic bodies in Rapier and broadcasts position and rotation in `MSG_POSITION_COMPACT` (or position, rotation and velocity to older clients in `MSG_POSITION_VELOCITY`).
 
 ### NetworkObject (required on everything)
 Attach `NetworkObject` to every synced object with a supported root collider. Dynamic Rigidbody objects are simulated on the server; clients interpolate toward the authoritative snapshots.

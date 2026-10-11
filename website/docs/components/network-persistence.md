@@ -2,7 +2,7 @@
 
 Server-backed per-player key/value storage. SQLite on the server, typed API on the client, keyed by the player's stable identity.
 
-Uses the same WebSocket the rest of the networking runs on — no separate HTTP call, no new server dependency. Values survive reconnects, server restarts, and players switching devices (as long as they sign in with the same Somnium account).
+Uses the same WebSocket the rest of the networking runs on — no separate HTTP call, no new server dependency. When explicitly enabled on a trusted relay, values survive reconnects and server restarts. Public relays do not enable this by default because the current client-supplied player ID is not authenticated. The relay advertises this capability in its welcome message. When it is disabled, Unity sends no player identity or persistence requests, and `Load` immediately returns its supplied default.
 
 ## Usage
 
@@ -34,7 +34,7 @@ NetworkPersistence.Load("score", 0, v => score = v, ns: "my_rpg");
 
 ## Identity
 
-Persistence is keyed by a stable per-player ID. Priority:
+Persistence is keyed by a stable per-player ID. The current relay does **not** verify that ID. Do not rely on it for private or valuable player data. On trusted local/dev relays only, set `SOMNISYNC_ALLOW_UNAUTH_PERSISTENCE=1`. Public deployment needs server-verifiable platform identity before enabling persistence. Client ID priority:
 
 1. `NetworkPersistence.PlayerIdProvider` — a `Func<string>` you can set manually to whatever you like.
 2. `PlayerPrefs` fallback — a device-local UUID generated on first use.
@@ -46,12 +46,13 @@ NetworkPersistence.PlayerIdProvider =
     () => SomniumBridge.PlayersContainer?.LocalPlayer?.Properties?.Id;
 ```
 
-The bridge sets this during `OnNetworkReady`, before any Save/Load calls can actually race.
+The bridge supplies the Somnium ID to the client, but this is not proof of account ownership to the relay. Keep persistence disabled on a public relay until token verification exists.
 
 ## Limits
 
-- Namespace: ≤ 255 bytes UTF-8
-- Key: ≤ 255 bytes UTF-8
+- Player identity: ≤ 64 bytes UTF-8
+- Namespace: ≤ 64 bytes UTF-8
+- Key: ≤ 128 bytes UTF-8
 - Value: ≤ 4096 bytes UTF-8 (server rejects larger writes with `CTRL_ERROR`)
 
 Designed for quick typed values, not blobs. If you need to store a chunk of JSON, base64 an image, or similar, serialise to a string and save that — but a proper blob store is out of scope for now.

@@ -8,6 +8,7 @@ const sidebars: SidebarsConfig = {
       label: 'Getting Started',
       items: [
         'getting-started/setup',
+        'getting-started/server-deployment',
         'getting-started/which-components',
         'getting-started/extending-components',
       ],

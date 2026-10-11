@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use half::f16;
@@ -9,7 +9,7 @@ use rapier3d::prelude::{
     RigidBodyBuilder, RigidBodyHandle, RigidBodySet, RigidBodyType,
 };
 
-use crate::protocol::{read_f32, read_u16, MSG_POSITION_VELOCITY};
+use crate::protocol::{read_f32, read_u16, MSG_POSITION_COMPACT, MSG_POSITION_VELOCITY};
 
 const MAX_ABS_POSITION: f32 = 100_000.0;
 const MAX_SHAPE_DIMENSION: f32 = 10_000.0;
@@ -83,8 +83,10 @@ struct PlayerBody {
 impl PhysicsWorld {
     /// Create a new physics world with standard Earth gravity.
     pub fn new() -> Self {
-        let mut integration_params = IntegrationParameters::default();
-        integration_params.dt = 1.0 / 50.0; // 50 Hz simulation
+        let integration_params = IntegrationParameters {
+            dt: 1.0 / 50.0, // 50 Hz simulation
+            ..Default::default()
+        };
 
         Self {
             rigid_bodies: RigidBodySet::new(),
@@ -104,6 +106,12 @@ impl PhysicsWorld {
             player_bodies: HashMap::new(),
             initial_body_type: HashMap::new(),
         }
+    }
+
+    /// Match simulated time to the room's actual physics tick rate.
+    pub fn set_step_hz(&mut self, hz: u32) {
+        debug_assert!(hz > 0);
+        self.integration_params.dt = 1.0 / hz as f32;
     }
 
     /// Update (or create) the kinematic capsule that represents a player in
@@ -306,10 +314,6 @@ impl PhysicsWorld {
         self.initial_body_type.insert(desc.id, body_type);
     }
 
-    pub fn has_object(&self, obj_id: u16) -> bool {
-        self.object_to_body.contains_key(&obj_id)
-    }
-
     /// Advance the simulation by one fixed timestep (dt = 1/50 s).
     pub fn step(&mut self) {
         let gravity = vector![0.0_f32, -9.81, 0.0];
@@ -337,6 +341,9 @@ impl PhysicsWorld {
     /// the current position so the first `update_claimed` can derive a sensible
     /// velocity delta.
     pub fn claim(&mut self, obj_id: u16, owner: u16) -> bool {
+        if let Some(existing) = self.claimed.get(&obj_id) {
+            return existing.owner == owner;
+        }
         let Some(&handle) = self.object_to_body.get(&obj_id) else {
             return false;
         };
@@ -453,6 +460,7 @@ impl PhysicsWorld {
     pub fn update_claimed(
         &mut self,
         obj_id: u16,
+        owner: u16,
         px: f32,
         py: f32,
         pz: f32,
@@ -460,7 +468,10 @@ impl PhysicsWorld {
         qy: f32,
         qz: f32,
         qw: f32,
-    ) {
+    ) -> bool {
+        if self.claimed.get(&obj_id).map(|track| track.owner) != Some(owner) {
+            return false;
+        }
         if !finite_abs_le(px, MAX_ABS_POSITION)
             || !finite_abs_le(py, MAX_ABS_POSITION)
             || !finite_abs_le(pz, MAX_ABS_POSITION)
@@ -470,7 +481,7 @@ impl PhysicsWorld {
             || !qw.is_finite()
             || (qx * qx + qy * qy + qz * qz + qw * qw) <= 1e-6
         {
-            return;
+            return false;
         }
 
         if let Some(&handle) = self.object_to_body.get(&obj_id) {
@@ -503,6 +514,7 @@ impl PhysicsWorld {
             track.last_pos = [px, py, pz];
             track.last_update = now;
         }
+        true
     }
 
     /// Snapshot every dynamic body whose state clients may need to see this tick.
@@ -654,13 +666,19 @@ pub fn build_filtered_message(
     player_pos: Option<[f32; 3]>,
     tick: u32,
     seq: u16,
+    compact: bool,
 ) -> Option<Vec<u8>> {
     if awake.is_empty() && just_slept.is_empty() {
         return None;
     }
 
-    let mut buf = Vec::with_capacity(7 + (awake.len() + just_slept.len()) * 28);
-    buf.push(MSG_POSITION_VELOCITY);
+    let entity_bytes = if compact { 22 } else { 28 };
+    let mut buf = Vec::with_capacity(7 + (awake.len() + just_slept.len()) * entity_bytes);
+    buf.push(if compact {
+        MSG_POSITION_COMPACT
+    } else {
+        MSG_POSITION_VELOCITY
+    });
     push_u16(&mut buf, 0);
     push_u16(&mut buf, seq);
     push_u16(&mut buf, 0);
@@ -669,6 +687,9 @@ pub fn build_filtered_message(
 
     // Awake bodies: standard AOI + LOD filtering.
     for entry in awake {
+        if count == u16::MAX {
+            break;
+        }
         if let Some(pp) = player_pos {
             let dx = entry.pos[0] - pp[0];
             let dy = entry.pos[1] - pp[1];
@@ -681,24 +702,25 @@ pub fn build_filtered_message(
 
             let phase = tick.wrapping_add(entry.obj_id as u32);
             if d_sq > AOI_MID_SQ {
-                if phase % LOD_FAR_SKIP != 0 {
+                if !phase.is_multiple_of(LOD_FAR_SKIP) {
                     continue;
                 }
-            } else if d_sq > AOI_NEAR_SQ {
-                if phase % LOD_MID_SKIP != 0 {
-                    continue;
-                }
+            } else if d_sq > AOI_NEAR_SQ && !phase.is_multiple_of(LOD_MID_SKIP) {
+                continue;
             }
         }
 
-        push_entity(&mut buf, entry);
+        push_entity(&mut buf, entry, compact);
         count += 1;
     }
 
     // Sleep transitions: bypass AOI entirely so every client learns the
     // final resting state even if they were nowhere near when it settled.
     for entry in just_slept {
-        push_entity(&mut buf, entry);
+        if count == u16::MAX {
+            break;
+        }
+        push_entity(&mut buf, entry, compact);
         count += 1;
     }
 
@@ -724,21 +746,23 @@ pub fn build_initial_snapshot_message(entries: &[DynamicSnapshot]) -> Option<Vec
     push_u16(&mut buf, 0); // sequence 0 = initial snapshot
     push_u16(&mut buf, entries.len().min(u16::MAX as usize) as u16);
     for entry in entries.iter().take(u16::MAX as usize) {
-        push_entity(&mut buf, entry);
+        push_entity(&mut buf, entry, false);
     }
     Some(buf)
 }
 
 #[inline]
-fn push_entity(buf: &mut Vec<u8>, entry: &DynamicSnapshot) {
+fn push_entity(buf: &mut Vec<u8>, entry: &DynamicSnapshot, compact: bool) {
     push_u16(buf, entry.obj_id);
     push_f32(buf, entry.pos[0]);
     push_f32(buf, entry.pos[1]);
     push_f32(buf, entry.pos[2]);
     push_quat(buf, entry.quat);
-    push_f16(buf, entry.vel[0]);
-    push_f16(buf, entry.vel[1]);
-    push_f16(buf, entry.vel[2]);
+    if !compact {
+        push_f16(buf, entry.vel[0]);
+        push_f16(buf, entry.vel[1]);
+        push_f16(buf, entry.vel[2]);
+    }
 }
 
 // ─── Binary encoding helpers ──────────────────────────────────────────────────
@@ -795,6 +819,7 @@ fn push_quat(buf: &mut Vec<u8>, q: [f32; 4]) {
 pub fn parse_scene_init(data: &[u8]) -> Option<Vec<ObjectDesc>> {
     const OBJECT_BYTES: usize = 60;
     const HEADER_BYTES: usize = 3; // [0x10][u16 count]
+    const MAX_OBJECTS: usize = 16_384;
 
     if data.len() < HEADER_BYTES {
         warn!("[Physics] SCENE_INIT too short ({} bytes)", data.len());
@@ -806,10 +831,14 @@ pub fn parse_scene_init(data: &[u8]) -> Option<Vec<ObjectDesc>> {
     }
 
     let count = read_u16(data, 1) as usize;
+    if count > MAX_OBJECTS {
+        warn!("[Physics] SCENE_INIT exceeds {} objects", MAX_OBJECTS);
+        return None;
+    }
     let expected = HEADER_BYTES + count * OBJECT_BYTES;
-    if data.len() < expected {
+    if data.len() != expected {
         warn!(
-            "[Physics] SCENE_INIT truncated: expected {} bytes for {} objects, got {}",
+            "[Physics] SCENE_INIT length mismatch: expected {} bytes for {} objects, got {}",
             expected,
             count,
             data.len()
@@ -818,10 +847,15 @@ pub fn parse_scene_init(data: &[u8]) -> Option<Vec<ObjectDesc>> {
     }
 
     let mut objects = Vec::with_capacity(count);
+    let mut seen_ids = HashSet::with_capacity(count);
     let mut offset = HEADER_BYTES;
 
     for _ in 0..count {
         let id = read_u16(data, offset);
+        if !seen_ids.insert(id) {
+            warn!("[Physics] SCENE_INIT contains duplicate object id={}", id);
+            return None;
+        }
         let body_type = data[offset + 2];
         let shape_type = data[offset + 3];
         offset += 4;
@@ -893,6 +927,7 @@ pub fn parse_scene_init(data: &[u8]) -> Option<Vec<ObjectDesc>> {
     Some(objects)
 }
 
+#[allow(clippy::too_many_arguments)] // Mirrors the fixed-width scene object wire fields.
 fn valid_scene_object(
     position: [f32; 3],
     rotation_euler_deg: [f32; 3],
@@ -918,4 +953,75 @@ fn valid_scene_object(
         && (0.0..=MAX_DAMPING).contains(&linear_damping)
         && angular_damping.is_finite()
         && (0.0..=MAX_DAMPING).contains(&angular_damping)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn snapshot(id: u16, x: f32) -> DynamicSnapshot {
+        DynamicSnapshot {
+            obj_id: id,
+            pos: [x, 2.0, 3.0],
+            quat: [0.0, 0.0, 0.0, 1.0],
+            vel: [4.0, 5.0, 6.0],
+        }
+    }
+
+    #[test]
+    fn compact_positions_keep_pose_and_save_six_bytes_per_object() {
+        let objects = [snapshot(7, 1.0), snapshot(8, 2.0)];
+        let full = build_filtered_message(&objects, &[], None, 1, 9, false).unwrap();
+        let compact = build_filtered_message(&objects, &[], None, 1, 9, true).unwrap();
+        assert_eq!(full.len(), 7 + 2 * 28);
+        assert_eq!(compact.len(), 7 + 2 * 22);
+        assert_eq!(&full[..7], &[MSG_POSITION_VELOCITY, 0, 0, 9, 0, 2, 0]);
+        assert_eq!(&compact[..7], &[MSG_POSITION_COMPACT, 0, 0, 9, 0, 2, 0]);
+        assert_eq!(&full[7..29], &compact[7..29]);
+        assert_eq!(&full[35..57], &compact[29..51]);
+    }
+
+    #[test]
+    fn sleeping_transition_bypasses_aoi() {
+        let sleeping = [snapshot(7, 1000.0)];
+        let msg = build_filtered_message(&[], &sleeping, Some([0.0; 3]), 1, 1, true).unwrap();
+        assert_eq!(msg.len(), 29);
+        assert_eq!(read_u16(&msg, 5), 1);
+    }
+
+    #[test]
+    fn scene_init_rejects_duplicates_and_trailing_bytes() {
+        let mut one = vec![0x10, 1, 0];
+        let mut object = vec![0u8; 60];
+        object[36..40].copy_from_slice(&1.0f32.to_le_bytes());
+        one.extend_from_slice(&object);
+        assert!(parse_scene_init(&one).is_some());
+        let mut extra = one.clone();
+        extra.push(0);
+        assert!(parse_scene_init(&extra).is_none());
+        let mut duplicate = one;
+        duplicate[1] = 2;
+        duplicate.extend_from_slice(&object);
+        assert!(parse_scene_init(&duplicate).is_none());
+    }
+
+    #[test]
+    fn claimed_body_rejects_another_owner_until_release() {
+        let mut scene = vec![0x10, 1, 0];
+        let mut object = vec![0u8; 60];
+        object[..2].copy_from_slice(&7u16.to_le_bytes());
+        object[28..32].copy_from_slice(&0.5f32.to_le_bytes());
+        object[40..44].copy_from_slice(&1.0f32.to_le_bytes());
+        scene.extend_from_slice(&object);
+        let desc = parse_scene_init(&scene).unwrap().remove(0);
+        let mut world = PhysicsWorld::new();
+        world.add_object(&desc);
+
+        assert!(world.claim(7, 1));
+        assert!(!world.claim(7, 2));
+        assert!(!world.update_claimed(7, 2, 1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 1.0));
+        assert_eq!(world.claimed.get(&7).unwrap().owner, 1);
+        world.release(7);
+        assert!(world.claim(7, 2));
+    }
 }

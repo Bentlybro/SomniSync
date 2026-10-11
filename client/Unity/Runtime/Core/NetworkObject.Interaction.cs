@@ -46,6 +46,7 @@ namespace SomniumSpace.Worlds.bently.networking
 
             IsClaimedLocally = true;
             ClaimedByClient  = NetworkManager.Instance.ClientId;
+            NetworkManager.Instance.TrackLocalClaim(this);
 
             if (_hasRb && enableLocalPhysics)
                 _rb.isKinematic = false;
@@ -66,6 +67,7 @@ namespace SomniumSpace.Worlds.bently.networking
 
             IsClaimedLocally = false;
             ClaimedByClient  = 0;
+            NetworkManager.Instance.UntrackLocalClaim(this);
 
             if (_hasRb)
             {
@@ -108,8 +110,6 @@ namespace SomniumSpace.Worlds.bently.networking
         /// </summary>
         public void OnRemoteRelease(Vector3 pos, Quaternion rot, ulong serverMs)
         {
-            ClaimedByClient = 0;
-
             // Reject older releases than what we've already seen. Matters
             // for late-joiner replay: the server sends us the stored
             // last-release for each object right after welcome, and that
@@ -121,6 +121,8 @@ namespace SomniumSpace.Worlds.bently.networking
             // (empty release); always accept it so reset paths still work.
             if (serverMs != 0 && serverMs < LastReleaseServerMs)
                 return;
+
+            ClaimedByClient = 0;
 
             if (_hasRb)
                 _rb.isKinematic = true;
@@ -148,6 +150,7 @@ namespace SomniumSpace.Worlds.bently.networking
             if (!IsClaimedLocally) return;
             IsClaimedLocally = false;
             ClaimedByClient  = 0;
+            if (NetworkManager.Instance != null) NetworkManager.Instance.UntrackLocalClaim(this);
             if (_hasRb)
                 _rb.isKinematic = true;
         }
@@ -161,6 +164,7 @@ namespace SomniumSpace.Worlds.bently.networking
         {
             IsClaimedLocally = false;
             ClaimedByClient  = 0;
+            if (NetworkManager.Instance != null) NetworkManager.Instance.UntrackLocalClaim(this);
             if (_hasRb)
                 _rb.isKinematic = true;
         }

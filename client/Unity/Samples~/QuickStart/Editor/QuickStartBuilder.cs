@@ -29,14 +29,6 @@ namespace SomniumSpace.Worlds.bently.networking.Samples.Editor
         [MenuItem("Tools/SomniSync/Create Quick Start Scene")]
         public static void CreateScene()
         {
-            // Save any unsaved changes before nuking the active scene.
-            if (!EditorSceneManager.SaveCurrentModifiedScenesIfUserWantsTo())
-                return;
-
-            var scene = EditorSceneManager.NewScene(NewSceneSetup.DefaultGameObjects, NewSceneMode.Single);
-
-            BuildScene();
-
             string savePath = EditorUtility.SaveFilePanelInProject(
                 "Save Quick Start scene",
                 "QuickStart",
@@ -45,21 +37,34 @@ namespace SomniumSpace.Worlds.bently.networking.Samples.Editor
                 "Assets");
 
             if (string.IsNullOrEmpty(savePath))
+                return;
+            if (AssetDatabase.LoadAssetAtPath<SceneAsset>(savePath) != null)
             {
-                Debug.Log("[SomniSync Quick Start] Save cancelled — scene was built but not saved.");
+                Debug.LogError("[SomniSync Quick Start] Scene already exists: " + savePath);
                 return;
             }
+            if (!EditorSceneManager.SaveCurrentModifiedScenesIfUserWantsTo()) return;
 
-            EditorSceneManager.SaveScene(scene, savePath);
+            var scene = EditorSceneManager.NewScene(NewSceneSetup.DefaultGameObjects, NewSceneMode.Single);
+            BuildScene();
+
+            if (!EditorSceneManager.SaveScene(scene, savePath))
+            {
+                Debug.LogError("[SomniSync Quick Start] Could not save scene: " + savePath);
+                return;
+            }
             Debug.Log($"[SomniSync Quick Start] Scene saved to {savePath}. Press Play, with the relay server running on ws://localhost:9090.");
         }
 
         private static void BuildScene()
         {
             // ── Ground ────────────────────────────────────────────────────
-            var ground = GameObject.CreatePrimitive(PrimitiveType.Plane);
+            // BoxCollider is supported by the relay; a Unity Plane's
+            // MeshCollider would be skipped during scene initialization.
+            var ground = GameObject.CreatePrimitive(PrimitiveType.Cube);
             ground.name = "Ground";
-            ground.transform.localScale = new Vector3(4f, 1f, 4f); // 40 x 40 metres
+            ground.transform.position = new Vector3(0f, -0.5f, 0f);
+            ground.transform.localScale = new Vector3(40f, 1f, 40f);
 
             // ── NetworkManager ────────────────────────────────────────────
             var managerGo = new GameObject("NetworkManager");

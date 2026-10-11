@@ -12,7 +12,7 @@ Define variables visually — name, type, default value, sync mode, and persiste
 | `type` | `Int`, `Float`, `Bool`, or `String` |
 | `defaultValue` | Starting value (as string, parsed on init) |
 | `syncMode` | `OnChange` (batched, default) or `Immediate` (instant) |
-| `persistForLateJoiners` | Include in snapshot so late joiners get current state |
+| `persistForLateJoiners` | Cache the latest value on the relay and replay it to late joiners (default: on) |
 
 ## Code API
 
@@ -47,12 +47,9 @@ vars.DefineVariable("score", NetworkVariables.VarType.Int,
     persist: true);
 ```
 
-## Authority
+## Authority and conflicts
 
-Variables can only be set by the client that **owns** the object:
-- **Master** can set variables on any unowned object
-- **Spectators** can set variables on objects they've **claimed** (via interaction)
-- This prevents conflicts — only one client writes at a time
+The relay elects one room state writer and announces it with `CTRL_STATE_WRITER`. Only that client may write variables and animator state on an **unclaimed** object. A claimed object's holder writes its state until release. Other clients can send `NetworkEvents` to the authority. The writer moves to another connected client if it disconnects. This prevents duplicate timers and accidental concurrent writes, but the relay does not validate game rules such as who may change health or score.
 
 ## Sync Modes
 
@@ -61,20 +58,18 @@ Variables can only be set by the client that **owns** the object:
 | `OnChange` | Batched with the next tick | Most variables (health, scores, toggles) |
 | `Immediate` | Instantly when set | Game-critical events (game over, round start) |
 
-## Late Joiner Sync
+## Late joiners
 
-Variables with `persistForLateJoiners = true` (default) are included in the snapshot sent to new clients. They'll see the current state, not defaults.
-
-Set `persistForLateJoiners = false` for ephemeral data (e.g., "player is typing" indicators).
+The relay caches the latest transmitted value of each variable with `persistForLateJoiners` enabled and sends it in `0x12` snapshot chunks when a client joins. This cache is in memory, limited to 16,384 values and 2 MiB per room, and disappears when the room empties or the relay restarts. Variables marked transient are not replayed. This is separate from account [persistence](network-persistence.md).
 
 ## Protocol
 
 Message type `0x04`:
 ```
-[0x04][u16 object_id][u8 var_count][per var: u8 name_len, name, u8 type, u16 value_len, value]
+[0x04][u16 object_id][u8 var_count][per var: u8 name_len, name, u8 type_flags, u16 value_len, value]
 ```
 
-Type bytes: `0` = Int, `1` = Float, `2` = Bool, `3` = String
+The low bits of `type_flags` are `0` = Int, `1` = Float, `2` = Bool, `3` = String. Bit 7 requests late-join replay. Names are 1–64 UTF-8 bytes; values are at most 4096 bytes. The relay rejects malformed updates. `0x12` snapshots contain `[u16 count]` followed by `[u16 object_id]` and one variable record for each cached value.
 
 ## Example: Door
 

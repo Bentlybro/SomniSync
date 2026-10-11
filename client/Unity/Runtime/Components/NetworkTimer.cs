@@ -5,14 +5,14 @@ using UnityEngine.Events;
 namespace SomniumSpace.Worlds.bently.networking
 {
     /// <summary>
-    /// Networked timer — authority-driven countdown synced to all clients.
-    /// 
-    /// The authority (master or claimed owner) runs the countdown and syncs
+    /// Networked timer — the elected room state writer runs the countdown.
+    ///
+    /// The authority (room writer or claimed owner) runs the countdown and syncs
     /// the remaining time via NetworkVariables. Clients display the value
     /// and receive events (started, tick, finished).
-    /// 
-    /// Survives master transfers — the new master picks up from the synced value.
-    /// 
+    ///
+    /// On writer handoff, the new writer continues from the latest received value.
+    ///
     /// Usage:
     ///   timer.StartTimer(60f);     // 60 second countdown
     ///   timer.OnFinished.AddListener(() => OpenDoor());
@@ -45,6 +45,7 @@ namespace SomniumSpace.Worlds.bently.networking
         private float _remaining;
         private float _syncTimer;
         private float _lastSyncedValue;
+        private bool _autoStartTriggered;
 
         private const string VAR_REMAINING = "_timer_remaining";
         private const string VAR_RUNNING = "_timer_running";
@@ -61,16 +62,31 @@ namespace SomniumSpace.Worlds.bently.networking
             _vars.DefineVariable(VAR_REMAINING, NetworkVariables.VarType.Float);
             _vars.DefineVariable(VAR_RUNNING, NetworkVariables.VarType.Bool);
             _vars.DefineVariable(VAR_DURATION, NetworkVariables.VarType.Float);
-            _vars.OnValueChanged += OnVarChanged;
+            _vars.OnRemoteValueChanged += OnVarChanged;
+            // A runtime spawn's replay can arrive before this Start callback.
+            // Restore the already-applied values in that case.
+            float syncedDuration = _vars.GetFloat(VAR_DURATION);
+            if (syncedDuration > 0f) duration = syncedDuration;
+            _remaining = _vars.GetFloat(VAR_REMAINING);
+            _running = _vars.GetBool(VAR_RUNNING);
+            if (_running) OnStarted?.Invoke();
+        }
 
-            if (autoStart && HasAuthority())
-            {
-                StartTimer(duration);
-            }
+        protected virtual void OnDestroy()
+        {
+            if (_vars != null) _vars.OnRemoteValueChanged -= OnVarChanged;
         }
 
         protected virtual void Update()
         {
+            var manager = NetworkManager.Instance;
+            if (autoStart && !_autoStartTriggered && manager != null &&
+                manager.IsNetworkReady && manager.IsPhysicsReady &&
+                manager.IsSceneBootstrapClient && manager.IsRoomStateWriter)
+            {
+                _autoStartTriggered = true;
+                StartTimer(duration);
+            }
             if (HasAuthority())
                 AuthorityUpdate();
             else
@@ -102,7 +118,7 @@ namespace SomniumSpace.Worlds.bently.networking
 
             // Sync at configured rate
             _syncTimer += Time.deltaTime;
-            if (_syncTimer >= 1f / syncRate)
+            if (_syncTimer >= 1f / Mathf.Max(0.1f, syncRate))
             {
                 _syncTimer = 0f;
                 if (Mathf.Abs(_remaining - _lastSyncedValue) > 0.05f)
@@ -125,8 +141,6 @@ namespace SomniumSpace.Worlds.bently.networking
 
         private void OnVarChanged(string name, NetworkVariables.VarType type)
         {
-            if (HasAuthority()) return;
-
             switch (name)
             {
                 case VAR_REMAINING:

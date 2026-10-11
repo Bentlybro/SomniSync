@@ -8,12 +8,12 @@ namespace SomniumSpace.Worlds.bently.networking
     /// <summary>
     /// Syncs Animator state and triggers across clients.
     /// Add alongside NetworkObject + an Animator component.
-    /// 
+    ///
     /// Syncs:
     /// - Current state hash + normalized time
     /// - Bool/Int/Float parameters (change detection)
     /// - Triggers (fire-and-forget via events)
-    /// 
+    ///
     /// Usage:
     ///   var netAnim = GetComponent&lt;NetworkAnimator&gt;();
     ///   netAnim.SetTrigger("attack");  // Syncs to all clients
@@ -254,10 +254,10 @@ namespace SomniumSpace.Worlds.bently.networking
         }
 
         /// <summary>Called by NetworkManager when receiving 0x07 for this object.</summary>
-        public void ApplyRemoteState(byte[] data, int startOffset)
+        public void ApplyRemoteState(byte[] data, int startOffset, int length)
         {
             if (_animator == null) return;
-            if (startOffset + 9 > data.Length) return; // need stateHash(4) + normTime(4) + paramCount(1)
+            if (length > data.Length || startOffset < 0 || startOffset + 9 > length) return; // need stateHash(4) + normTime(4) + paramCount(1)
 
             int offset = startOffset;
             int stateHash = BitConverter.ToInt32(data, offset); offset += 4;
@@ -267,16 +267,16 @@ namespace SomniumSpace.Worlds.bently.networking
             // Apply parameters
             for (int i = 0; i < paramCount; i++)
             {
-                if (offset >= data.Length) break;
+                if (offset >= length) break;
                 int nameLen = data[offset++];
-                if (nameLen < 0 || offset + nameLen + 5 > data.Length) break; // name + type(1) + value(4)
+                if (offset + nameLen + 5 > length) break; // name + type(1) + value(4)
                 string paramName = Encoding.UTF8.GetString(data, offset, nameLen);
                 offset += nameLen;
 
-                if (offset >= data.Length) break;
+                if (offset >= length) break;
                 byte type = data[offset++];
 
-                if (offset + 4 > data.Length) break;
+                if (offset + 4 > length) break;
                 switch (type)
                 {
                     case 0: // int

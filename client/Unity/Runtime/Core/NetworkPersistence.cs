@@ -72,13 +72,18 @@ namespace SomniumSpace.Worlds.bently.networking
             // Send player identity to server so it can key persistence data
             string id = GetPlayerId();
             byte[] idBytes = Encoding.UTF8.GetBytes(id);
+            if (idBytes.Length == 0 || idBytes.Length > 64)
+            {
+                Debug.LogError("[Persist] Player identity must be 1-64 UTF-8 bytes; persistence request skipped.");
+                return;
+            }
             byte[] buf = new byte[3 + idBytes.Length];
             buf[0] = 0xFF;
             buf[1] = Protocol.CTRL_PLAYER_IDENT;
-            buf[2] = (byte)Mathf.Min(idBytes.Length, 255);
+            buf[2] = (byte)idBytes.Length;
             Array.Copy(idBytes, 0, buf, 3, idBytes.Length);
             mgr.SendBinaryPublic(buf);
-            Debug.Log($"[Persist] Registered player identity: {id}");
+            Debug.Log("[Persist] Player identity sent; the relay may keep persistence disabled.");
         }
 
         // =====================================================================
@@ -195,9 +200,17 @@ namespace SomniumSpace.Worlds.bently.networking
         private static void SendGet(string key, string ns, Action<string, bool> callback)
         {
             var mgr = NetworkManager.Instance;
-            if (mgr == null || !mgr.IsConnected)
+            if (mgr == null || !mgr.IsConnected || !mgr.PersistenceAvailable)
             {
-                Debug.LogWarning($"[Persist] Load('{key}') called before connection is ready.");
+                callback?.Invoke(null, false);
+                return;
+            }
+
+            byte[] nsBytes  = Encoding.UTF8.GetBytes(ns ?? "");
+            byte[] keyBytes = Encoding.UTF8.GetBytes(key ?? "");
+            if (nsBytes.Length > 64 || keyBytes.Length > 128)
+            {
+                Debug.LogError("[Persist] Namespace or key exceeds the relay limit (64/128 UTF-8 bytes).");
                 callback?.Invoke(null, false);
                 return;
             }
@@ -222,22 +235,6 @@ namespace SomniumSpace.Worlds.bently.networking
             ushort id = _reqId;
             _pending[id] = callback;
 
-            byte[] nsBytes  = Encoding.UTF8.GetBytes(ns);
-            byte[] keyBytes = Encoding.UTF8.GetBytes(key);
-
-            if (nsBytes.Length > 255)
-            {
-                Debug.LogError($"[Persist] Namespace '{ns}' exceeds 255 bytes when UTF-8 encoded, aborting Load");
-                callback?.Invoke(null, false);
-                return;
-            }
-            if (keyBytes.Length > 255)
-            {
-                Debug.LogError($"[Persist] Key '{key}' exceeds 255 bytes when UTF-8 encoded, aborting Load");
-                callback?.Invoke(null, false);
-                return;
-            }
-
             // [0xFF][0x22][u16 req_id][u8 ns_len][ns][u8 key_len][key]
             int size = 6 + nsBytes.Length + keyBytes.Length;
             byte[] buf = new byte[size];
@@ -251,26 +248,25 @@ namespace SomniumSpace.Worlds.bently.networking
             buf[o++] = (byte)keyBytes.Length;
             Array.Copy(keyBytes, 0, buf, o, keyBytes.Length);
 
-            mgr.SendBinaryPublic(buf);
+            if (!mgr.TrySendBinaryPublic(buf))
+            {
+                _pending.Remove(id);
+                callback?.Invoke(null, false);
+            }
         }
 
         private static void SendSet(string key, string value, string ns)
         {
             var mgr = NetworkManager.Instance;
-            if (mgr == null || !mgr.IsConnected) return;
+            if (mgr == null || !mgr.IsConnected || !mgr.PersistenceAvailable) return;
 
-            byte[] nsBytes  = Encoding.UTF8.GetBytes(ns);
-            byte[] keyBytes = Encoding.UTF8.GetBytes(key);
-            byte[] valBytes = Encoding.UTF8.GetBytes(value);
+            byte[] nsBytes  = Encoding.UTF8.GetBytes(ns ?? "");
+            byte[] keyBytes = Encoding.UTF8.GetBytes(key ?? "");
+            byte[] valBytes = Encoding.UTF8.GetBytes(value ?? "");
 
-            if (nsBytes.Length > 255)
+            if (nsBytes.Length > 64 || keyBytes.Length > 128 || valBytes.Length > 4096)
             {
-                Debug.LogError($"[Persist] Namespace '{ns}' exceeds 255 bytes when UTF-8 encoded, aborting Save");
-                return;
-            }
-            if (keyBytes.Length > 255)
-            {
-                Debug.LogError($"[Persist] Key '{key}' exceeds 255 bytes when UTF-8 encoded, aborting Save");
+                Debug.LogError("[Persist] Save exceeds the relay limit (64-byte namespace, 128-byte key, 4096-byte value).");
                 return;
             }
 

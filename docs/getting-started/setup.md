@@ -1,53 +1,64 @@
-# Getting Started
+# Getting started
 
-## Server
+SomniSync has two parts: a Rust relay that runs outside the world, and Unity scripts that run in each player's world. Players in the same room must use the same scene, prefab list, and SomniSync version.
 
-1. Install [Rust](https://rustup.rs/).
-2. Build the relay:
-   ```bash
-   cd server
-   cargo build --release
-   ```
-3. Run with two positional arguments — WebSocket bind + HTTP dashboard bind:
-   ```bash
-   # Windows
-   .\target\release\somnium-relay.exe
+## 1. Start a relay
 
-   # Linux / macOS (production shape: game public, dashboard local-only)
-   ./target/release/somnium-relay 0.0.0.0:9090 127.0.0.1:9091
-   ```
+On a machine with Docker Compose, from the repository root:
 
-Defaults: `ws://0.0.0.0:9090` for the game socket, `http://127.0.0.1:9091/` for the dashboard. If dashboard binding fails (port taken, etc.) the server logs a warning and keeps serving game traffic — the dashboard is strictly opt-in observability.
-
-Unauthenticated player persistence is disabled by default. For trusted local/dev relays only, set `SOMNISYNC_ALLOW_UNAUTH_PERSISTENCE=1` before starting the server; public relays should use a server-verifiable platform identity before enabling persistence.
-
-## Unity / Somnium client
-
-1. Copy `client/Unity/` into your Somnium world scripts folder.
-2. Add a **NetworkManager** component to a GameObject in the scene.
-3. Set `Server URL` to your relay (e.g. `ws://localhost:9090`).
-4. Set `Room ID` — clients in the same room share a physics world. Leave empty for `default`.
-5. Add a **NetworkObject** component to every GameObject you want synced.
-6. *(Optional)* Add **SomniumBridgeIntegration** — hooks the player's Somnium account UUID into persistence + AOI in one line.
-7. *(Optional)* Add **NetworkStats** for an F3 debug overlay, or **NetworkDebug** for per-tick Unity-console diagnostic dumps.
-
-`PlayerPushDetector` attaches to the resolved local player automatically at runtime if `autoAttachPushDetector` is enabled — or just rely on the server's Rapier player capsule, which handles continuous push physics from your normal movement.
-
-## What happens on connect
-
-The server is always the physics authority. There's no "master" client to promote or fail over.
-
-1. Client connects to `ws://server:9090/<room_id>`.
-2. Server replies with `CTRL_WELCOME` carrying your client ID, a server-unix-ms timestamp, and the shared `scene_ready_ms` (0 if the room's physics hasn't been bootstrapped yet).
-3. **First client in an empty room** also gets `needs_scene_init = 1` in the welcome. It replies with `MSG_SCENE_INIT` describing the scene's physics colliders, the server builds its Rapier world from that, and broadcasts `CTRL_PHYSICS_READY` to every current and future client.
-4. Subsequent clients just start receiving `MSG_POSITION_VELOCITY` broadcasts 20 times a second.
-
-Physics is simulated on the server at 50 Hz. Each client only receives updates for objects within its AOI radius (150 m by default, with closer objects broadcast more frequently).
-
-## Namespace
-
-All scripts use:
-
-```csharp
-namespace SomniumSpace.Worlds.bently.networking
+```bash
+docker compose up -d --build
+docker compose logs -f relay
 ```
+
+The game socket listens on the host's loopback at `ws://127.0.0.1:9090`. The dashboard is also available **only on the host's loopback** at `http://127.0.0.1:9091/`. The SQLite database stays in the `somnisync-data` Docker volume across container updates. Change the host bind address or ports with `SOMNISYNC_WS_HOST`, `SOMNISYNC_PORT`, and `SOMNISYNC_METRICS_PORT` environment variables before running Compose; see `.env.example`.
+
+If you prefer a native binary, install Rust and run:
+
+```bash
+cd server
+cargo build --locked --release
+./target/release/somnium-relay 0.0.0.0:9090 127.0.0.1:9091
+```
+
+On Windows, use `target\release\somnium-relay.exe`. Run `somnium-relay --help` for bind and data-directory environment variables. Set `SOMNISYNC_DATA_DIR` to a persistent location for a service install. The relay creates `persistence.db` there.
+
+For public players, point a DNS name at the server and use a TLS reverse proxy so the Unity URL is `wss://your-relay.example.com`. Keep the dashboard on loopback or behind authentication. See [server deployment](server-deployment.md) for a working Caddy example.
+
+## 2. Install in Unity
+
+Unity 6 (6000.0+) is required. In **Window → Package Manager → + → Add package from git URL**, enter:
+
+```text
+https://github.com/Bentlybro/SomniSync.git?path=client/Unity
+```
+
+Open **Tools → SomniSync Package → Setup Wizard** (it also opens once after import).
+
+### Somnium world upload
+
+Do this **before adding SomniSync components to a scene**:
+
+1. Enter your Somnium creator ID in the wizard and click **Prepare world scripts**. The wizard copies the runtime and editor scripts to `Assets/#User/<creator>.somnisync` and changes their namespace to `SomniumSpace.Worlds.<creator>.somnisync`. Existing Unity `.meta` files are kept when updating.
+2. Wait for Unity to compile. Remove the original SomniSync package in Package Manager, leaving the copy in `Assets/#User/`. This ensures the world uses the creator-specific scripts rather than the generic package assembly.
+3. Reopen **Tools → SomniSync → Setup Wizard** from the copied editor scripts. Use its buttons to create the manager and add `NetworkObject` to selected objects.
+
+If you already attached components from the generic package, replace those components with the copied world versions before removing the package; Unity cannot automatically change a component's script type across namespaces. Keep a scene backup while migrating an existing world.
+
+For an ordinary Unity project that is not uploaded to Somnium, you can use the Package Manager components directly and skip the copy step.
+
+## 3. Configure a scene
+
+1. Set the relay base URL in the wizard, for example `ws://127.0.0.1:9090` for local testing or `wss://your-relay.example.com` for players. Do not put a room or query in the URL.
+2. Choose a room containing at most 64 letters, numbers, `_`, `-`, or `.`. Every player in the same world must use the same room.
+3. Click **Create or update Network Manager**. In a Somnium project with the `SOMNIUM_SDK` scripting define, the wizard also adds `SomniumBridgeIntegration` to resolve the local player for area-of-interest filtering.
+4. Select each movable Box, Sphere, or Capsule Collider object and click **Add NetworkObject**. A Rigidbody enables server physics and grabbing. Static colliders without NetworkObject are sent to the server automatically. MeshColliders are not currently simulated by the relay.
+5. Set **Scene version** to `1` for a new world. Increase it after changes to networking behavior or unsupported geometry that the fingerprint cannot detect. Click **Validate scene**, fix errors, save, and test with **Save scene and Play**. **Test relay connection** uses a disposable room to check the WebSocket endpoint.
+
+The first client entering an empty room sends the collider description. The relay owns physics after that and broadcasts positions to later clients. A local player transform enables distance filtering; without one, each client may receive much more data. For the Somnium SDK integration, verify `SOMNIUM_SDK` is defined in the world assembly and the player rig is resolved at runtime.
+
+## 4. Verify and operate
+
+Run two real clients with the same scene, scene version and room. The relay rejects a different compatibility fingerprint before that client joins. Confirm they see the same moving objects, can claim and release them, and reconnect cleanly. Watch the dashboard for physics step time, outgoing bandwidth, and dropped messages. Use the [scene load benchmark](../ops/benchmarking.md) before claiming a player or object capacity for your hardware.
+
+For local correctness checks, a relay on the same PC is fine. For latency and capacity results, place the relay and clients on separate machines and include real network delay. The current measured scenarios and limits are in the repository README.

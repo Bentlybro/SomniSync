@@ -1,150 +1,77 @@
 # SomniSync
 
-Server-authoritative real-time physics networking for Unity. Designed for VR worlds with thousands of objects and dozens of concurrent players. Rust relay server running Rapier3D physics, binary protocol, per-client area-of-interest filtering.
+SomniSync is a server-authoritative networking system for Unity and Somnium Space worlds. A Rust relay runs Rapier3D physics; Unity clients send player movement, interactions and game events, then receive compact object updates. Sleeping objects send no position updates. Distance filtering reduces traffic when the local player is known.
 
-Built for [Somnium Space](https://somniumspace.com) VR but works with any Unity project using `System.Net.WebSockets`.
+**Status:** tested as a working preview, with further real-world validation needed before a general release. The relay has no player authentication or private-room access control. [Deployment guidance](docs/getting-started/server-deployment.md) explains the current security boundaries.
 
-📖 **[Full Documentation](https://bentlybro.github.io/SomniSync/)**
+## Quick start
 
-## Install
+### Relay
 
-In Unity: **Window → Package Manager → + → Add package from git URL** and paste:
+On a machine with Docker Compose:
 
+```bash
+git clone https://github.com/Bentlybro/SomniSync.git
+cd SomniSync
+docker compose up -d --build
+docker compose logs -f relay
 ```
+
+The game WebSocket is available on this host at `ws://127.0.0.1:9090`; the metrics dashboard is at `http://127.0.0.1:9091/`. Compose keeps SQLite data in a named volume. For public worlds, add a TLS reverse proxy and use its `wss://` address. The [deployment guide](docs/getting-started/server-deployment.md) includes a Caddy example, native Windows and Linux builds, and updates.
+
+### Unity / Somnium world
+
+Unity 6 (6000.0+) is required. In **Window → Package Manager → + → Add package from git URL**, use:
+
+```text
 https://github.com/Bentlybro/SomniSync.git?path=client/Unity
 ```
 
-Unity 6 (6000.0+) required.
+Open **Tools → SomniSync Package → Setup Wizard**. For a Somnium upload, first enter your creator ID and click **Prepare world scripts**. This creates `Assets/#User/<creator>.somnisync` with the correct `SomniumSpace.Worlds.<creator>.somnisync` namespace. Remove the generic Package Manager copy after the generated scripts compile, then reopen **Tools → SomniSync → Setup Wizard** from the world copy and add the manager and components. The [step-by-step guide](docs/getting-started/setup.md) covers migration if your scene already uses the generic package types.
 
-## Quick Start
+Set a reachable relay base URL and room, add `NetworkObject` to supported colliders, run **Validate scene**, then test two clients with the same scene. Use `wss://` through a TLS reverse proxy for a public world. A `localhost` URL only works on your own PC.
 
-1. Import the Quick Start sample from Package Manager, then **Tools → SomniSync → Create Quick Start Scene** will scaffold a working sample for you.
-2. Or wire your own scene manually:
-   - Add `NetworkManager` to a GameObject
-   - Set the `Server URL` (e.g. `ws://localhost:9090`) and `Room ID`
-   - Add `NetworkObject` to every object you want synced
-   - *(Optional)* Set `Local Player` on NetworkManager for server-side AOI filtering
-3. Run **Tools → SomniSync → Validate Scene** to catch common setup mistakes before you hit Play.
+## What is included
 
-Physics syncs automatically. Players can grab/push objects. First client to connect bootstraps the server's physics world.
+| Part | Purpose |
+|---|---|
+| `server/` | Rust WebSocket relay, Rapier physics, SQLite persistence store, local metrics dashboard |
+| `client/Unity/` | Unity runtime components, setup wizard, scene validator, Somnium world-script exporter |
+| `server/benchmarks/load_scene.py` | Thousands-of-objects WebSocket load test with measured per-client traffic |
+| `benchmarks/bench.py`, `tools/bot_client.py` | Latency, connection and client-swarm tests |
+| `docs/` | Setup, components, protocol, examples and operations |
 
-## Architecture
+Network updates use 22 bytes per compact position/rotation entity or 28 bytes when velocity is included, plus a seven-byte frame header. The relay broadcasts at up to 20 Hz, with near/mid/far area-of-interest tiers. Physics normally steps at 50 Hz and can reduce to 30 Hz under sustained load. `NetworkObject`, `NetworkVariables`, `NetworkEvents`, `NetworkAnimator`, `NetworkParticle`, `NetworkTimer`, `NetworkNPC`, runtime spawn/despawn, and optional player persistence are documented in the [component guide](docs/README.md).
 
-```
-Client A ─┐
-Client B ─┤  binary wire protocol   ┌──────────────────────────────┐
-Client C ─┼────────────────────────→│ Rust Relay Server            │
-Client D ─┘                         │  • Rapier3D physics (50Hz)   │
-                                    │  • Per-client AOI broadcast   │
-                                    │  • Distance-based LOD tiers   │
-                                    │  • SQLite player persistence  │
-                                    └──────────────────────────────┘
-                                                 │
-                                    ┌────────────┴────────────────┐
-                                    ↓                             ↓
-                            Filtered 20Hz pos       Authoritative physics:
-                            updates per client      claims, releases,
-                                                    collisions, gravity.
-```
+## Measured performance
 
-- **Server runs all physics.** Clients never simulate each other's objects. Eliminates the "one laggy master drags everyone down" problem of peer-authority systems.
-- **First client to connect sends SCENE_INIT** (scene description — colliders, mass, friction, initial positions). Server builds its Rapier world from that.
-- **Clients only send:** grab/release, held-object positions, player location, events, variables, animator state. Everything else comes from the server.
-- **Per-client AOI + LOD** — each player receives updates only for objects within 150m of them, with three distance tiers (25m every tick, 60m every 3rd, 150m every 10th). Bandwidth scales with what you can actually see.
-- **Multi-room** — path-based URL routing (`ws://server/my-world`). Each room isolated, auto-destroyed when empty.
-- **Deterministic shared clock** (`NetworkManager.ServerTime`) lets components like `NetworkWaypoint` do zero-bandwidth NPC pathing.
+These are **specific test scenarios**, not guaranteed capacity. On an isolated two-vCPU VPS, reached through an SSH tunnel with roughly 47–62 ms median round-trip time depending on the run:
 
-## Features
+| Scene | Clients | Received per client | Relay physics step p95 | Drops |
+|---|---:|---:|---:|---:|
+| 4,000 moving spheres, AOI enabled | 4 | about 19.5 compact frames/s, 283 KB/s | 13.4 ms | 0 |
+| 4,000 moving spheres, AOI enabled | 40 synthetic clients | 19.7 compact frames/s, 288 KB/s | 13.0 ms; broadcast p95 6.2 ms | 0 |
+| 8,000 moving spheres, AOI enabled | 2 | about 20 compact frames/s, 480 KB/s | 28.7 ms at adaptive 30 Hz | 0 |
 
-- **Drop-in components** — position, variables, RPCs, animations, particles, timers, deterministic waypoints, NPC AI
-- **NetworkNPC** — one-component wandering + chase-aggro with deterministic zero-bandwidth idle paths
-- **Instant-feel grabs** — client-side prediction with server reconciliation; server rejects conflicting claims and the loser unwinds cleanly
-- **Per-object interaction flags** — `pushable` / `grabbable` per NetworkObject
-- **Scale sync** — opt-in, adds 6 bytes per entity
-- **Targeted RPCs** — `Send()` (all), `SendToAuthority()`, `SendToProxies()`
-- **Quantized binary wire format** — 22 B/entity compact, 28 B with velocity (dead-reckoning) or scale
-- **Deterministic IDs** — no GUID overhead, objects sorted identically on every client
-- **SQLite player persistence** — typed Save/Load API keyed by Somnium account UUID (or device UUID fallback)
-- **Live HTTP dashboard** — second port exposes `/metrics` + `/export` with CPU / RSS / per-client stats / physics tick percentiles / live log tail / downloadable snapshot JSON
+A generated Unity test scene connected through the VPS tunnel with 4,000 `NetworkObject` spheres and one static ground collider. Three additional bot clients joined the same room for 10 seconds, observed all 4,000 objects, and sent 489 held-object updates across six claim/release cycles. After the spheres settled, relay physics step p95 was 4.8 ms with zero dropped sends and about 48 MiB RSS. These tests used simple spheres; complex colliders, rendering, many rooms, longer sessions and real Somnium clients need separate validation. For a new server or world, run the [load benchmark](docs/ops/benchmarking.md) with your scene and player count before setting expectations.
 
-## Components
+## Operating boundaries
 
-Every synced object needs **NetworkObject**. Everything else is optional.
-
-| Component | What it does | Docs |
-|-----------|-------------|------|
-| **NetworkManager** | Connection, object registration, AOI, clock sync, local player tracking | [→ Docs](docs/components/network-manager.md) |
-| **NetworkObject** | Position/rotation/scale sync, grab/push interaction | [→ Docs](docs/components/network-object.md) |
-| **NetworkNPC** | Deterministic wander + optional chase-aggro AI — zero idle bandwidth | [→ Docs](docs/components/network-npc.md) |
-| **NetworkVariables** | Sync custom data — int, float, bool, string | [→ Docs](docs/components/network-variables.md) |
-| **NetworkEvents** | RPCs — broadcast, to authority, or to proxies | [→ Docs](docs/components/network-events.md) |
-| **NetworkAnimator** | Sync Animator state, parameters, triggers | [→ Docs](docs/components/network-animator.md) |
-| **NetworkParticle** | Sync ParticleSystem play/stop and properties | [→ Docs](docs/components/network-particle.md) |
-| **NetworkTimer** | Networked countdowns | [→ Docs](docs/components/network-timer.md) |
-| **NetworkPersistence** (static) | Per-player server-backed Save/Load — float/int/bool/string, namespaced | [→ Docs](docs/components/network-persistence.md) |
-| **NetworkWaypoint** | Deterministic waypoint pathing — zero bandwidth, driven by shared clock | — |
-| **NetworkStats** | F3 debug overlay — FPS, bandwidth, connection status | [→ Docs](docs/components/network-stats.md) |
-| **NetworkDebug** | Per-tick Unity-console dump for desync diagnosis. CSV capture is handled by `tools/bot_client.py` + `tools/netdbg_diff.py` | — |
-| **PlayerPushDetector** | Auto-attached collision detection for push-to-grab | [→ Docs](docs/components/player-push-detector.md) |
-| **SomniumBridgeIntegration** | One-line Somnium Space player identity hookup | — |
-
-Not sure which to use? See [Which Components Do I Need?](docs/getting-started/which-components.md)
+- The first client initializes a room's physics scene. Each Unity client supplies a scene compatibility fingerprint at join; the relay rejects a mismatched scene before registration. The fingerprint includes networked object transforms and supported static colliders. Increase the manager's **Scene version** when networking behavior or unsupported geometry changes. This fingerprint catches accidental mismatches; it is not player authentication.
+- The relay limits itself to 512 concurrent connections, 128 rooms and 64 clients per room. A client that exceeds the inbound traffic budget is disconnected.
+- Room names are public routing keys, not passwords. The relay does not authenticate players. Persistence is disabled by default because client-supplied account IDs are not proof of identity.
+- The dashboard has no authentication and should stay on loopback or behind an authenticated proxy.
+- The relay elects one writer for unclaimed `NetworkVariables`, `NetworkAnimator`, and `NetworkTimer` state. Persistent variable values replay to late joiners (up to 2 MiB per room), but the relay does not validate game rules such as health or score changes. Game-critical rules still need server-side validation before general release.
+- The test scene in `SomniSyncTesting` is a development fixture; its `127.0.0.1` relay URL must be changed for uploaded worlds.
 
 ## Documentation
 
-- [**Setup Guide**](docs/getting-started/setup.md) — Install, configure, connect
-- [**Which Components?**](docs/getting-started/which-components.md) — Pick the right components for your objects
-- [**Component Reference**](docs/README.md#components) — Detailed API for each component
-- [**Protocol Spec**](docs/protocol/overview.md) — Binary format, message types, bandwidth
-- [**Examples**](docs/README.md#examples) — Basic world, doors, physics playground, dungeon, vehicles, scoreboard
-
-Or visit the full docs site: **[bentlybro.github.io/SomniSync](https://bentlybro.github.io/SomniSync/)**
-
-## Server
-
-Rust relay running `tokio` + `tokio-tungstenite` + `rapier3d`. Zero-copy broadcast, ArrayPool buffers, per-client filtered sends on the tokio thread pool.
-
-```bash
-cd server
-cargo build --release
-./target/release/somnium-relay                          # defaults: ws :9090 + dashboard :9091
-./target/release/somnium-relay 0.0.0.0:9090 127.0.0.1:9091  # production shape: game public, dashboard local-only
-```
-
-Two positional args: WebSocket bind and HTTP dashboard bind. The dashboard is a separate opt-in listener — if its port is taken, the relay keeps serving game traffic.
-
-Unauthenticated player persistence is disabled by default on the relay. For trusted local/dev relays only, set `SOMNISYNC_ALLOW_UNAUTH_PERSISTENCE=1` before starting the server; production deployments should wire persistence identity to a verifiable platform token instead of trusting client-supplied UUIDs.
-
-## Performance
-
-Most recent measured run on a single-vCPU DigitalOcean droplet:
-
-| Scenario | Result |
-|---|---|
-| 1016 scene objects + 2 real players, ~15 min | CPU **21 %**, RSS 15 MB, 0 drops |
-| Physics tick p99 | **6.4 ms** (budget 20 ms at 50 Hz) |
-| Broadcast build p99 | **90 µs** |
-| Per-client peak downlink | ≈ 250 KB/s |
-
-40-user load-testing via the bot-swarm harness (`tools/bot_client.py`) is the next validation. Numbers past "a thousand objects with two players" are being tested, not claimed.
-
-Bandwidth math:
-- Per-entity wire size: 22 B (compact) / 28 B (with velocity) / 28 B (with scale)
-- Broadcast rate: 20 Hz (50 ms ticks)
-- AOI tiers: near (0–25 m, every tick) · mid (25–60 m, every 3rd) · far (60–150 m, every 10th) · beyond 150 m not broadcast
-- Claim updates (held objects) sent at client `sendRate` (default 60 Hz) — one client per object
-- Sleeping Rapier bodies skipped entirely from broadcasts — an idle world is nearly free
-
-## Benchmarking
-
-Three tools in the repo let you test scale without 40 real humans:
-
-- `benchmarks/bench.py` — ping RTT, event relay latency, connection storm.
-- `tools/bot_client.py` — headless bot swarm that speaks the full binary protocol; `--interact` adds claim/release/drive cycles to stress the Rapier write path.
-- `tools/netdbg_diff.py` — offline CSV diff for inter-client NPC position agreement.
-
-See [docs/ops/benchmarking.md](docs/ops/benchmarking.md) for full usage.
+- [Setup](docs/getting-started/setup.md)
+- [Server deployment](docs/getting-started/server-deployment.md)
+- [Component reference](docs/README.md)
+- [Protocol](docs/protocol/overview.md)
+- [Benchmarking](docs/ops/benchmarking.md)
 
 ## License
 
-All rights reserved. This software is proprietary and confidential. Unauthorized copying, distribution, or use of this code is strictly prohibited. Access is granted to approved collaborators only.
+SomniSync is licensed under the [Mozilla Public License 2.0](LICENSE). You may use it in your world; if you distribute modified SomniSync source files, those files remain under MPL 2.0. The license permits commercial redistribution.

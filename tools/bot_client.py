@@ -143,6 +143,7 @@ def make_interaction_update_single(obj_id: int, x: float, y: float, z: float) ->
 class BotConfig:
     server: str
     room: str
+    scene_fingerprint: str
     out_dir: Path
     tag: str
     bot_idx: int
@@ -228,7 +229,7 @@ class Bot:
         ])
         self._csv_file.flush()
 
-        uri = f"{self.cfg.server.rstrip('/')}/{self.cfg.room}"
+        uri = f"{self.cfg.server.rstrip('/')}/{self.cfg.room}?scene={self.cfg.scene_fingerprint}"
         try:
             self._ws = await websockets.connect(uri, max_size=2**20, close_timeout=5)
             # Match server/client TCP_NODELAY so small ticks aren't coalesced.
@@ -587,6 +588,7 @@ async def run_swarm(args: argparse.Namespace) -> None:
         Bot(BotConfig(
             server=args.server,
             room=args.room,
+            scene_fingerprint=args.scene_fingerprint,
             out_dir=out_dir,
             tag=f"bot{i:02d}",
             bot_idx=i,
@@ -621,7 +623,7 @@ async def run_swarm(args: argparse.Namespace) -> None:
     except (NotImplementedError, AttributeError):
         pass
 
-    print(f"[swarm] launching {len(bots)} bot(s) → {args.server}/{args.room}")
+    print(f"[swarm] launching {len(bots)} bot(s) at {args.server}/{args.room}")
     print(f"[swarm] CSV output: {out_dir}")
     tasks = [asyncio.create_task(b.run()) for b in bots]
 
@@ -643,6 +645,8 @@ def main() -> int:
     )
     p.add_argument("--server", default="ws://127.0.0.1:9090", help="WebSocket server URL (no trailing /room).")
     p.add_argument("--room", default="bench", help="Room name. Must match the real client's room.")
+    p.add_argument("--scene-fingerprint", required=True,
+                   help="16-character fingerprint printed by the Unity NetworkManager for this scene.")
     p.add_argument("--count", type=int, default=20, help="Number of bots.")
     p.add_argument("--duration", type=float, default=120.0, help="Seconds to run before shutting down. 0 = forever.")
     p.add_argument("--out-dir", default="./botlogs", help="Directory for per-bot CSVs.")
@@ -662,6 +666,8 @@ def main() -> int:
     g.add_argument("--interaction-hz", type=float, default=60.0, help="MSG_INTERACTION_UPDATE rate while holding.")
 
     args = p.parse_args()
+    if len(args.scene_fingerprint) != 16 or any(c not in "0123456789abcdefABCDEF" for c in args.scene_fingerprint):
+        p.error("--scene-fingerprint must be exactly 16 hexadecimal characters")
 
     try:
         asyncio.run(run_swarm(args))

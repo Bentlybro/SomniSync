@@ -255,18 +255,6 @@ pub fn bump_tx(bytes: usize) {
 }
 
 #[inline]
-pub fn bump_tx_batch(bytes: usize, count: u64) {
-    if count == 0 {
-        return;
-    }
-    if let Some(s) = STATS.get() {
-        s.total_msgs_tx.fetch_add(count, Ordering::Relaxed);
-        s.total_bytes_tx
-            .fetch_add(bytes as u64 * count, Ordering::Relaxed);
-    }
-}
-
-#[inline]
 pub fn bump_dropped() {
     if let Some(s) = STATS.get() {
         s.total_msgs_dropped.fetch_add(1, Ordering::Relaxed);
@@ -523,7 +511,7 @@ fn parse_level(s: &str) -> Option<log::LevelFilter> {
     // separated forms env_logger supports, in which case we just take the
     // last token's level and ignore module filters — this isn't a full
     // env_logger replacement, just a sensible default.
-    let last = s.split(',').last().unwrap_or(s).trim();
+    let last = s.split(',').next_back().unwrap_or(s).trim();
     let lvl = last
         .rsplit('=')
         .next()

@@ -5,16 +5,14 @@ Somnium Network - Relay Benchmark Suite
 Tests:
   1. WS Ping RTT          - raw network round-trip (no relay logic)
   2. Relay Latency        - master sends event -> spectator receives (p50/p95/p99)
-  3. Relay Throughput     - messages/sec delivered at sustained send rate
-  4. Scale Test           - latency & throughput vs. spectator count (1->N)
-  5. Connection Storm     - time to connect N clients concurrently
+  3. Scale Test           - latency & throughput vs. spectator count (1->N)
+  4. Connection Storm     - time to connect N clients concurrently
 
 Usage:
   python bench.py                        # run all tests, default server
   python bench.py --server ws://host:port
-  python bench.py --test ping            # single test: ping|relay|throughput|scale|storm
+  python bench.py --test ping            # single test: ping|relay|scale|storm
   python bench.py --scale-max 100        # max spectators for scale test (default 50)
-  python bench.py --duration 5           # seconds per throughput/relay test (default 5)
 """
 
 import asyncio
@@ -31,10 +29,9 @@ from websockets.exceptions import ConnectionClosed
 # ---------------------------------------------------------------------------
 # Defaults
 # ---------------------------------------------------------------------------
-DEFAULT_SERVER   = "ws://159.65.56.232:9090"
+DEFAULT_SERVER   = "ws://127.0.0.1:9090"
 PING_COUNT       = 200
 RELAY_COUNT      = 500
-THROUGHPUT_SECS  = 5
 SCALE_STEPS      = [1, 5, 10, 25, 50]
 STORM_CLIENTS    = 100
 
@@ -42,7 +39,6 @@ STORM_CLIENTS    = 100
 # Protocol helpers
 # ---------------------------------------------------------------------------
 MSG_EVENT            = 0x06
-MSG_POSITION_VELOCITY = 0x0B
 CTRL_PREFIX          = 0xFF
 BENCH_EVENT_NAME     = b"__b"   # short name = less overhead
 
@@ -63,25 +59,6 @@ def make_event(obj_id: int, ts_ns: int) -> bytes:
     buf.append(0)                          # type = int (using as raw 8-byte carrier)
     buf += struct.pack('<H', 8)            # val_len
     buf += struct.pack('<Q', ts_ns)        # timestamp
-    return bytes(buf)
-
-
-def make_pos_velocity(client_id: int, seq: int, entity_count: int = 20) -> bytes:
-    """
-    MSG_POSITION_VELOCITY: simulates a master sending a batch of entity positions.
-    [0x0B][u16 sender][u16 seq][u16 count][N x 20 bytes]
-    Each entity: [u16 local_id][half×3 pos][u16×3 rot][half×3 vel]
-    """
-    buf = bytearray()
-    buf.append(MSG_POSITION_VELOCITY)
-    buf += struct.pack('<H', client_id & 0xFFFF)
-    buf += struct.pack('<H', seq & 0xFFFF)
-    buf += struct.pack('<H', entity_count)
-    for i in range(entity_count):
-        buf += struct.pack('<H', i)        # local_id
-        buf += b'\x00\x00' * 3            # x,y,z as half=0.0
-        buf += b'\x00\x00' * 3            # rx,ry,rz compressed
-        buf += b'\x00\x00' * 3            # vx,vy,vz as half=0.0
     return bytes(buf)
 
 
@@ -133,7 +110,7 @@ def separator(char="-", width=60):
 # Connection helper
 # ---------------------------------------------------------------------------
 async def connect(server: str, room: str = "bench"):
-    uri = f"{server}/{room}"
+    uri = f"{server}/{room}?scene=0000000000000001"
     ws = await websockets.connect(uri, max_size=2**20, close_timeout=5)
     # Disable Nagle's algorithm on the client socket — same as the server-side fix.
     # Without this, the kernel may buffer small game packets for up to 40ms.
@@ -232,74 +209,6 @@ async def test_relay_latency(server: str, count: int = RELAY_COUNT):
         print("  No samples collected - server may not be relaying MSG_EVENT from master")
     print()
     return samples
-
-
-# ---------------------------------------------------------------------------
-# TEST 3 - Relay Throughput
-# ---------------------------------------------------------------------------
-async def test_throughput(server: str, duration_secs: float = THROUGHPUT_SECS, entity_count: int = 20):
-    separator()
-    print(f"TEST 3 - Relay Throughput  (flood for {duration_secs}s, {entity_count} entities/msg)")
-    separator()
-
-    room   = f"bench-tput-{uuid.uuid4().hex[:6]}"
-    master = await connect(server, room)
-    spec   = await connect(server, room)
-
-    await asyncio.wait_for(master.recv(), timeout=2)
-    await asyncio.wait_for(spec.recv(), timeout=2)
-    for _ in range(2):
-        try:
-            await asyncio.wait_for(spec.recv(), timeout=0.2)
-        except asyncio.TimeoutError:
-            break
-
-    sent_count    = 0
-    recv_count    = 0
-    recv_bytes    = 0
-    sent_bytes    = 0
-    seq           = 0
-    deadline      = time.perf_counter() + duration_secs
-
-    async def sender():
-        nonlocal sent_count, sent_bytes, seq
-        while time.perf_counter() < deadline:
-            msg = make_pos_velocity(1, seq, entity_count)
-            await master.send(msg)
-            sent_count += 1
-            sent_bytes += len(msg)
-            seq += 1
-
-    async def receiver():
-        nonlocal recv_count, recv_bytes
-        while time.perf_counter() < deadline + 0.5:
-            try:
-                raw = await asyncio.wait_for(spec.recv(), timeout=0.5)
-                if isinstance(raw, bytes):
-                    recv_count += 1
-                    recv_bytes += len(raw)
-            except asyncio.TimeoutError:
-                if time.perf_counter() > deadline + 0.3:
-                    break
-
-    t0 = time.perf_counter()
-    await asyncio.gather(sender(), receiver())
-    elapsed = time.perf_counter() - t0
-
-    await master.close()
-    await spec.close()
-
-    send_rate = sent_count / elapsed
-    recv_rate = recv_count / elapsed
-    drop_pct  = (1 - recv_count / max(sent_count, 1)) * 100
-    send_mbps = sent_bytes / elapsed / 1e6
-    recv_mbps = recv_bytes / elapsed / 1e6
-
-    print(f"  Sent:     {sent_count:,} msgs  ({send_rate:,.0f} msg/s  {send_mbps:.2f} MB/s)")
-    print(f"  Received: {recv_count:,} msgs  ({recv_rate:,.0f} msg/s  {recv_mbps:.2f} MB/s)")
-    print(f"  Drop:     {drop_pct:.1f}%")
-    print()
-    return sent_count, recv_count, elapsed
 
 
 # ---------------------------------------------------------------------------
@@ -453,9 +362,8 @@ async def test_connection_storm(server: str, client_count: int = STORM_CLIENTS):
 async def main():
     parser = argparse.ArgumentParser(description="Somnium Network Benchmark Suite")
     parser.add_argument("--server",     default=DEFAULT_SERVER, help="WebSocket server URL")
-    parser.add_argument("--test",       default="all",  choices=["all","ping","relay","throughput","scale","storm"], help="'all' skips legacy throughput; run --test throughput explicitly if needed")
+    parser.add_argument("--test",       default="all",  choices=["all","ping","relay","scale","storm"], help="Benchmark to run")
     parser.add_argument("--scale-max",  type=int, default=50,   help="Max spectators for scale test")
-    parser.add_argument("--duration",   type=float, default=THROUGHPUT_SECS, help="Throughput test duration (secs)")
     parser.add_argument("--storm",      type=int, default=STORM_CLIENTS,     help="Clients for connection storm")
     parser.add_argument("--ping-count", type=int, default=PING_COUNT)
     parser.add_argument("--relay-count",type=int, default=RELAY_COUNT)
@@ -482,10 +390,6 @@ async def main():
 
     if run_all or args.test == "relay":
         await test_relay_latency(args.server, args.relay_count)
-
-    if args.test == "throughput":
-        print("WARNING: throughput is a legacy client-authored 0x0B test; current server-authoritative relays ignore it.")
-        await test_throughput(args.server, args.duration)
 
     if run_all or args.test == "scale":
         await test_scale(args.server, scale_steps)

@@ -17,7 +17,7 @@ use crate::persistence::PersistenceDb;
 use crate::protocol::{ctrl_msg, read_u16, CTRL_ERROR, CTRL_PERSIST_DATA};
 use crate::room::Room;
 
-fn unauth_persistence_allowed() -> bool {
+pub(crate) fn unauth_persistence_allowed() -> bool {
     matches!(
         std::env::var("SOMNISYNC_ALLOW_UNAUTH_PERSISTENCE")
             .unwrap_or_default()
@@ -64,8 +64,8 @@ pub(crate) async fn handle_player_ident(
         let mut room = room.write().await;
         room.player_ids.insert(client_id, uuid.clone());
         info!(
-            "[Room:{}] client_{} identified as player '{}'",
-            room_id, client_id, uuid
+            "[Room:{}] client_{} registered persistence identity",
+            room_id, client_id
         );
     }
 }
@@ -149,8 +149,11 @@ pub(crate) async fn handle_persist_set(
 
     if let Some(pid) = player_id {
         debug!(
-            "[Room:{}] Persist SET player='{}' ns='{}' key='{}'",
-            room_id, pid, namespace, key
+            "[Room:{}] Persist SET from client_{} (ns={}B key={}B)",
+            room_id,
+            client_id,
+            namespace.len(),
+            key.len()
         );
         let db = db.clone();
         tokio::task::spawn_blocking(move || db.set(&pid, &namespace, &key, &value))
@@ -225,8 +228,11 @@ pub(crate) async fn handle_persist_get(
 
     let value = if let Some(pid) = player_id {
         debug!(
-            "[Room:{}] Persist GET player='{}' ns='{}' key='{}'",
-            room_id, pid, namespace, key
+            "[Room:{}] Persist GET from client_{} (ns={}B key={}B)",
+            room_id,
+            client_id,
+            namespace.len(),
+            key.len()
         );
         let db = db.clone();
         tokio::task::spawn_blocking(move || db.get(&pid, &namespace, &key))

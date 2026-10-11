@@ -21,6 +21,7 @@ namespace SomniumSpace.Worlds.bently.networking
                 transform.position = pos;
                 transform.rotation = rot;
                 if (syncScale && scale.HasValue) transform.localScale = scale.Value;
+                _interpT = 1f;
                 _lastUpdateReceivedTime = Time.time;
                 return;
             }
@@ -34,6 +35,7 @@ namespace SomniumSpace.Worlds.bently.networking
             if (syncScale && scale.HasValue) { _fromScale = transform.localScale; _toScale = scale.Value; }
             _interpT        = 0f;
             _interpDuration = duration;
+            NetworkManager.Instance?.TrackInterpolation(this);
         }
 
         // =====================================================================

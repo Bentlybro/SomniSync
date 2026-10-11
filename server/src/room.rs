@@ -4,6 +4,7 @@ use tokio::sync::{Mutex, RwLock};
 
 use crate::client::Client;
 use crate::physics::PhysicsWorld;
+use crate::variable_state::VariableState;
 
 /// All rooms keyed by room_id string.
 pub type RoomMap = Arc<RwLock<HashMap<String, Arc<RwLock<Room>>>>>;
@@ -27,6 +28,14 @@ pub struct Room {
     /// are driven by that client; the server makes their physics body kinematic
     /// while claimed.
     pub claimed_objects: HashMap<u16, u16>,
+    /// One elected writer for component state on unclaimed objects.
+    pub state_writer_id: u16,
+    /// Fingerprint of the Unity scene layout supplied during the WebSocket
+    /// handshake. Clients with a different layout cannot join this room.
+    pub scene_fingerprint: u64,
+    pub variable_state: VariableState,
+    /// Changes whenever a world transition can invalidate an unsent snapshot.
+    pub state_epoch: u64,
 
     /// Stable player identity: client_id → Somnium player UUID (or fallback UUID)
     pub player_ids: HashMap<u16, String>,
@@ -46,11 +55,10 @@ pub struct Room {
     /// for baked ids below this boundary.
     pub scene_object_count: u16,
 
-    /// Next local_id to hand out for runtime-spawned NetworkObjects. Set by
-    /// SCENE_INIT to the initial object count; increments on each CTRL_SPAWN.
-    /// IDs are never reused even after despawn (no holes in the assignment
-    /// sequence) — u16 gives 65k spawns per room, plenty in practice.
-    pub next_runtime_id: u16,
+    /// Next runtime ID, held in u32 so exhaustion cannot wrap into baked IDs.
+    /// Set to one past the highest scene object ID, which can differ from the
+    /// number of scene objects when some Unity objects have no collider.
+    pub next_runtime_id: u32,
 
     /// Count of currently-live runtime spawns. Kept separate from object IDs so
     /// the runtime spawn cap does not depend on how many baked scene objects
@@ -88,12 +96,17 @@ pub struct Room {
 }
 
 impl Room {
+    pub const MAX_CLIENTS: usize = 64;
     pub fn new() -> Self {
         Self {
             clients: HashMap::new(),
             next_id: 1,
             scene_initializing: false,
             claimed_objects: HashMap::new(),
+            state_writer_id: 0,
+            scene_fingerprint: 0,
+            variable_state: VariableState::default(),
+            state_epoch: 0,
             player_ids: HashMap::new(),
             player_positions: HashMap::new(),
             physics_ready: false,
@@ -127,6 +140,9 @@ impl Room {
         }
         let id = self.next_id;
         self.clients.insert(id, client);
+        if self.state_writer_id == 0 {
+            self.state_writer_id = id;
+        }
         id
     }
 
@@ -134,6 +150,9 @@ impl Room {
     /// so the caller can tell Rapier to switch them back to Dynamic.
     pub fn remove_client(&mut self, id: u16) -> Vec<u16> {
         self.clients.remove(&id);
+        if self.state_writer_id == id {
+            self.state_writer_id = self.clients.keys().copied().min().unwrap_or(0);
+        }
         self.player_ids.remove(&id);
         self.player_positions.remove(&id);
 
@@ -144,6 +163,9 @@ impl Room {
             .collect();
         for obj in &released {
             self.claimed_objects.remove(obj);
+        }
+        if !released.is_empty() {
+            self.state_epoch = self.state_epoch.wrapping_add(1);
         }
         released
     }

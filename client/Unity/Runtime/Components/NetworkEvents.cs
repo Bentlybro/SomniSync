@@ -9,7 +9,7 @@ namespace SomniumSpace.Worlds.bently.networking
     /// Fire-and-forget networked events (RPCs).
     /// Send events from any client, all others receive them.
     /// Events are NOT persistent — late joiners won't see past events.
-    /// 
+    ///
     /// Usage:
     ///   var events = GetComponent&lt;NetworkEvents&gt;();
     ///   events.On("explode", () => PlayVFX());
@@ -126,9 +126,10 @@ namespace SomniumSpace.Worlds.bently.networking
         /// <summary>Send event only to the client that has authority over this object.</summary>
         public void SendToAuthority(string eventName, params object[] parameters)
         {
-            if (NetObj != null && NetObj.ClaimedByClient == 0)
+            if (NetObj != null && NetObj.ClaimedByClient == 0 &&
+                (NetworkManager.Instance == null || NetworkManager.Instance.StateWriterClientId == 0))
             {
-                Debug.LogWarning($"[NetEvents] '{name}' cannot SendToAuthority('{eventName}') — object is unclaimed, so no single authority exists.");
+                Debug.LogWarning($"[NetEvents] '{name}' cannot SendToAuthority('{eventName}') — the room writer has not been assigned yet.");
                 return;
             }
             SendEvent(eventName, parameters, target: EventTarget.Authority);
@@ -147,9 +148,15 @@ namespace SomniumSpace.Worlds.bently.networking
         private void SendEvent(string eventName, object[] parameters, EventTarget target = EventTarget.All)
         {
             if (NetworkManager.Instance == null || !NetworkManager.Instance.IsConnected) return;
+            if (string.IsNullOrEmpty(eventName)) return;
 
             byte[] nameBytes = Encoding.UTF8.GetBytes(eventName);
             int paramCount = parameters?.Length ?? 0;
+            if (nameBytes.Length > 64 || paramCount > 16)
+            {
+                Debug.LogWarning("[NetEvents] Event name or parameter count exceeds relay limit");
+                return;
+            }
 
             // Calculate size — reuse instance list, clear instead of allocate
             int size = 1 + 2 + 1 + 1 + nameBytes.Length + 1; // type + obj_id + target + name_len + name + param_count
@@ -157,9 +164,15 @@ namespace SomniumSpace.Worlds.bently.networking
 
             for (int i = 0; i < paramCount; i++)
             {
+                if (parameters[i] is float f && (float.IsNaN(f) || float.IsInfinity(f))) return;
                 byte type;
                 byte[] val;
                 SerializeParam(parameters[i], out type, out val);
+                if ((type == 3 && val.Length > 1024) || size + 3 + val.Length > 4096)
+                {
+                    Debug.LogWarning("[NetEvents] Event payload exceeds relay limit");
+                    return;
+                }
                 // u8 type + u16 len + value
                 size += 1 + 2 + val.Length;
                 _paramDataCache.Add(new byte[] { type });
@@ -187,7 +200,7 @@ namespace SomniumSpace.Worlds.bently.networking
                 offset += val.Length;
             }
 
-            NetworkManager.Instance.SendBinaryPublic(buf);
+            if (!NetworkManager.Instance.TrySendBinaryPublic(buf)) return;
 
             // Fire locally if targeting allows it
             bool isAuthority = HasAuthority();

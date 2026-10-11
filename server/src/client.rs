@@ -4,10 +4,10 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::sync::{mpsc, watch};
-use tokio_tungstenite::tungstenite::Message;
+use tokio::sync::{mpsc, watch, Notify};
+use tokio_tungstenite::tungstenite::{error::ProtocolError, Error as WsError, Message};
 
 use crate::stats;
 
@@ -31,18 +31,11 @@ pub type Tx = futures_util::stream::SplitSink<
     Message,
 >;
 
-/// How many outbound messages to buffer per client before dropping.
+/// Maximum pending dependable messages per client.
 ///
-/// Keep this small. Game position/velocity data is real-time — queuing old frames
-/// creates latency spikes rather than smoothness. If a client falls behind by more
-/// than SEND_BUFFER messages, we drop the newest arrival (they're too lagged for
-/// stale frames to be useful anyway). Smaller = lower worst-case latency.
-///
-/// At 20 Hz send rate: 8 slots ≈ 0.4s of buffer before dropping.
-/// At 60 Hz send rate: 8 slots ≈ 0.13s of buffer before dropping.
-/// Reduced from 32: the old value let slow clients accumulate 1.6s of stale
-/// position frames that all arrived at once when congestion cleared, causing
-/// a sudden flood of outdated positions that spectators applied as jumps.
+/// Control, events, variables, and animator updates must arrive in order. A
+/// peer that cannot drain this queue is disconnected instead of silently
+/// missing a world change. Physics positions use a separate latest-only slot.
 const RELIABLE_BUFFER: usize = 64;
 
 pub enum ClientMsg {
@@ -53,11 +46,22 @@ pub enum ClientMsg {
 pub struct Client {
     pub tx: mpsc::Sender<ClientMsg>,
     state_tx: watch::Sender<Bytes>,
+    held_latest: Arc<Mutex<HashMap<u16, Bytes>>>,
+    held_notify: Arc<Notify>,
     failed: Arc<AtomicBool>,
+    compact_positions: AtomicBool,
     pub addr: SocketAddr,
 }
 
 impl Client {
+    pub fn enable_compact_positions(&self) {
+        self.compact_positions.store(true, Ordering::Release);
+    }
+
+    pub fn supports_compact_positions(&self) -> bool {
+        self.compact_positions.load(Ordering::Acquire)
+    }
+
     pub fn is_failed(&self) -> bool {
         self.failed.load(Ordering::Acquire) || self.tx.is_closed()
     }
@@ -67,9 +71,24 @@ impl Client {
             stats::bump_dropped();
             return;
         }
-        let len = data.len();
         self.state_tx.send_replace(data);
-        stats::bump_tx(len);
+    }
+
+    fn send_held(&self, sender_id: u16, data: Bytes) {
+        if self.is_failed() {
+            stats::bump_dropped();
+            return;
+        }
+        self.held_latest.lock().unwrap().insert(sender_id, data);
+        self.held_notify.notify_one();
+    }
+
+    fn clear_held_sender(&self, sender_id: u16) {
+        self.held_latest.lock().unwrap().remove(&sender_id);
+    }
+
+    fn clear_state(&self) {
+        self.state_tx.send_replace(Bytes::new());
     }
 
     fn send_reliable(&self, data: Bytes) -> bool {
@@ -77,12 +96,8 @@ impl Client {
             stats::bump_dropped();
             return false;
         }
-        let len = data.len();
         match self.tx.try_send(ClientMsg::Binary(data)) {
-            Ok(()) => {
-                stats::bump_tx(len);
-                true
-            }
+            Ok(()) => true,
             Err(_) => {
                 self.failed.store(true, Ordering::Release);
                 stats::bump_dropped();
@@ -98,9 +113,19 @@ impl Client {
 pub fn new_client(addr: SocketAddr, sink: Tx) -> Arc<Client> {
     let (tx, rx) = mpsc::channel(RELIABLE_BUFFER);
     let (state_tx, state_rx) = watch::channel(Bytes::new());
+    let held_latest = Arc::new(Mutex::new(HashMap::new()));
+    let held_notify = Arc::new(Notify::new());
     let failed = Arc::new(AtomicBool::new(false));
-    let client = Arc::new(Client { tx, state_tx, failed: failed.clone(), addr });
-    spawn_send_task(sink, rx, state_rx, failed, addr);
+    let client = Arc::new(Client {
+        tx,
+        state_tx,
+        held_latest: held_latest.clone(),
+        held_notify: held_notify.clone(),
+        failed: failed.clone(),
+        compact_positions: AtomicBool::new(false),
+        addr,
+    });
+    spawn_send_task(sink, rx, state_rx, held_latest, held_notify, failed, addr);
     client
 }
 
@@ -117,16 +142,17 @@ pub fn new_client(addr: SocketAddr, sink: Tx) -> Arc<Client> {
 /// task *exit*, not send task *stall*. 31-second stalls observed in
 /// the wild. Kernel TCP keepalive doesn't help — default is 2 hours.
 ///
-/// 5s is aggressive but physically reasonable: our broadcast rate is
-/// 20Hz and our per-client send buffer is 8 slots, so a healthy client
-/// drains a single message in <50ms. Anything taking >5s to write one
-/// ~2KB WebSocket frame is dead.
+/// Physics snapshots are coalesced while reliable messages use a bounded
+/// queue. A single frame taking more than 5 seconds means the peer cannot
+/// keep up with the room.
 const SEND_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn spawn_send_task(
     mut sink: Tx,
     mut rx: mpsc::Receiver<ClientMsg>,
     mut state_rx: watch::Receiver<Bytes>,
+    held_latest: Arc<Mutex<HashMap<u16, Bytes>>>,
+    held_notify: Arc<Notify>,
     failed: Arc<AtomicBool>,
     addr: SocketAddr,
 ) {
@@ -140,15 +166,35 @@ fn spawn_send_task(
                 biased;
                 Some(msg) = rx.recv() => match msg {
                     ClientMsg::Binary(b) => Message::Binary(b.into()),
-                    ClientMsg::Pong(d) => Message::Pong(d.into()),
+                    ClientMsg::Pong(d) => Message::Pong(d),
                 },
                 changed = state_rx.changed() => {
                     if changed.is_err() { break; }
-                    Message::Binary(state_rx.borrow_and_update().clone().into())
+                    let latest = state_rx.borrow_and_update().clone();
+                    if latest.is_empty() { continue; }
+                    Message::Binary(latest.into())
+                },
+                _ = held_notify.notified() => {
+                    let mut pending = held_latest.lock().unwrap();
+                    let next = pending.keys().next().copied()
+                        .and_then(|id| pending.remove(&id));
+                    if !pending.is_empty() { held_notify.notify_one(); }
+                    match next {
+                        Some(bytes) => Message::Binary(bytes.into()),
+                        None => continue,
+                    }
                 }
             };
+            let wire_bytes = match &ws_msg {
+                Message::Binary(bytes) => bytes.len(),
+                Message::Pong(bytes) => bytes.len(),
+                _ => 0,
+            };
             match tokio::time::timeout(SEND_TIMEOUT, sink.send(ws_msg)).await {
-                Ok(Ok(())) => {}
+                Ok(Ok(())) => stats::bump_tx(wire_bytes),
+                // A peer can complete its close handshake while a queued
+                // snapshot is being sent. That is a normal disconnect.
+                Ok(Err(WsError::Protocol(ProtocolError::SendAfterClosing))) => break,
                 Ok(Err(e)) => {
                     warn!("[Send] Error to {}: {}", redact_peer(addr), e);
                     break;
@@ -173,69 +219,76 @@ fn spawn_send_task(
 /// Send a reliable message to a single client (control messages, role assignment, etc.).
 /// Awaits if the send buffer is full — for control messages we never want to drop.
 pub async fn send(client: &Client, data: Vec<u8>) {
-    let len = data.len();
-    if client.tx.send(ClientMsg::Binary(Bytes::from(data))).await.is_err() {
-        warn!("[Room] Client {} disconnected, dropping send", redact_peer(client.addr));
+    if client.is_failed() {
         stats::bump_dropped();
-    } else {
-        stats::bump_tx(len);
+        return;
+    }
+    if client
+        .tx
+        .send(ClientMsg::Binary(Bytes::from(data)))
+        .await
+        .is_err()
+    {
+        warn!(
+            "[Room] Client {} disconnected, dropping send",
+            redact_peer(client.addr)
+        );
+        stats::bump_dropped();
     }
 }
 
-/// Non-blocking send to a single client. Drops the message if the buffer is
-/// full. Use for per-tick broadcasts (position updates) where stale data is
-/// worse than no data.
+/// Replace this client's previous unsent physics snapshot. Never queue stale
+/// positions behind dependable world changes.
 pub fn send_try(client: &Client, data: Bytes) {
-    let len = data.len();
-    if client.tx.try_send(ClientMsg::Binary(data)).is_ok() {
-        stats::bump_tx(len);
-    } else {
-        stats::bump_dropped();
+    client.send_state(data);
+}
+
+/// Relay only the newest unsent held-object packet from each owning client.
+pub fn broadcast_held(clients: &HashMap<u16, Arc<Client>>, sender_id: u16, data: &[u8]) {
+    let bytes = Bytes::copy_from_slice(data);
+    for (&id, client) in clients {
+        if id != sender_id {
+            client.send_held(sender_id, bytes.clone());
+        }
     }
 }
 
 /// Broadcast a binary message to every client in `clients`, optionally
 /// excluding a single sender.
 ///
-/// Uses `try_send` (non-blocking) — if a client's buffer is full the message
-/// is dropped for that client only. This is correct for real-time game data:
-/// a full buffer means the client is already behind and stale frames should
-/// be skipped.
+/// Dependable broadcast. If a peer's bounded queue fills, mark it failed so
+/// its connection is torn down rather than leaving it with missing world state.
 ///
 /// Zero-copy: one `Bytes::copy_from_slice` produces an Arc'd buffer; each
 /// recipient clone is O(1). Each client's send task runs on the tokio thread
 /// pool so all N sends are truly parallel.
-pub fn broadcast(
-    clients: &HashMap<u16, Arc<Client>>,
-    exclude: Option<u16>,
-    data: &[u8],
-) {
+pub fn broadcast(clients: &HashMap<u16, Arc<Client>>, exclude: Option<u16>, data: &[u8]) {
     let bytes = Bytes::copy_from_slice(data);
-    let len = data.len();
-    let mut delivered: u64 = 0;
-    let mut dropped: u64 = 0;
     for (&id, client) in clients {
         if Some(id) == exclude {
             continue;
         }
-        // O(1) Arc reference-count bump — no memory copy per recipient.
-        if client.tx.try_send(ClientMsg::Binary(bytes.clone())).is_ok() {
-            delivered += 1;
-        } else {
-            dropped += 1;
+        if data.len() >= 2 && data[0] == 0xFF {
+            if matches!(
+                data[1],
+                crate::protocol::CTRL_CLAIM
+                    | crate::protocol::CTRL_RELEASE
+                    | crate::protocol::CTRL_SPAWN
+                    | crate::protocol::CTRL_DESPAWN
+            ) {
+                client.clear_state();
+            }
+            if data.len() >= 6 && data[1] == crate::protocol::CTRL_RELEASE {
+                client.clear_held_sender(u16::from_le_bytes([data[4], data[5]]));
+            }
         }
+        client.send_reliable(bytes.clone());
     }
-    stats::bump_tx_batch(len, delivered);
-    for _ in 0..dropped { stats::bump_dropped(); }
 }
 
 /// Broadcast to every client except the sender. Thin wrapper kept for
 /// readability at call sites where the exclusion is the important fact.
-pub fn broadcast_except(
-    clients: &HashMap<u16, Arc<Client>>,
-    sender_id: u16,
-    data: &[u8],
-) {
+pub fn broadcast_except(clients: &HashMap<u16, Arc<Client>>, sender_id: u16, data: &[u8]) {
     broadcast(clients, Some(sender_id), data);
 }
 

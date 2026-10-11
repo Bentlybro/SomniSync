@@ -43,7 +43,7 @@ public bool    HasAuthority();                     // True if we can write sibli
                                                   //   (NetworkVariables, NetworkAnimator, ...)
 ```
 
-`HasAuthority()` is the gate you check before writing to `NetworkVariables` / `NetworkAnimator` / `NetworkTimer` on this object. Rule: authority if we hold it OR nobody does. Grabbed items are written by the grabber; free-floating objects accept writes from anyone.
+`HasAuthority()` is the gate you check before writing to `NetworkVariables` / `NetworkAnimator` / `NetworkTimer` on this object. A locally claimed object is written by its holder. For an unclaimed object, the relay elects one room state writer and hands that role to another client on disconnect.
 
 ### Last release pose
 
@@ -135,8 +135,8 @@ The held-object update path (`MSG_INTERACTION_UPDATE`) is automatic — NetworkM
 // On some trigger — change a networked variable
 var vars = obj.GetComponent<NetworkVariables>();
 if (obj.HasAuthority())
-    vars.Set("health", newHealth);     // broadcast to all clients
-// else: silently ignore, or grab first
+    vars.SetInt("health", newHealth);  // broadcast to all clients
+// Otherwise send a request to the authority via NetworkEvents.
 ```
 
 ### React to remote events

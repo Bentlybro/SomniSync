@@ -29,7 +29,7 @@ namespace SomniumSpace.Worlds.bently.networking.Editor
         private int _errorCount;
         private int _warnCount;
 
-        [MenuItem("Tools/SomniSync/Validate Scene")]
+        [MenuItem("Tools/SomniSync Package/Validate Scene")]
         public static void Open()
         {
             var w = GetWindow<SceneValidator>("SomniSync Validator");
@@ -37,7 +37,7 @@ namespace SomniumSpace.Worlds.bently.networking.Editor
             w.Run();
         }
 
-        [MenuItem("Tools/SomniSync/Open Documentation")]
+        [MenuItem("Tools/SomniSync Package/Open Documentation")]
         public static void OpenDocs()
         {
             Application.OpenURL("https://bentlybro.github.io/SomniSync/");
@@ -134,19 +134,33 @@ namespace SomniumSpace.Worlds.bently.networking.Editor
 
             var mgr = managers[0];
             Ok("NetworkManager", $"Found on '{mgr.gameObject.name}'.", mgr);
+            if (string.IsNullOrWhiteSpace(mgr.sceneVersion) || mgr.sceneVersion.Length > 64)
+                Fail("NetworkManager.sceneVersion", "Set a scene version of 1-64 characters. Increase it after networking behavior or unsupported geometry changes.", mgr);
 
             if (string.IsNullOrWhiteSpace(mgr.serverUrl))
             {
                 Fail("NetworkManager.serverUrl", "Server URL is empty. Set it to e.g. ws://localhost:9090 or wss://your-relay.example.com:9090.", mgr);
             }
-            else if (!mgr.serverUrl.StartsWith("ws://") && !mgr.serverUrl.StartsWith("wss://"))
+            else if (!System.Uri.TryCreate(mgr.serverUrl, System.UriKind.Absolute, out var serverUri) ||
+                (serverUri.Scheme != "ws" && serverUri.Scheme != "wss") ||
+                serverUri.AbsolutePath != "/" || !string.IsNullOrEmpty(serverUri.Query) ||
+                !string.IsNullOrEmpty(serverUri.Fragment) || !string.IsNullOrEmpty(serverUri.UserInfo))
             {
-                Fail("NetworkManager.serverUrl", $"Server URL '{mgr.serverUrl}' must start with ws:// or wss://.", mgr);
+                Fail("NetworkManager.serverUrl", "Use a ws:// or wss:// relay base URL without a room path, query, or credentials.", mgr);
             }
             else
             {
                 Ok("NetworkManager.serverUrl", $"URL looks valid: {mgr.serverUrl}", mgr);
+                if (serverUri.IsLoopback)
+                    Warn("NetworkManager.serverUrl", "This loopback URL only works on your own PC. Set a reachable relay URL before uploading the world.", mgr);
             }
+
+            string roomId = string.IsNullOrWhiteSpace(mgr.roomId) ? "default" : mgr.roomId.Trim();
+            bool roomValid = roomId.Length <= 64;
+            foreach (char c in roomId)
+                if (!(char.IsLetterOrDigit(c) && c < 128) && c != '_' && c != '-' && c != '.') roomValid = false;
+            if (!roomValid)
+                Fail("NetworkManager.roomId", "Use at most 64 letters, numbers, _, - or . for the room ID.", mgr);
 
             if (mgr.localPlayer == null)
             {
@@ -225,12 +239,31 @@ namespace SomniumSpace.Worlds.bently.networking.Editor
                 Info("NetworkObject", "No NetworkObject components in the scene. Add them to any GameObject you want synced.", null);
                 return;
             }
+            if (objects.Length > Protocol.MAX_SCENE_OBJECTS)
+                Fail("NetworkObject count",
+                    $"Found {objects.Length} NetworkObjects. The relay accepts at most {Protocol.MAX_SCENE_OBJECTS} scene physics objects, including static colliders.",
+                    objects[0]);
+
+            int staticColliders = 0;
+            foreach (var col in Object.FindObjectsByType<Collider>(FindObjectsSortMode.None))
+            {
+                if (col == null || col.isTrigger || col is MeshCollider || col.GetComponent<NetworkObject>() != null) continue;
+                var rb = col.GetComponent<Rigidbody>();
+                if (col.gameObject.isStatic || rb == null) staticColliders++;
+            }
+            if (objects.Length + staticColliders > Protocol.MAX_SCENE_OBJECTS)
+                Fail("Scene physics count", $"At least {objects.Length + staticColliders} scene objects and static colliders may be sent. The relay limit is {Protocol.MAX_SCENE_OBJECTS}.", objects[0]);
 
             int meshColliderCount = 0;
             int noColliderCount = 0;
+            var sortKeys = new HashSet<(string, string, Vector3)>();
 
             foreach (var obj in objects)
             {
+                if (!sortKeys.Add((obj.entityType, obj.gameObject.name, obj.transform.position)))
+                    Fail("NetworkObject identity",
+                        $"'{obj.name}' shares its type, name, and position with another NetworkObject. Give each object a unique name so clients assign the same IDs.",
+                        obj);
                 var col = obj.GetComponent<Collider>();
                 if (col == null)
                 {

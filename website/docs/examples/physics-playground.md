@@ -16,7 +16,7 @@ Playground
 │   │
 │   └── Bottle_001..005
 │       ├── Rigidbody (mass: 0.3)
-│       ├── MeshCollider (convex: true)
+│       ├── BoxCollider (approximating the bottle)
 │       └── NetworkObject (entityType: "bottle", pushable: true, grabbable: true)
 │
 ├── --- Destructible Stack ---
@@ -52,38 +52,12 @@ Playground
 ## What It Looks Like
 
 1. Player A grabs a ball → throws it at the crate wall
-2. Ball flight is server-simulated and broadcast through `MSG_POSITION_VELOCITY`
+2. Ball flight is server-simulated and broadcast through `MSG_POSITION_COMPACT` for capable clients
 3. Ball hits first crate → chain claim triggers → entire stack claimed by Player A
 4. Crates scatter everywhere under server physics
 5. Crates settle → sleeping bodies stop broadcasting
 6. Player B sees the whole thing in real-time
 
-## Bowling Reset
+## Resetting the alley
 
-```csharp
-public class BowlingAlley : MonoBehaviour
-{
-    public Transform[] pinSpawns;
-    public NetworkObject[] pins;
-    private NetworkEvents _events;
-
-    void Start()
-    {
-        _events = GetComponent<NetworkEvents>();
-        _events.On("reset", () => ResetPins());
-    }
-
-    public void ResetPins()
-    {
-        _events.Send("reset");
-        for (int i = 0; i < pins.Length; i++)
-        {
-            pins[i].transform.position = pinSpawns[i].position;
-            pins[i].transform.rotation = pinSpawns[i].rotation;
-            var rb = pins[i].GetComponent<Rigidbody>();
-            rb.velocity = Vector3.zero;
-            rb.angularVelocity = Vector3.zero;
-        }
-    }
-}
-```
+The relay is the physics authority. Directly moving an unclaimed pin's Unity Transform will **not** reset its server body. This version has no general server-side reset/teleport command for baked scene bodies. To build an authoritative reset, add a validated server command that moves those Rapier bodies and broadcasts their new poses, or despawn and respawn runtime-spawned pins. Do not use a local-only transform loop for a shared reset.

@@ -87,6 +87,14 @@ namespace SomniumSpace.Worlds.bently.networking
         protected double _wanderEpoch = -1;       // Server unix-seconds anchor for the current wander segment
         protected ulong _anchoredReleaseMs;       // LastReleaseServerMs we last re-anchored against
 
+        // Remember the start of the current deterministic journey. Replaying
+        // every earlier waypoint on every frame grows with room age.
+        private bool _wanderCacheValid;
+        private double _cachedEpoch, _cachedCursor;
+        private Vector3 _cachedOrigin, _cachedCurrent;
+        private int _cachedSeed, _cachedJourney;
+        private float _cachedRadius, _cachedSpeed, _cachedPauseMin, _cachedPauseMax;
+
         // Read-only views of internal wander state — used by NetworkDebug to
         // compare what the NPC's logic is doing on each client side-by-side.
         public Vector3 DebugOrigin           => _origin;
@@ -234,20 +242,39 @@ namespace SomniumSpace.Worlds.bently.networking
         {
             forward = Vector3.zero;
             if (t < 0) t = 0;
+            if (wanderRadius <= 0f) return _origin;
 
-            Vector3 current = _origin;
-            double cursor = 0;
-            int journey = 0;
             float moveSpeed = Mathf.Max(0.1f, wanderSpeed);
-            const int SAFETY_CAP = 100000;
+            if (!_wanderCacheValid || t < _cachedCursor || _cachedEpoch != _wanderEpoch
+                || _cachedOrigin != _origin || _cachedSeed != seed
+                || _cachedRadius != wanderRadius || _cachedSpeed != moveSpeed
+                || _cachedPauseMin != pauseMin || _cachedPauseMax != pauseMax)
+            {
+                _cachedEpoch = _wanderEpoch;
+                _cachedOrigin = _origin;
+                _cachedSeed = seed;
+                _cachedRadius = wanderRadius;
+                _cachedSpeed = moveSpeed;
+                _cachedPauseMin = pauseMin;
+                _cachedPauseMax = pauseMax;
+                _cachedCursor = 0;
+                _cachedCurrent = _origin;
+                _cachedJourney = 0;
+                _wanderCacheValid = true;
+            }
 
-            while (journey < SAFETY_CAP)
+            Vector3 current = _cachedCurrent;
+            double cursor = _cachedCursor;
+            int journey = _cachedJourney;
+            const int MAX_ADVANCE_PER_FRAME = 1024;
+
+            for (int advanced = 0; advanced < MAX_ADVANCE_PER_FRAME; advanced++)
             {
                 var rng = new DeterministicRng(seed, journey);
                 Vector3 next = _origin + RandomInDisc(ref rng, wanderRadius);
                 float segDist = Vector3.Distance(current, next);
                 float walkDur = segDist / moveSpeed;
-                float pauseDur = Mathf.Lerp(pauseMin, pauseMax, rng.NextFloat01());
+                float pauseDur = Mathf.Max(0f, Mathf.Lerp(pauseMin, pauseMax, rng.NextFloat01()));
 
                 if (t < cursor + walkDur)
                 {
@@ -263,6 +290,9 @@ namespace SomniumSpace.Worlds.bently.networking
                 cursor += pauseDur;
                 current = next;
                 journey++;
+                _cachedCursor = cursor;
+                _cachedCurrent = current;
+                _cachedJourney = journey;
             }
             return current;
         }

@@ -25,6 +25,8 @@ namespace SomniumSpace.Worlds.bently.networking
                 case 0x07: HandleAnimatorState(data, length);            break;
                 case 0x09: HandleScaledInteractionUpdates(data, length); break;
                 case 0x0B: HandlePositionVelocityUpdates(data, length);  break;
+                case 0x0F: HandleCompactPositionUpdates(data, length);   break;
+                case Protocol.MSG_VARIABLE_SNAPSHOT: HandleVariableSnapshot(data, length); break;
                 case 0xFF:
                     if (length >= 2)
                     {
@@ -51,6 +53,9 @@ namespace SomniumSpace.Worlds.bently.networking
                     if (length < 5) break;
                     ClientId = Protocol.ReadU16(data, 2);
                     _needsSceneInit = data[4] != 0;
+                    // Opt in before the first regular physics broadcast. Older
+                    // servers ignore this control subtype and keep sending 0x0B.
+                    SendBinary(new byte[] { Protocol.MSG_CONTROL, Protocol.CTRL_CLIENT_CAPS, 1 });
 
                     if (length >= 13)
                     {
@@ -70,6 +75,7 @@ namespace SomniumSpace.Worlds.bently.networking
                         ulong sceneReadyMs = ReadU64(data, 13);
                         if (sceneReadyMs != 0) SetSceneReadyServerMs(sceneReadyMs);
                     }
+                    PersistenceAvailable = length >= 22 && data[21] != 0;
 
                     Debug.Log(
                         $"[Net] Welcome — client_{ClientId}, needs_scene_init={_needsSceneInit}, scene_ready_ms={SceneReadyServerMs}"
@@ -77,11 +83,10 @@ namespace SomniumSpace.Worlds.bently.networking
 
                     if (_needsSceneInit && _sceneReady && !_sceneInitSent)
                     {
-                        SendSceneInit();
-                        _sceneInitSent = true;
+                        _sceneInitSent = SendSceneInit();
                     }
 
-                    NetworkPersistence.OnNetworkReady(this);
+                    if (PersistenceAvailable) NetworkPersistence.OnNetworkReady(this);
                     if (!IsNetworkReady) { IsNetworkReady = true; OnNetworkReady?.Invoke(); }
                     break;
 
@@ -92,6 +97,14 @@ namespace SomniumSpace.Worlds.bently.networking
                         ushort claimClientId = Protocol.ReadU16(data, 4);
                         if (GetObject(claimObjId) is { } claimObj)
                             claimObj.OnRemoteClaim(claimClientId);
+                    }
+                    break;
+
+                case Protocol.CTRL_STATE_WRITER:
+                    if (length >= 4)
+                    {
+                        StateWriterClientId = Protocol.ReadU16(data, 2);
+                        Debug.Log($"[Net] Room state writer: client_{StateWriterClientId}");
                     }
                     break;
 
@@ -123,6 +136,8 @@ namespace SomniumSpace.Worlds.bently.networking
 
                 case Protocol.CTRL_PHYSICS_READY:
                     IsPhysicsReady = true;
+                    _hasSentPlayerPosition = false;
+                    SendPlayerPosition();
                     if (length >= 10)
                     {
                         // Shared scene-epoch anchor for deterministic subsystems.
@@ -137,7 +152,16 @@ namespace SomniumSpace.Worlds.bently.networking
                     break;
 
                 case 0xFE: // Server error notification
-                    Debug.LogError("[Net] Server reported an error");
+                    if (length >= 3 && data[2] == 2)
+                    {
+                        _sceneRejected = true;
+                        Debug.LogError("[Net] This world has a different scene layout than the active room. Use the same published world version and prefab list, or choose a new room ID.");
+                    }
+                    else if (length >= 3 && data[2] == 3)
+                        Debug.LogError("[Net] Relay room or connection limit reached. Try again later or use another relay.");
+                    else Debug.LogError(length >= 3 && data[2] == 1
+                        ? "[Net] Relay variable cache is full; persistent update rejected. Reduce variable state or use another room."
+                        : "[Net] Server reported an error");
                     break;
             }
         }
@@ -147,6 +171,12 @@ namespace SomniumSpace.Worlds.bently.networking
         // =====================================================================
 
         private void HandlePositionVelocityUpdates(byte[] data, int length)
+            => HandlePositionUpdates(data, length, false);
+
+        private void HandleCompactPositionUpdates(byte[] data, int length)
+            => HandlePositionUpdates(data, length, true);
+
+        private void HandlePositionUpdates(byte[] data, int length, bool compact)
         {
             if (!_sceneReady || length < 7) return;
 
@@ -164,17 +194,21 @@ namespace SomniumSpace.Worlds.bently.networking
             ushort count = Protocol.ReadU16(data, 5);
             int offset = 7;
 
-            for (int i = 0; i < count && offset + Protocol.BYTES_PER_ENTITY_VELOCITY <= length; i++)
+            int entityBytes = compact ? Protocol.BYTES_PER_ENTITY : Protocol.BYTES_PER_ENTITY_VELOCITY;
+            for (int i = 0; i < count && offset + entityBytes <= length; i++)
             {
                 ushort localId;
-                Vector3 pos, vel;
+                Vector3 pos;
                 Quaternion rot;
-                offset = Protocol.ReadEntityVelocity(data, offset, out localId, out pos, out rot, out vel);
+                if (compact)
+                    offset = Protocol.ReadEntityCompact(data, offset, out localId, out pos, out rot);
+                else
+                    offset = Protocol.ReadEntityVelocity(data, offset, out localId, out pos, out rot, out _);
 
                 if (GetObject(localId) is { } obj)
                 {
                     if (obj.IsClaimedLocally) continue;
-                    obj.ApplyUpdate(pos, rot, vel);
+                    obj.ApplyUpdate(pos, rot);
                 }
             }
         }
@@ -242,7 +276,31 @@ namespace SomniumSpace.Worlds.bently.networking
             int varCount = data[3];
 
             if (GetObject(objId) is { } netVarObj && netVarObj.CachedVariables != null)
-                netVarObj.CachedVariables.ApplyRemoteUpdate(data, 4, varCount);
+                netVarObj.CachedVariables.ApplyRemoteUpdate(data, 4, varCount, length);
+        }
+
+        // [0x12][u16 count][per record: u16 object_id + one 0x04 variable record]
+        private void HandleVariableSnapshot(byte[] data, int length)
+        {
+            if (length < 3) return;
+            int count = Protocol.ReadU16(data, 1);
+            int offset = 3;
+            for (int i = 0; i < count; i++)
+            {
+                if (offset + 4 > length) return;
+                ushort objectId = Protocol.ReadU16(data, offset);
+                offset += 2;
+                int recordStart = offset;
+                int nameLength = data[offset++];
+                if (nameLength == 0 || offset + nameLength + 3 > length) return;
+                offset += nameLength + 1; // name + type/flags
+                int valueLength = Protocol.ReadU16(data, offset);
+                offset += 2;
+                if (offset + valueLength > length) return;
+                offset += valueLength;
+                if (GetObject(objectId) is { } obj && obj.CachedVariables != null)
+                    obj.CachedVariables.ApplyRemoteUpdate(data, recordStart, 1, offset);
+            }
         }
 
         // =====================================================================
@@ -268,7 +326,7 @@ namespace SomniumSpace.Worlds.bently.networking
             ushort objId = (ushort)(data[1] | (data[2] << 8));
 
             if (GetObject(objId) is { } animObj && animObj.CachedAnimator != null)
-                animObj.CachedAnimator.ApplyRemoteState(data, 3);
+                animObj.CachedAnimator.ApplyRemoteState(data, 3, length);
         }
 
         // =====================================================================

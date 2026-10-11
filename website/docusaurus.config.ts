@@ -11,8 +11,12 @@ const config: Config = {
   organizationName: 'Bentlybro',
   projectName: 'SomniSync',
   trailingSlash: false,
-  onBrokenLinks: 'warn',
-  onBrokenMarkdownLinks: 'warn',
+  onBrokenLinks: 'throw',
+  markdown: {
+    hooks: {
+      onBrokenMarkdownLinks: 'throw',
+    },
+  },
 
   i18n: {
     defaultLocale: 'en',
@@ -71,7 +75,7 @@ const config: Config = {
           ],
         },
       ],
-      copyright: `SomniSync — MIT License`,
+      copyright: `SomniSync — Mozilla Public License 2.0`,
     },
     prism: {
       theme: prismThemes.github,

@@ -15,13 +15,42 @@ pub struct ServerConfig {
     pub addr: String,
     /// Listen address for the HTTP metrics + dashboard endpoint.
     pub metrics_addr: String,
+    /// Directory containing the SQLite database. Keep this on persistent storage.
+    pub data_dir: String,
 }
 
 impl ServerConfig {
     pub fn from_args() -> Self {
         let mut args = std::env::args().skip(1);
-        let addr = args.next().unwrap_or_else(|| "0.0.0.0:9090".to_string());
-        let metrics_addr = args.next().unwrap_or_else(|| "127.0.0.1:9091".to_string());
-        Self { addr, metrics_addr }
+        let first = args.next();
+        if matches!(first.as_deref(), Some("--help" | "-h")) {
+            println!("Usage: somnium-relay [WS_BIND] [METRICS_BIND]\n\nEnvironment:\n  SOMNISYNC_WS_BIND       default 0.0.0.0:9090\n  SOMNISYNC_METRICS_BIND  default 127.0.0.1:9091\n  SOMNISYNC_DATA_DIR      default ./data\n\nThe metrics endpoint has no authentication. Keep it on loopback or behind an authenticated proxy.");
+            std::process::exit(0);
+        }
+        if matches!(first.as_deref(), Some("--version" | "-V")) {
+            println!("somnium-relay {}", env!("CARGO_PKG_VERSION"));
+            std::process::exit(0);
+        }
+        let addr = first.unwrap_or_else(|| env_or("SOMNISYNC_WS_BIND", "0.0.0.0:9090"));
+        let metrics_addr = args
+            .next()
+            .unwrap_or_else(|| env_or("SOMNISYNC_METRICS_BIND", "127.0.0.1:9091"));
+        if args.next().is_some() {
+            eprintln!("Too many arguments. Run somnium-relay --help for usage.");
+            std::process::exit(2);
+        }
+        let data_dir = env_or("SOMNISYNC_DATA_DIR", "./data");
+        Self {
+            addr,
+            metrics_addr,
+            data_dir,
+        }
     }
+}
+
+fn env_or(key: &str, default: &str) -> String {
+    std::env::var(key)
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| default.to_string())
 }

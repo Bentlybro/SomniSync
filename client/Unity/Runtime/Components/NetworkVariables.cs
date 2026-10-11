@@ -7,8 +7,8 @@ namespace SomniumSpace.Worlds.bently.networking
 {
     /// <summary>
     /// Sync custom variables (int, float, bool, string) across clients.
-    /// Add alongside NetworkObject. Any client can set variables on objects
-    /// they own (master owns unowned objects, spectators own claimed objects).
+    /// Add alongside NetworkObject. The room's elected state writer changes
+    /// unclaimed objects; a claimed object's holder changes its variables.
     /// </summary>
     public class NetworkVariables : NetworkComponent
     {
@@ -56,6 +56,8 @@ namespace SomniumSpace.Worlds.bently.networking
         /// Parameters: variable name, variable type.
         /// </summary>
         public event Action<string, VarType> OnValueChanged;
+        /// <summary>Fires only when a value arrives from the relay.</summary>
+        public event Action<string, VarType> OnRemoteValueChanged;
 
         private Dictionary<string, VarDefinition> _varMap = new Dictionary<string, VarDefinition>();
         private bool _initialized;
@@ -67,7 +69,7 @@ namespace SomniumSpace.Worlds.bently.networking
         protected virtual void Start()
         {
             // NetObj already resolved + null-checked by base Awake.
-            InitializeVariables();
+            if (!_initialized) InitializeVariables();
         }
 
         private void InitializeVariables()
@@ -96,11 +98,12 @@ namespace SomniumSpace.Worlds.bently.networking
             // Only send if we have authority
             if (!HasAuthority()) return;
 
-            // Collect dirty OnChange vars
+            // Retry all dirty variables, including Immediate values that could
+            // not enter the send queue at the moment they were set.
             bool hasDirty = false;
             foreach (var v in variables)
             {
-                if (v.dirty && v.syncMode == SyncMode.OnChange)
+                if (v.dirty)
                 {
                     hasDirty = true;
                     break;
@@ -153,6 +156,7 @@ namespace SomniumSpace.Worlds.bently.networking
         {
             if (!CheckAuthorityForWrite(name)) return;
             var v = GetOrCreate(name, VarType.Int);
+            if (v == null) return;
             v.currentValue = BitConverter.GetBytes(value);
             MarkDirty(v);
         }
@@ -160,7 +164,9 @@ namespace SomniumSpace.Worlds.bently.networking
         public void SetFloat(string name, float value)
         {
             if (!CheckAuthorityForWrite(name)) return;
+            if (float.IsNaN(value) || float.IsInfinity(value)) return;
             var v = GetOrCreate(name, VarType.Float);
+            if (v == null) return;
             v.currentValue = BitConverter.GetBytes(value);
             MarkDirty(v);
         }
@@ -169,6 +175,7 @@ namespace SomniumSpace.Worlds.bently.networking
         {
             if (!CheckAuthorityForWrite(name)) return;
             var v = GetOrCreate(name, VarType.Bool);
+            if (v == null) return;
             v.currentValue = new byte[] { (byte)(value ? 1 : 0) };
             MarkDirty(v);
         }
@@ -176,7 +183,13 @@ namespace SomniumSpace.Worlds.bently.networking
         public void SetString(string name, string value)
         {
             if (!CheckAuthorityForWrite(name)) return;
+            if (Encoding.UTF8.GetByteCount(value ?? "") > 4096)
+            {
+                Debug.LogError($"[NetVars] '{name}' exceeds the 4096-byte string limit.");
+                return;
+            }
             var v = GetOrCreate(name, VarType.String);
+            if (v == null) return;
             v.currentValue = Encoding.UTF8.GetBytes(value ?? "");
             MarkDirty(v);
         }
@@ -212,6 +225,7 @@ namespace SomniumSpace.Worlds.bently.networking
         public void DefineVariable(string name, VarType type, SyncMode syncMode = SyncMode.OnChange,
                                    bool persist = true)
         {
+            if (!_initialized) InitializeVariables();
             if (_varMap.ContainsKey(name)) return;
             var v = new VarDefinition
             {
@@ -253,41 +267,46 @@ namespace SomniumSpace.Worlds.bently.networking
         /// </summary>
         private void SendDirtyVars(bool immediateOnly)
         {
-            // Count dirty vars — use cached nameBytes to avoid double encoding
-            int count = 0;
-            int totalSize = 4; // 0x04 + u16 obj_id + u8 count
+            var manager = NetworkManager.Instance;
+            if (manager == null || !manager.IsConnected || NetObj == null || !NetObj.IsRegistered) return;
+
+            const int maxFrameBytes = 64 * 1024;
+            var selected = new List<VarDefinition>();
+            int totalSize = 4; // type + object_id + count
             foreach (var v in variables)
             {
                 if (!v.dirty) continue;
                 if (immediateOnly && v.syncMode != SyncMode.Immediate) continue;
-                // u8 name_len + name + u8 type + u16 value_len + value
-                int nameBytesLen = v.nameBytes?.Length ?? Encoding.UTF8.GetByteCount(v.name);
-                totalSize += 1 + nameBytesLen + 1 + 2 + (v.currentValue?.Length ?? 0);
-                count++;
+                if (v.nameBytes == null) v.nameBytes = Encoding.UTF8.GetBytes(v.name ?? "");
+                int valueLength = v.currentValue?.Length ?? 0;
+                if (v.nameBytes.Length == 0 || v.nameBytes.Length > 64 || valueLength > 4096)
+                {
+                    Debug.LogError($"[NetVars] Invalid name or value length for '{v.name}'. Names are 1-64 UTF-8 bytes; values are at most 4096 bytes.");
+                    v.dirty = false;
+                    continue;
+                }
+                int recordSize = 1 + v.nameBytes.Length + 1 + 2 + valueLength;
+                if (selected.Count >= 255 || totalSize + recordSize > maxFrameBytes) break;
+                totalSize += recordSize;
+                selected.Add(v);
             }
 
-            if (count == 0) return;
-            int sendCount = Math.Min(count, 255);
+            if (selected.Count == 0) return;
 
             byte[] buf = new byte[totalSize];
-            buf[0] = 0x04;
+            buf[0] = Protocol.MSG_VARIABLE_UPDATE;
             Protocol.WriteU16(buf, 1, NetObj.LocalId);
-            buf[3] = (byte)sendCount;
+            buf[3] = (byte)selected.Count;
 
             int offset = 4;
-            int written = 0;
-            foreach (var v in variables)
+            foreach (var v in selected)
             {
-                if (written >= sendCount) break;
-                if (!v.dirty) continue;
-                if (immediateOnly && v.syncMode != SyncMode.Immediate) continue;
+                buf[offset++] = (byte)v.nameBytes.Length;
+                Array.Copy(v.nameBytes, 0, buf, offset, v.nameBytes.Length);
+                offset += v.nameBytes.Length;
 
-                byte[] nameBytes = v.nameBytes ?? Encoding.UTF8.GetBytes(v.name);
-                buf[offset++] = (byte)nameBytes.Length;
-                Array.Copy(nameBytes, 0, buf, offset, nameBytes.Length);
-                offset += nameBytes.Length;
-
-                buf[offset++] = (byte)v.type;
+                // High bit tells the relay to cache this value for late joiners.
+                buf[offset++] = (byte)((byte)v.type | (v.persistForLateJoiners ? 0x80 : 0));
 
                 int valLen = v.currentValue?.Length ?? 0;
                 Protocol.WriteU16(buf, offset, (ushort)valLen);
@@ -299,11 +318,10 @@ namespace SomniumSpace.Worlds.bently.networking
                     offset += valLen;
                 }
 
-                v.dirty = false;
-                written++;
             }
 
-            NetworkManager.Instance.SendBinaryPublic(buf);
+            if (manager.TrySendBinaryPublic(buf))
+                foreach (var v in selected) v.dirty = false;
         }
 
         // =====================================================================
@@ -314,25 +332,28 @@ namespace SomniumSpace.Worlds.bently.networking
         /// Apply a received 0x04 variable update.
         /// Called by NetworkManager when it receives 0x04 for this object.
         /// </summary>
-        public void ApplyRemoteUpdate(byte[] data, int startOffset, int varCount)
+        public void ApplyRemoteUpdate(byte[] data, int startOffset, int varCount, int length)
         {
+            if (length > data.Length || startOffset < 0 || startOffset > length) return;
+            if (!_initialized) InitializeVariables();
             int offset = startOffset;
             for (int i = 0; i < varCount; i++)
             {
-                if (offset >= data.Length) break;
+                if (offset >= length) break;
                 int nameLen = data[offset++];
-                if (nameLen < 0 || offset + nameLen + 3 > data.Length) break; // name + type(1) + valLen(2)
+                if (offset + nameLen + 3 > length) break; // name + type(1) + valLen(2)
                 string name = Encoding.UTF8.GetString(data, offset, nameLen);
                 offset += nameLen;
 
-                if (offset >= data.Length) break;
-                VarType type = (VarType)data[offset++];
+                if (offset >= length) break;
+                VarType type = (VarType)(data[offset++] & 0x7F);
+                if (type > VarType.String) break;
 
-                if (offset + 2 > data.Length) break;
+                if (offset + 2 > length) break;
                 int valLen = Protocol.ReadU16(data, offset);
                 offset += 2;
 
-                if (valLen < 0 || offset + valLen > data.Length) break;
+                if (offset + valLen > length) break;
                 byte[] value = new byte[valLen];
                 if (valLen > 0)
                     Array.Copy(data, offset, value, 0, valLen);
@@ -340,10 +361,12 @@ namespace SomniumSpace.Worlds.bently.networking
 
                 // Apply to local state
                 var v = GetOrCreate(name, type);
+                if (v == null) continue;
                 v.currentValue = value;
                 v.dirty = false;
 
                 OnValueChanged?.Invoke(name, type);
+                OnRemoteValueChanged?.Invoke(name, type);
             }
         }
 
@@ -399,6 +422,7 @@ namespace SomniumSpace.Worlds.bently.networking
         public void ApplySnapshot(byte[] data, int startOffset)
         {
             if (startOffset >= data.Length) return;
+            if (!_initialized) InitializeVariables();
             int count = data[startOffset];
             int offset = startOffset + 1;
 
@@ -424,10 +448,12 @@ namespace SomniumSpace.Worlds.bently.networking
                 offset += valLen;
 
                 var v = GetOrCreate(name, type);
+                if (v == null) continue;
                 v.currentValue = value;
                 v.dirty = false;
 
                 OnValueChanged?.Invoke(name, type);
+                OnRemoteValueChanged?.Invoke(name, type);
             }
         }
 
@@ -445,8 +471,14 @@ namespace SomniumSpace.Worlds.bently.networking
 
         private VarDefinition GetOrCreate(string name, VarType type)
         {
+            if (!_initialized) InitializeVariables();
             VarDefinition v;
-            if (_varMap.TryGetValue(name, out v)) return v;
+            if (_varMap.TryGetValue(name, out v))
+            {
+                if (v.type == type) return v;
+                Debug.LogError($"[NetVars] '{name}' has type {v.type}, not {type}.");
+                return null;
+            }
 
             v = new VarDefinition
             {

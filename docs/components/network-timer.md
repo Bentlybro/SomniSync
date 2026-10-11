@@ -1,6 +1,6 @@
 # NetworkTimer
 
-Authority-driven networked countdown timer. Syncs to all clients via NetworkVariables. Survives master transfers.
+Countdown component that sends remaining time through NetworkVariables. The relay elects a writer for unclaimed timer state and replays the latest transmitted values to late joiners.
 
 ## Inspector Properties
 
@@ -8,7 +8,7 @@ Authority-driven networked countdown timer. Syncs to all clients via NetworkVari
 |----------|------|---------|-------------|
 | `duration` | float | `60` | Duration in seconds |
 | `loop` | bool | `false` | Restart when finished |
-| `autoStart` | bool | `false` | Start automatically on scene load (authority only) |
+| `autoStart` | bool | `false` | Start when the first room scene becomes ready, on the elected writer only |
 | `syncRate` | float | `2` | How often to sync remaining time (Hz) |
 
 ## Events
@@ -43,11 +43,11 @@ float progress = timer.Progress;      // 0.0 (start) → 1.0 (done)
 
 1. Authority starts the timer → syncs duration + running state via NetworkVariables
 2. Authority counts down locally, syncs remaining time at `syncRate`
-3. Spectators receive remaining time updates, tick down locally between syncs (smooth display)
+3. Other clients receive remaining time updates and tick down locally between syncs
 4. When timer hits zero → `OnFinished` fires on all clients
 5. If `loop = true` → restarts automatically
 
-**Survives master transfer:** If the master disconnects, the new master picks up from the last synced value. No timer reset.
+**Limitations:** The relay replays the most recent timer variables, then a late joiner counts down locally between updates. It does not validate when a timer should start or finish, and a relay restart clears room state. Use server-side game rules for authoritative rewards or irreversible actions.
 
 ## Example: Timed Bomb
 
@@ -116,7 +116,7 @@ public class RoundManager : MonoBehaviour
 
 ## Tips
 
-- Low `syncRate` (1-2 Hz) is usually enough — spectators interpolate locally
+- Low `syncRate` (1-2 Hz) is usually enough — other clients interpolate locally
 - `OnTick` fires every frame, not at sync rate — use it for smooth UI
 - `OnFinished` fires on ALL clients, not just authority
 - Combine with NetworkEvents for actions that happen when the timer ends
