@@ -1,0 +1,12 @@
+.git
+.env
+**/target
+**/Library
+**/Temp
+**/node_modules
+**/__pycache__
+website
+docs
+client
+benchmarks
+tools

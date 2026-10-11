@@ -1,0 +1,21 @@
+services:
+  relay:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    image: somnisync-relay:local
+    init: true
+    restart: unless-stopped
+    ports:
+      - "${SOMNISYNC_WS_HOST:-127.0.0.1}:${SOMNISYNC_PORT:-9090}:9090"
+      - "127.0.0.1:${SOMNISYNC_METRICS_PORT:-9091}:9091"
+    volumes:
+      - somnisync-data:/app/data
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+volumes:
+  somnisync-data:

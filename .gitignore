@@ -1,4 +1,10 @@
 server/target/
+server/data/
 website/node_modules/
 website/build/
 website/.docusaurus/
+__pycache__/
+*.pyc
+botlogs/
+.claude/
+.env

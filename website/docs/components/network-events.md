@@ -1,5 +1,7 @@
 # NetworkEvents
 
+Events are transient and can be sent by any room client. The relay validates their framing and caps each event at 4 KiB, names at 64 UTF-8 bytes, and parameters at 16 (string parameters at 1 KiB). It also limits each sender's event traffic to 30 events/s and 64 KiB/s sustained, with short bursts allowed. Use server-validated commands for health, currency, scores, or other trusted state.
+
 Fire-and-forget networked events (RPCs). Send events from any client, all others receive them.
 
 **Events are NOT persistent** — late joiners won't see past events. For persistent data, use [NetworkVariables](./network-variables.md).
@@ -48,6 +50,8 @@ events.Send("spawn", 1.0f, 2.0f, 3.0f);  // multiple params
 ```
 
 **Events fire locally too** — the sender also receives the callback.
+
+Use `events.SendToAuthority("request_name", args)` when any player may request a change to an object's state. The relay elects one authority for unclaimed objects and the current holder is authority for claimed objects. Register the handler on every client, then check `NetworkObject.HasAuthority()` before applying the request. The relay routes the event; your handler must validate game rules and input.
 
 ## Supported Parameter Types
 

@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title">
+  <title id="title">SomniSync</title>
+  <rect width="64" height="64" rx="15" fill="#092331"/>
+  <path d="M18 19h28M18 45h28M18 19l28 26M46 19L18 45" stroke="#52bbaa" stroke-width="3" stroke-linecap="round" opacity=".55"/>
+  <circle cx="18" cy="19" r="5" fill="#81ead7"/>
+  <circle cx="46" cy="19" r="5" fill="#81ead7"/>
+  <circle cx="18" cy="45" r="5" fill="#81ead7"/>
+  <circle cx="46" cy="45" r="5" fill="#81ead7"/>
+  <circle cx="32" cy="32" r="7" fill="#e2fff9"/>
+</svg>

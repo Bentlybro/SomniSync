@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>SomniSync — Server Dashboard</title>
+<style>
+  :root {
+    --bg:    #0b0d12;
+    --panel: #141820;
+    --edge:  #242c3a;
+    --text:  #d4d8dd;
+    --dim:   #7a8190;
+    --accent:#8ce0ff;
+    --warn:  #ffc45a;
+    --err:   #ff6a6a;
+    --ok:    #6affb0;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    background: var(--bg); color: var(--text); margin: 0; padding: 20px;
+    font-size: 13px; line-height: 1.5;
+  }
+  h1 {
+    color: var(--accent); font-size: 20px; font-weight: 500; margin: 0 0 4px;
+    letter-spacing: 0.5px;
+  }
+  .sub { color: var(--dim); font-size: 11px; margin-bottom: 20px; }
+  h2 { color: var(--accent); font-size: 14px; font-weight: 500; margin: 24px 0 8px; letter-spacing: 0.5px; }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 10px;
+  }
+  .card {
+    background: var(--panel); border: 1px solid var(--edge);
+    padding: 12px 14px; border-radius: 3px;
+  }
+  .card .label { font-size: 10px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.6px; }
+  .card .val { font-size: 22px; font-weight: 500; color: #fff; margin-top: 4px; font-variant-numeric: tabular-nums; }
+  .card .sub { font-size: 10px; color: var(--dim); margin-top: 4px; margin-bottom: 0; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th, td { padding: 6px 10px; text-align: left; border-bottom: 1px solid var(--edge); font-variant-numeric: tabular-nums; }
+  th { background: #1a1f29; color: var(--accent); font-weight: 500; font-size: 11px; letter-spacing: 0.4px; text-transform: uppercase; }
+  tr:hover td { background: #1a1f29; }
+  td.num { text-align: right; }
+  .yes { color: var(--ok); }
+  .no  { color: var(--dim); }
+
+  .log {
+    background: #07090d; border: 1px solid var(--edge); border-radius: 3px;
+    padding: 8px 10px; height: 360px; overflow-y: auto; font-size: 11px;
+    line-height: 1.45;
+  }
+  .log .line { white-space: pre-wrap; word-break: break-word; color: var(--text); }
+  .log .line.warn  { color: var(--warn); }
+  .log .line.err   { color: var(--err); }
+  .log .line.debug { color: var(--dim); }
+  .log .ts    { color: #5e6672; }
+  .log .level { color: var(--dim); }
+
+  footer { color: var(--dim); font-size: 10px; margin-top: 24px; }
+  .dot {
+    display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+    background: var(--ok); margin-right: 6px; vertical-align: middle;
+  }
+  .dot.stale { background: var(--warn); }
+
+  .topbar { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
+  .actions { display: flex; gap: 8px; align-items: center; }
+  button.export {
+    background: var(--panel); color: var(--accent); border: 1px solid var(--accent);
+    padding: 6px 14px; border-radius: 3px; font-family: inherit; font-size: 12px;
+    cursor: pointer; letter-spacing: 0.4px;
+  }
+  button.export:hover { background: #1a2735; }
+  button.export:active { transform: translateY(1px); }
+  button.export:disabled { opacity: 0.5; cursor: wait; }
+  .actions .hint { font-size: 10px; color: var(--dim); }
+
+  .cols2 {
+    display: grid; grid-template-columns: 2fr 1fr; gap: 16px;
+  }
+  @media (max-width: 900px) {
+    .cols2 { grid-template-columns: 1fr; }
+  }
+  .mini-table th, .mini-table td { padding: 4px 8px; font-size: 11px; }
+</style>
+</head>
+<body>
+<div class="topbar">
+  <div>
+    <h1>SomniSync — Server Dashboard</h1>
+    <div class="sub"><span class="dot" id="dot"></span><span id="subtitle">connecting…</span></div>
+  </div>
+  <div class="actions">
+    <span class="hint" id="history_info">history 0 samples</span>
+    <button class="export" id="export_btn" onclick="exportNow()">Export snapshot</button>
+  </div>
+</div>
+
+<div class="grid">
+  <div class="card"><div class="label">Uptime</div><div class="val" id="uptime">—</div></div>
+  <div class="card"><div class="label">CPU</div><div class="val" id="cpu">—</div><div class="sub" id="cpu_sub">process</div></div>
+  <div class="card"><div class="label">Memory (RSS)</div><div class="val" id="rss">—</div></div>
+  <div class="card"><div class="label">Clients (now)</div><div class="val" id="clients">—</div><div class="sub" id="clients_total">—</div></div>
+  <div class="card"><div class="label">Rooms</div><div class="val" id="rooms_count">—</div></div>
+  <div class="card"><div class="label">Inbound</div><div class="val" id="rx_rate">—</div><div class="sub" id="rx_total">—</div></div>
+  <div class="card"><div class="label">Outbound</div><div class="val" id="tx_rate">—</div><div class="sub" id="tx_total">—</div></div>
+  <div class="card"><div class="label">Dropped (buffer full)</div><div class="val" id="dropped">—</div></div>
+  <div class="card"><div class="label">Physics tick p50</div><div class="val" id="tick_p50">—</div><div class="sub" id="tick_sub">—</div></div>
+  <div class="card"><div class="label">Broadcast build p50</div><div class="val" id="bc_p50">—</div><div class="sub" id="bc_sub">—</div></div>
+</div>
+
+<div class="cols2">
+  <div>
+    <h2>Rooms</h2>
+    <table id="rooms_table">
+    <thead><tr>
+      <th>ID</th>
+      <th class="num">Clients</th>
+      <th>Physics</th>
+      <th class="num">Objects</th>
+      <th class="num">Claimed</th>
+      <th>Scene ready at</th>
+    </tr></thead>
+    <tbody></tbody>
+    </table>
+
+    <h2>Clients</h2>
+    <table id="clients_table" class="mini-table">
+    <thead><tr>
+      <th class="num">CID</th>
+      <th>Address</th>
+      <th>Room</th>
+      <th class="num">Uptime</th>
+      <th class="num">Rx msgs</th>
+      <th class="num">Rx bytes</th>
+    </tr></thead>
+    <tbody></tbody>
+    </table>
+  </div>
+
+  <div>
+    <h2>Messages received (by type)</h2>
+    <table id="msgtype_table" class="mini-table">
+    <thead><tr><th>Type</th><th class="num">Count</th></tr></thead>
+    <tbody></tbody>
+    </table>
+
+    <h2>Control subtypes received</h2>
+    <table id="ctrltype_table" class="mini-table">
+    <thead><tr><th>Type</th><th class="num">Count</th></tr></thead>
+    <tbody></tbody>
+    </table>
+  </div>
+</div>
+
+<h2>Log</h2>
+<div class="log" id="log"></div>
+
+<footer id="footer">—</footer>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  const fmt_bytes = (b) => {
+    if (b === undefined || b === null) return "—";
+    // Rates (B/s) can be non-integer, so toFixed even the small branch —
+    // otherwise a 8.89345… float dumps all 15 digits of precision into the UI.
+    // Integer byte counts coming through here (RSS, totals) harmlessly gain
+    // one decimal of zero padding; that's fine.
+    if (b < 1024) return b.toFixed(1) + " B";
+    if (b < 1024 * 1024) return (b / 1024).toFixed(1) + " KB";
+    if (b < 1024 * 1024 * 1024) return (b / 1024 / 1024).toFixed(1) + " MB";
+    return (b / 1024 / 1024 / 1024).toFixed(2) + " GB";
+  };
+  const fmt_rate = (bps) => fmt_bytes(bps) + "/s";
+  const fmt_dur = (s) => {
+    if (!isFinite(s)) return "—";
+    const d = Math.floor(s / 86400);
+    const h = Math.floor((s % 86400) / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const sc = Math.floor(s % 60);
+    if (d > 0) return `${d}d ${h}h ${m}m`;
+    if (h > 0) return `${h}h ${m}m ${sc}s`;
+    if (m > 0) return `${m}m ${sc}s`;
+    return `${sc}s`;
+  };
+  const fmt_us = (us) => {
+    if (us === undefined || us === null) return "—";
+    if (us < 1000) return us + " µs";
+    return (us / 1000).toFixed(2) + " ms";
+  };
+  const fmt_time = (ms) => {
+    if (!ms) return "—";
+    return new Date(ms).toISOString().replace("T", " ").slice(0, 19) + " UTC";
+  };
+  const esc = (s) => (s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+  let lastOkAt = 0;
+
+  // Rolling client-side history buffer — every successful /metrics fetch
+  // gets pushed here. Export dumps the full thing so trends aren't lost.
+  // 3600 samples @ 1Hz = 1 hour; each sample is ~3-5KB serialised.
+  const HISTORY_MAX = 3600;
+  const history = [];
+
+  function pushHistory(snapshot) {
+    history.push({ fetched_at_ms: Date.now(), snapshot });
+    while (history.length > HISTORY_MAX) history.shift();
+    $("history_info").textContent =
+      `history ${history.length} sample${history.length === 1 ? "" : "s"}` +
+      (history.length === HISTORY_MAX ? " (full)" : "");
+  }
+
+  async function exportNow() {
+    const btn = $("export_btn");
+    btn.disabled = true;
+    btn.textContent = "Exporting…";
+    try {
+      // /export is richer than /metrics — full log ring + raw physics
+      // samples + server version. Pair it with the client-side history
+      // for the complete "what happened while I was watching" picture.
+      const detailed = await fetch("/export", { cache: "no-store" }).then(r => {
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        return r.json();
+      });
+
+      const bundle = {
+        exported_at: new Date().toISOString(),
+        dashboard_history: history,
+        server_export: detailed,
+        user_agent: navigator.userAgent,
+      };
+
+      const blob = new Blob(
+        [JSON.stringify(bundle, null, 2)],
+        { type: "application/json" }
+      );
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+      a.href = url;
+      a.download = `somnisync-export-${stamp}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      btn.textContent = "Exported";
+      setTimeout(() => { btn.textContent = "Export snapshot"; btn.disabled = false; }, 1500);
+    } catch (e) {
+      btn.textContent = "Export failed";
+      setTimeout(() => { btn.textContent = "Export snapshot"; btn.disabled = false; }, 2500);
+      console.error(e);
+    }
+  }
+
+  async function refresh() {
+    try {
+      const r = await fetch("/metrics", { cache: "no-store" });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const d = await r.json();
+      lastOkAt = Date.now();
+      $("dot").classList.remove("stale");
+      $("subtitle").textContent =
+        `connected — refreshed ${new Date().toLocaleTimeString()}`;
+
+      $("uptime").textContent = fmt_dur(d.uptime_sec);
+      $("cpu").textContent = d.cpu_percent.toFixed(2) + "%";
+      $("rss").textContent = fmt_bytes(d.rss_bytes);
+      $("clients").textContent = d.clients_current;
+      $("clients_total").textContent =
+        `${d.clients_total_connected} total / ${d.clients_total_disconnected} disconnects`;
+      $("rooms_count").textContent = d.rooms.length;
+      $("rx_rate").textContent = fmt_rate(d.rx_bytes_per_sec);
+      $("rx_total").textContent =
+        `${d.rx_msgs_per_sec.toFixed(0)} msg/s · ${fmt_bytes(d.total_bytes_rx)} total`;
+      $("tx_rate").textContent = fmt_rate(d.tx_bytes_per_sec);
+      $("tx_total").textContent =
+        `${d.tx_msgs_per_sec.toFixed(0)} msg/s · ${fmt_bytes(d.total_bytes_tx)} total`;
+      $("dropped").textContent = d.total_msgs_dropped.toLocaleString();
+      $("tick_p50").textContent = fmt_us(d.physics_tick_p50_us);
+      $("tick_sub").textContent =
+        `p95 ${fmt_us(d.physics_tick_p95_us)} · p99 ${fmt_us(d.physics_tick_p99_us)}`;
+      $("bc_p50").textContent = fmt_us(d.physics_broadcast_p50_us);
+      $("bc_sub").textContent =
+        `p95 ${fmt_us(d.physics_broadcast_p95_us)} · p99 ${fmt_us(d.physics_broadcast_p99_us)}`;
+
+      const roomsBody = document.querySelector("#rooms_table tbody");
+      if (d.rooms.length === 0) {
+        roomsBody.innerHTML = '<tr><td colspan="6" style="color: var(--dim);">No rooms active.</td></tr>';
+      } else {
+        roomsBody.innerHTML = d.rooms.map(r =>
+          `<tr>
+            <td>${esc(r.id)}</td>
+            <td class="num">${r.clients}</td>
+            <td class="${r.physics_ready ? "yes" : "no"}">${r.physics_ready ? "yes" : "no"}</td>
+            <td class="num">${r.object_count}</td>
+            <td class="num">${r.claimed_count}</td>
+            <td>${fmt_time(r.scene_ready_ms)}</td>
+          </tr>`
+        ).join("");
+      }
+
+      const clientsBody = document.querySelector("#clients_table tbody");
+      if (!d.clients || d.clients.length === 0) {
+        clientsBody.innerHTML = '<tr><td colspan="6" style="color: var(--dim);">No clients connected.</td></tr>';
+      } else {
+        clientsBody.innerHTML = d.clients.map(c =>
+          `<tr>
+            <td class="num">${c.cid}</td>
+            <td>${esc(c.addr)}</td>
+            <td>${esc(c.room)}</td>
+            <td class="num">${fmt_dur(c.uptime_sec)}</td>
+            <td class="num">${c.msgs_rx.toLocaleString()}</td>
+            <td class="num">${fmt_bytes(c.bytes_rx)}</td>
+          </tr>`
+        ).join("");
+      }
+
+      const msgBody = document.querySelector("#msgtype_table tbody");
+      const msgEntries = Object.entries(d.msgs_rx_by_type || {})
+        .sort((a, b) => b[1] - a[1]);
+      msgBody.innerHTML = msgEntries.length === 0
+        ? '<tr><td colspan="2" style="color: var(--dim);">No messages yet.</td></tr>'
+        : msgEntries.map(([k, v]) =>
+          `<tr><td>${esc(k)}</td><td class="num">${v.toLocaleString()}</td></tr>`
+        ).join("");
+
+      const ctrlBody = document.querySelector("#ctrltype_table tbody");
+      const ctrlEntries = Object.entries(d.msgs_rx_ctrl_subtype || {})
+        .sort((a, b) => b[1] - a[1]);
+      ctrlBody.innerHTML = ctrlEntries.length === 0
+        ? '<tr><td colspan="2" style="color: var(--dim);">No control messages yet.</td></tr>'
+        : ctrlEntries.map(([k, v]) =>
+          `<tr><td>${esc(k)}</td><td class="num">${v.toLocaleString()}</td></tr>`
+        ).join("");
+
+      pushHistory(d);
+
+      const log = $("log");
+      const pinned = log.scrollTop + log.clientHeight >= log.scrollHeight - 8;
+      log.innerHTML = d.log.map(l => {
+        const cls = l.level === "WARN"  ? "warn"
+                  : l.level === "ERROR" ? "err"
+                  : l.level === "DEBUG" ? "debug"
+                  : "";
+        const time = new Date(l.ts_unix_ms).toISOString().slice(11, 23);
+        return `<div class="line ${cls}"><span class="ts">${time}</span> <span class="level">[${l.level}]</span> ${esc(l.msg)}</div>`;
+      }).join("");
+      if (pinned) log.scrollTop = log.scrollHeight;
+
+      $("footer").textContent =
+        `Metrics updated ${new Date(d.sampled_at_ms).toISOString()} — dashboard refreshes every 1 s.`;
+    } catch (e) {
+      $("dot").classList.add("stale");
+      $("subtitle").textContent = "disconnected — " + e.message;
+      $("footer").textContent =
+        `Last successful fetch ${lastOkAt ? new Date(lastOkAt).toISOString() : "never"}`;
+    }
+  }
+  refresh();
+  setInterval(refresh, 1000);
+</script>
+</body>
+</html>

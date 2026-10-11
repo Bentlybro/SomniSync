@@ -1,30 +1,84 @@
-/**
- * Any CSS included here will be global. The classic template
- * bundles Infima by default. Infima is a CSS framework designed to
- * work well for content-centric websites.
- */
-
-/* You can override the default Infima variables here. */
 :root {
-  --ifm-color-primary: #2e8555;
-  --ifm-color-primary-dark: #29784c;
-  --ifm-color-primary-darker: #277148;
-  --ifm-color-primary-darkest: #205d3b;
-  --ifm-color-primary-light: #33925d;
-  --ifm-color-primary-lighter: #359962;
-  --ifm-color-primary-lightest: #3cad6e;
+  --ifm-color-primary: #146371;
+  --ifm-color-primary-dark: #125966;
+  --ifm-color-primary-darker: #115460;
+  --ifm-color-primary-darkest: #0e4550;
+  --ifm-color-primary-light: #166d7c;
+  --ifm-color-primary-lighter: #177281;
+  --ifm-color-primary-lightest: #1a8192;
   --ifm-code-font-size: 95%;
-  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.1);
+  --home-line: #d9e0df;
+  --home-muted: #566264;
+  --home-tint: #f2f5f4;
 }
 
-/* For readability concerns, you should choose a lighter palette in dark mode. */
 [data-theme='dark'] {
-  --ifm-color-primary: #25c2a0;
-  --ifm-color-primary-dark: #21af90;
-  --ifm-color-primary-darker: #1fa588;
-  --ifm-color-primary-darkest: #1a8870;
-  --ifm-color-primary-light: #29d5b0;
-  --ifm-color-primary-lighter: #32d8b4;
-  --ifm-color-primary-lightest: #4fddbf;
-  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.3);
+  --ifm-color-primary: #85d4cf;
+  --ifm-color-primary-dark: #6bcbc4;
+  --ifm-color-primary-darker: #5fc7bf;
+  --ifm-color-primary-darkest: #3eada5;
+  --ifm-color-primary-light: #9fded9;
+  --ifm-color-primary-lighter: #aae2dd;
+  --ifm-color-primary-lightest: #c9eeeb;
+  --home-line: #344448;
+  --home-muted: #b1bfc0;
+  --home-tint: #202d31;
+}
+
+.navbar { box-shadow: none; border-bottom: 1px solid var(--home-line); }
+.navbar__title { font-weight: 750; letter-spacing: -.025em; }
+.navbar__logo img { width: 27px; height: 27px; }
+.home { font-size: 1.03rem; }
+.home-wrap { width: min(1120px, calc(100% - 48px)); margin: 0 auto; }
+.home-intro { padding: 98px 0 88px; }
+.home-intro-grid { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(280px, .7fr); gap: 12%; align-items: start; }
+.home-label, .home-index { margin: 0 0 20px; color: var(--ifm-color-primary); font-size: .76rem; font-weight: 750; letter-spacing: .08em; text-transform: uppercase; }
+.home h1 { margin: 0; max-width: 760px; font-size: clamp(3.4rem, 6vw, 5.7rem); font-weight: 750; line-height: 1.07; letter-spacing: -.055em; }
+.home-lead { max-width: 680px; margin: 28px 0 28px; color: var(--home-muted); font-size: 1.25rem; line-height: 1.65; }
+.home-links { display: flex; flex-wrap: wrap; gap: 13px 25px; align-items: center; font-size: .96rem; font-weight: 650; }
+.home-primary-link { display: inline-block; padding: 11px 17px; border-radius: 4px; color: #fff; background: #146371; }
+.home-primary-link:hover { color: #fff; background: #0f4c58; text-decoration: none; }
+.home-facts { margin-top: 33px; border-top: 2px solid var(--ifm-font-color-base); }
+.home-facts h2 { margin: 19px 0 17px; font-size: 1rem; font-weight: 750; }
+.home-facts dl { margin: 0; }
+.home-facts dl > div { display: grid; grid-template-columns: 85px 1fr; gap: 12px; padding: 12px 0; border-top: 1px solid var(--home-line); font-size: .88rem; line-height: 1.45; }
+.home-facts dt { color: var(--home-muted); }
+.home-facts dd { margin: 0; }
+.home-section { padding: 78px 0; border-top: 1px solid var(--home-line); }
+.home-section-heading { max-width: 730px; margin-bottom: 32px; }
+.home-section h2 { margin: 0 0 17px; font-size: clamp(2rem, 3.4vw, 3rem); font-weight: 720; line-height: 1.14; letter-spacing: -.04em; }
+.home-section h3 { margin: 0 0 15px; font-size: 1.35rem; letter-spacing: -.025em; }
+.home-section p { line-height: 1.7; }
+.home-section-heading > p:last-child { color: var(--home-muted); }
+.home-two-column { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9%; }
+.home-two-column article { padding-top: 22px; border-top: 2px solid var(--ifm-color-primary); }
+.home-two-column article > p:not(.home-index) { color: var(--home-muted); }
+.home pre { padding: 17px 19px; overflow-x: auto; border: 1px solid var(--home-line); border-radius: 4px; background: var(--home-tint); font-size: .79rem; line-height: 1.65; }
+.home pre code { color: var(--ifm-font-color-base); background: none; }
+.home-tinted { background: var(--home-tint); }
+.home-explain { display: grid; grid-template-columns: minmax(250px, .85fr) minmax(0, 1.15fr); gap: 12%; }
+.home-explain > div:last-child { max-width: 630px; }
+.home-explain > div:last-child p:first-child { margin-top: 0; }
+.home-table-wrap { overflow-x: auto; }
+.home-table { width: 100%; border-collapse: collapse; font-size: .93rem; }
+.home-table th, .home-table td { padding: 16px 18px 16px 0; border: none; border-bottom: 1px solid var(--home-line); text-align: left; white-space: nowrap; }
+.home-table th { border-top: 2px solid var(--ifm-font-color-base); color: var(--home-muted); font-size: .79rem; font-weight: 700; }
+.home-table tr:nth-child(2n) { background: transparent; }
+.home-caption { max-width: 830px; margin: 19px 0 0; color: var(--home-muted); font-size: .87rem; }
+.home-status { background: var(--home-tint); }
+
+@media (max-width: 900px) {
+  .home-intro-grid { grid-template-columns: 1fr; gap: 32px; }
+  .home-facts { max-width: 650px; margin-top: 0; }
+}
+
+@media (max-width: 680px) {
+  .home-wrap { width: min(100% - 32px, 1120px); }
+  .home-intro { padding: 66px 0; }
+  .home h1 { font-size: clamp(2.9rem, 11vw, 4.3rem); }
+  .home-lead { font-size: 1.08rem; }
+  .home-section { padding: 60px 0; }
+  .home-two-column, .home-explain { grid-template-columns: 1fr; gap: 35px; }
+  .home-table { font-size: .82rem; }
+  .home-table th, .home-table td { padding-right: 24px; }
 }

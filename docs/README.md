@@ -7,6 +7,7 @@ Full documentation for SomniSync — high-performance real-time physics networki
 New here? Start with these:
 
 - [**Setup Guide**](getting-started/setup.md) — Install, configure, and connect
+- [**Server Deployment**](getting-started/server-deployment.md) — Docker Compose, persistent data, TLS and operational limits
 - [**Which Components Do I Need?**](getting-started/which-components.md) — Pick the right components for your objects
 
 ## Components
@@ -17,7 +18,7 @@ Every synced object needs `NetworkObject`. Everything else is optional.
 
 | Component | Description | Docs |
 |-----------|-------------|------|
-| **NetworkManager** | Connection, master/spectator logic, object registration | [→ Docs](components/network-manager.md) |
+| **NetworkManager** | Connection, object registration, shared clock, AOI, local player tracking | [→ Docs](components/network-manager.md) |
 | **NetworkObject** | Position/rotation sync, ownership, interaction (pushable/grabbable) | [→ Docs](components/network-object.md) |
 
 ### Optional
@@ -27,7 +28,6 @@ Every synced object needs `NetworkObject`. Everything else is optional.
 | **NetworkVariables** | Sync custom data — int, float, bool, string | [→ Docs](components/network-variables.md) |
 | **NetworkEvents** | Fire-and-forget RPCs between clients | [→ Docs](components/network-events.md) |
 | **NetworkAnimator** | Sync Animator state, parameters, and triggers | [→ Docs](components/network-animator.md) |
-| **NetworkRigidbody** | Sync velocity + angular velocity for smooth fast objects | [→ Docs](components/network-rigidbody.md) |
 | **NetworkParticle** | Sync ParticleSystem play/stop and properties | [→ Docs](components/network-particle.md) |
 | **NetworkTimer** | Authority-driven networked countdowns | [→ Docs](components/network-timer.md) |
 
@@ -48,9 +48,9 @@ Every synced object needs `NetworkObject`. Everything else is optional.
 |---------|--------------|------|
 | **Basic World** | Minimal setup — physics objects + sync | [→ Docs](examples/basic-world.md) |
 | **Interactive Door** | NetworkVariables + NetworkAnimator for persistent state | [→ Docs](examples/interactive-door.md) |
-| **Physics Playground** | Throwables, destructible stacks, bowling — when to use NetworkRigidbody | [→ Docs](examples/physics-playground.md) |
+| **Physics Playground** | Throwables, destructible stacks, bowling with server-authoritative physics | [→ Docs](examples/physics-playground.md) |
 | **Dungeon Room** | Full example — NPCs, traps, loot, timers, particles, combat | [→ Docs](examples/dungeon-room.md) |
-| **Vehicle** | Driveable vehicle with NetworkRigidbody + enter/exit | [→ Docs](examples/vehicle.md) |
+| **Vehicle** | Driveable vehicle with enter/exit flow | [→ Docs](examples/vehicle.md) |
 | **Scoreboard** | Non-physics game state sync with NetworkVariables | [→ Docs](examples/scoreboard.md) |
 
 ## Folder Structure
@@ -67,7 +67,6 @@ docs/
 │   ├── network-variables.md           — custom variable sync
 │   ├── network-events.md              — RPCs / fire-and-forget events
 │   ├── network-animator.md            — Unity Animator sync
-│   ├── network-rigidbody.md           — velocity sync
 │   ├── network-particle.md            — ParticleSystem sync
 │   ├── network-timer.md               — networked countdowns
 │   ├── network-stats.md               — debug overlay

@@ -1,0 +1,30 @@
+{
+  "name": "com.bently.somnisync",
+  "version": "1.0.0",
+  "displayName": "SomniSync",
+  "description": "Server-authoritative physics networking for Unity and Somnium worlds. Includes a setup wizard, Somnium world-script exporter, compact position updates and area-of-interest filtering.",
+  "license": "MPL-2.0",
+  "unity": "6000.0",
+  "author": {
+    "name": "Bently",
+    "url": "https://github.com/Bentlybro"
+  },
+  "documentationUrl": "https://bentlybro.github.io/SomniSync/",
+  "changelogUrl": "https://github.com/Bentlybro/SomniSync/releases",
+  "licensesUrl": "https://github.com/Bentlybro/SomniSync/blob/master/LICENSE",
+  "keywords": [
+    "networking",
+    "multiplayer",
+    "physics",
+    "vr",
+    "somnium",
+    "websocket"
+  ],
+  "samples": [
+    {
+      "displayName": "Quick Start",
+      "description": "A generated sample scene with NetworkManager, a player rig, a grabbable cube, and an NPC with wander. Import, run Tools > SomniSync > Create Quick Start Scene, save, then press Play.",
+      "path": "Samples~/QuickStart"
+    }
+  ]
+}
