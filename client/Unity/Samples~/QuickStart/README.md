@@ -9,7 +9,7 @@ A one-click-to-generate sample scene showing the minimum setup for a working Som
 - A **ground plane** so physics objects have somewhere to land
 - A **grabbable cube** (NetworkObject + BoxCollider + Rigidbody)
 - A **wandering NPC** (NetworkObject + NetworkNPC)
-- A **SpawnKeyTester** GameObject — press P at runtime to spawn from `networkedPrefabs`
+- A **SpawnKeyTester** GameObject — assign prefabs to `NetworkManager.networkedPrefabs`, then press P at runtime to test spawning
 
 ## How to use it
 

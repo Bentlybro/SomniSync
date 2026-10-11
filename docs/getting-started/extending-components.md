@@ -147,7 +147,7 @@ public class EarlyBirdNPC : NetworkNPC { ... }
 
 1. **Add the subclass to a scene object.** Unity inspector shows all inherited properties plus any new `[SerializeField]`s you added.
 2. **Run two clients.** Confirm your behaviour reaches both, and that the inherited networking still works (objects still sync, claims still work, NPCs still chase).
-3. **If the custom thing is deterministic (e.g. `SampleWander`),** the easiest validation is to run a headless bot swarm against the server (`tools/bot_client.py`), which records CSVs from outside the Unity sandbox. `tools/netdbg_diff.py` joins any two and reports per-NPC position delta — expect < 0.5 m. For in-engine spot-checks, [NetworkDebug](../components/) prints the same state to the Unity console on each client so you can eyeball divergence.
+3. **If the custom thing is deterministic (e.g. `SampleWander`),** the easiest validation is to run a headless bot swarm against the server (`tools/bot_client.py`), which records CSVs from outside the Unity sandbox. `tools/netdbg_diff.py` joins any two and reports per-NPC position delta — expect < 0.5 m. For in-engine spot-checks, `NetworkDebug` prints the same state to the Unity console on each client so you can eyeball divergence.
 
 ## Related
 

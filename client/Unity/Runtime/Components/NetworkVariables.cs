@@ -189,13 +189,13 @@ namespace SomniumSpace.Worlds.bently.networking
         /// then flipped back on the next remote update. Now surface a clear
         /// warning and bail before corrupting local state.
         ///
-        /// The check is skipped when NetworkManager hasn't registered this
-        /// object yet (LocalId == 0) so Awake/Start initialisation can still
-        /// populate defaults before any claim state is known.
+        /// The check is skipped until NetworkManager has registered this object
+        /// so Awake/Start initialisation can still populate defaults before any
+        /// claim state is known. LocalId 0 is a real network id, not a sentinel.
         /// </summary>
         private bool CheckAuthorityForWrite(string name)
         {
-            if (NetObj == null || NetObj.LocalId == 0) return true;
+            if (NetObj == null || !NetObj.IsRegistered) return true;
             if (HasAuthority()) return true;
             Debug.LogWarning($"[NetVars] '{this.name}' cannot set '{name}' — no authority (object claimed by another client).");
             return false;

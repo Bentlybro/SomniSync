@@ -28,7 +28,7 @@ use crate::room::Room;
 /// per-object birth timestamp rather than each client's local Instantiate time.
 pub(crate) async fn handle_spawn_request(
     room: &Arc<RwLock<Room>>,
-    _client_id: u16,
+    client_id: u16,
     data: &[u8],
     room_id: &str,
 ) {
@@ -54,7 +54,10 @@ pub(crate) async fn handle_spawn_request(
     let mut desc = match parse_scene_init(&framed) {
         Some(mut list) if !list.is_empty() => list.swap_remove(0),
         _ => {
-            warn!("[Room:{}] CTRL_SPAWN_REQUEST failed to parse scene object", room_id);
+            warn!(
+                "[Room:{}] CTRL_SPAWN_REQUEST failed to parse scene object",
+                room_id
+            );
             return;
         }
     };
@@ -67,14 +70,15 @@ pub(crate) async fn handle_spawn_request(
             return;
         }
         let id = r.next_runtime_id;
-        if id >= MAX_RUNTIME_SPAWNS {
+        if r.runtime_spawn_count >= MAX_RUNTIME_SPAWNS {
             warn!(
-                "[Room:{}] CTRL_SPAWN_REQUEST: spawn cap hit ({} >= {}); refusing",
-                room_id, id, MAX_RUNTIME_SPAWNS
+                "[Room:{}] CTRL_SPAWN_REQUEST: runtime spawn cap hit ({} >= {}); refusing",
+                room_id, r.runtime_spawn_count, MAX_RUNTIME_SPAWNS
             );
             return;
         }
         r.next_runtime_id = id.wrapping_add(1);
+        r.runtime_spawn_count = r.runtime_spawn_count.saturating_add(1);
         (r.physics_world.clone(), id)
     };
     desc.id = assigned_id;
@@ -100,15 +104,17 @@ pub(crate) async fn handle_spawn_request(
     // Patch the scene_object's own id field (its first 2 bytes) to match the
     // server-assigned id — client's parser will read it from there.
     const SCENE_OBJ_ID_OFFSET: usize = 5; // after [0xFF][0x0C][u16 outer_id][u8 prefab]
-    msg[SCENE_OBJ_ID_OFFSET]     = (assigned_id & 0xFF) as u8;
+    msg[SCENE_OBJ_ID_OFFSET] = (assigned_id & 0xFF) as u8;
     msg[SCENE_OBJ_ID_OFFSET + 1] = (assigned_id >> 8) as u8;
     msg.extend_from_slice(&spawn_server_ms.to_le_bytes());
 
-    let r = room.read().await;
+    let mut r = room.write().await;
+    r.runtime_spawns.insert(assigned_id, msg.clone());
+    r.runtime_spawn_owners.insert(assigned_id, client_id);
     broadcast_all(&r.clients, &msg);
     info!(
-        "[Room:{}] spawned object id={} prefab={} spawn_ms={}",
-        room_id, assigned_id, prefab_idx, spawn_server_ms
+        "[Room:{}] client_{} spawned object id={} prefab={} spawn_ms={}",
+        room_id, client_id, assigned_id, prefab_idx, spawn_server_ms
     );
 }
 
@@ -117,7 +123,7 @@ pub(crate) async fn handle_spawn_request(
 /// from Rapier, clears any claim, broadcasts to all clients.
 pub(crate) async fn handle_despawn(
     room: &Arc<RwLock<Room>>,
-    _client_id: u16,
+    client_id: u16,
     data: &[u8],
     room_id: &str,
 ) {
@@ -128,11 +134,29 @@ pub(crate) async fn handle_despawn(
 
     let pw_opt = {
         let mut r = room.write().await;
+        let Some(owner) = r.runtime_spawn_owners.get(&obj_id).copied() else {
+            warn!(
+                "[Room:{}] client_{} tried to despawn non-runtime or unknown object id={}",
+                room_id, client_id, obj_id
+            );
+            return;
+        };
+        if owner != client_id {
+            warn!(
+                "[Room:{}] client_{} tried to despawn object id={} owned by client_{}",
+                room_id, client_id, obj_id, owner
+            );
+            return;
+        }
+
         // Clear any claim + stored release bytes on the object being
         // despawned — the id is retired, no late joiner should replay
         // stale state for it.
         r.claimed_objects.remove(&obj_id);
         r.last_release_bytes.remove(&obj_id);
+        r.runtime_spawns.remove(&obj_id);
+        r.runtime_spawn_owners.remove(&obj_id);
+        r.runtime_spawn_count = r.runtime_spawn_count.saturating_sub(1);
         r.physics_world.clone()
     };
 
@@ -145,5 +169,8 @@ pub(crate) async fn handle_despawn(
     msg.extend_from_slice(&obj_id.to_le_bytes());
     let r = room.read().await;
     broadcast_all(&r.clients, &msg);
-    info!("[Room:{}] despawned object id={}", room_id, obj_id);
+    info!(
+        "[Room:{}] client_{} despawned object id={}",
+        room_id, client_id, obj_id
+    );
 }

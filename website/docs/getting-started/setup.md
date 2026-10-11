@@ -17,7 +17,9 @@
    ./target/release/somnium-relay 0.0.0.0:9090 127.0.0.1:9091
    ```
 
-Defaults: `ws://0.0.0.0:9090` for the game socket, `http://0.0.0.0:9091/` for the dashboard. If dashboard binding fails (port taken, etc.) the server logs a warning and keeps serving game traffic — the dashboard is strictly opt-in observability.
+Defaults: `ws://0.0.0.0:9090` for the game socket, `http://127.0.0.1:9091/` for the dashboard. If dashboard binding fails (port taken, etc.) the server logs a warning and keeps serving game traffic — the dashboard is strictly opt-in observability.
+
+Unauthenticated player persistence is disabled by default. For trusted local/dev relays only, set `SOMNISYNC_ALLOW_UNAUTH_PERSISTENCE=1` before starting the server; public relays should use a server-verifiable platform identity before enabling persistence.
 
 ## Unity / Somnium client
 
@@ -27,7 +29,7 @@ Defaults: `ws://0.0.0.0:9090` for the game socket, `http://0.0.0.0:9091/` for th
 4. Set `Room ID` — clients in the same room share a physics world. Leave empty for `default`.
 5. Add a **NetworkObject** component to every GameObject you want synced.
 6. *(Optional)* Add **SomniumBridgeIntegration** — hooks the player's Somnium account UUID into persistence + AOI in one line.
-7. *(Optional)* Add **NetworkStats** for an F3 debug overlay, or **NetworkDebug** for per-tick CSV dumps.
+7. *(Optional)* Add **NetworkStats** for an F3 debug overlay, or **NetworkDebug** for per-tick Unity-console diagnostic dumps.
 
 `PlayerPushDetector` attaches to the resolved local player automatically at runtime if `autoAttachPushDetector` is enabled — or just rely on the server's Rapier player capsule, which handles continuous push physics from your normal movement.
 

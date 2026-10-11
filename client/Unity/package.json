@@ -22,7 +22,7 @@
   "samples": [
     {
       "displayName": "Quick Start",
-      "description": "A preconfigured scene with NetworkManager, a player rig, a grabbable cube, an NPC with wander, and a spawn hotkey. Import, open QuickStart.unity, press Play.",
+      "description": "A generated sample scene with NetworkManager, a player rig, a grabbable cube, and an NPC with wander. Import, run Tools > SomniSync > Create Quick Start Scene, save, then press Play.",
       "path": "Samples~/QuickStart"
     }
   ]

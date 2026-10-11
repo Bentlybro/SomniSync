@@ -3,9 +3,10 @@ use log::warn;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::stats;
@@ -42,7 +43,7 @@ pub type Tx = futures_util::stream::SplitSink<
 /// Reduced from 32: the old value let slow clients accumulate 1.6s of stale
 /// position frames that all arrived at once when congestion cleared, causing
 /// a sudden flood of outdated positions that spectators applied as jumps.
-const SEND_BUFFER: usize = 8;
+const RELIABLE_BUFFER: usize = 64;
 
 pub enum ClientMsg {
     Binary(Bytes),
@@ -51,16 +52,55 @@ pub enum ClientMsg {
 
 pub struct Client {
     pub tx: mpsc::Sender<ClientMsg>,
+    state_tx: watch::Sender<Bytes>,
+    failed: Arc<AtomicBool>,
     pub addr: SocketAddr,
+}
+
+impl Client {
+    pub fn is_failed(&self) -> bool {
+        self.failed.load(Ordering::Acquire) || self.tx.is_closed()
+    }
+
+    fn send_state(&self, data: Bytes) {
+        if self.is_failed() {
+            stats::bump_dropped();
+            return;
+        }
+        let len = data.len();
+        self.state_tx.send_replace(data);
+        stats::bump_tx(len);
+    }
+
+    fn send_reliable(&self, data: Bytes) -> bool {
+        if self.is_failed() {
+            stats::bump_dropped();
+            return false;
+        }
+        let len = data.len();
+        match self.tx.try_send(ClientMsg::Binary(data)) {
+            Ok(()) => {
+                stats::bump_tx(len);
+                true
+            }
+            Err(_) => {
+                self.failed.store(true, Ordering::Release);
+                stats::bump_dropped();
+                false
+            }
+        }
+    }
 }
 
 /// Create a new client and spawn its dedicated send task.
 /// The send task owns the WebSocket sink and runs independently on the tokio thread pool,
 /// so broadcasts to N clients are truly parallel rather than sequentially cooperative.
 pub fn new_client(addr: SocketAddr, sink: Tx) -> Arc<Client> {
-    let (tx, rx) = mpsc::channel(SEND_BUFFER);
-    let client = Arc::new(Client { tx, addr });
-    spawn_send_task(sink, rx, addr);
+    let (tx, rx) = mpsc::channel(RELIABLE_BUFFER);
+    let (state_tx, state_rx) = watch::channel(Bytes::new());
+    let failed = Arc::new(AtomicBool::new(false));
+    let client = Arc::new(Client { tx, state_tx, failed: failed.clone(), addr });
+    spawn_send_task(sink, rx, state_rx, failed, addr);
     client
 }
 
@@ -83,13 +123,29 @@ pub fn new_client(addr: SocketAddr, sink: Tx) -> Arc<Client> {
 /// ~2KB WebSocket frame is dead.
 const SEND_TIMEOUT: Duration = Duration::from_secs(5);
 
-fn spawn_send_task(mut sink: Tx, mut rx: mpsc::Receiver<ClientMsg>, addr: SocketAddr) {
+fn spawn_send_task(
+    mut sink: Tx,
+    mut rx: mpsc::Receiver<ClientMsg>,
+    mut state_rx: watch::Receiver<Bytes>,
+    failed: Arc<AtomicBool>,
+    addr: SocketAddr,
+) {
     tokio::spawn(async move {
         use futures_util::SinkExt;
-        while let Some(msg) = rx.recv().await {
-            let ws_msg = match msg {
-                ClientMsg::Binary(b) => Message::Binary(b.into()),
-                ClientMsg::Pong(d)   => Message::Pong(d.into()),
+        loop {
+            if failed.load(Ordering::Acquire) {
+                break;
+            }
+            let ws_msg = tokio::select! {
+                biased;
+                Some(msg) = rx.recv() => match msg {
+                    ClientMsg::Binary(b) => Message::Binary(b.into()),
+                    ClientMsg::Pong(d) => Message::Pong(d.into()),
+                },
+                changed = state_rx.changed() => {
+                    if changed.is_err() { break; }
+                    Message::Binary(state_rx.borrow_and_update().clone().into())
+                }
             };
             match tokio::time::timeout(SEND_TIMEOUT, sink.send(ws_msg)).await {
                 Ok(Ok(())) => {}

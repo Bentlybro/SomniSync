@@ -17,12 +17,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use axum::{
-    extract::State,
-    response::Html,
-    routing::get,
-    Json, Router,
-};
+use axum::{extract::State, response::Html, routing::get, Json, Router};
 use log::info;
 use serde::Serialize;
 use tokio::net::TcpListener;
@@ -50,7 +45,13 @@ pub struct PrevSample {
 
 impl PrevSample {
     fn new() -> Self {
-        Self { at: None, bytes_rx: 0, bytes_tx: 0, msgs_rx: 0, msgs_tx: 0 }
+        Self {
+            at: None,
+            bytes_rx: 0,
+            bytes_tx: 0,
+            msgs_rx: 0,
+            msgs_tx: 0,
+        }
     }
 }
 
@@ -75,7 +76,11 @@ pub async fn serve(addr: String, stats: Arc<Stats>, rooms: RoomMap) {
             }
         }
         Err(e) => {
-            log::warn!("[Metrics] Failed to bind {}: {}. Dashboard disabled.", addr, e);
+            log::warn!(
+                "[Metrics] Failed to bind {}: {}. Dashboard disabled.",
+                addr,
+                e
+            );
         }
     }
 }
@@ -231,10 +236,8 @@ async fn build_snapshot(state: &AppState, full_log: bool) -> MetricsSnapshot {
     };
 
     // Physics timing histograms.
-    let (tick_p50, tick_p95, tick_p99) =
-        percentiles_from_mutex(&stats.physics_tick_us);
-    let (bc_p50, bc_p95, bc_p99) =
-        percentiles_from_mutex(&stats.physics_broadcast_us);
+    let (tick_p50, tick_p95, tick_p99) = percentiles_from_mutex(&stats.physics_tick_us);
+    let (bc_p50, bc_p95, bc_p99) = percentiles_from_mutex(&stats.physics_broadcast_us);
 
     // Room snapshots. We read the room map + each room briefly — no
     // long-held locks, no hot-path blocking.
@@ -283,7 +286,7 @@ async fn build_snapshot(state: &AppState, full_log: bool) -> MetricsSnapshot {
                 bytes_rx: info.bytes_rx.load(Ordering::Relaxed),
             });
         }
-        client_snapshots.sort_by_key(|c| c.cid);
+        client_snapshots.sort_by(|a, b| a.room.cmp(&b.room).then(a.cid.cmp(&b.cid)));
     }
 
     // Message-type histograms — only include non-zero buckets so the JSON

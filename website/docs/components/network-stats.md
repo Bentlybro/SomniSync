@@ -28,7 +28,7 @@ GameObject "Debug"
 
 ## Reading the numbers
 
-- **Bytes/sec spiking on the send side** while you're doing nothing → something (typically a NetworkRigidbody) is broadcasting more than necessary. Lower its `syncRate` or threshold.
+- **Bytes/sec spiking on the send side** while you're doing nothing → some local script is sending variables/events/animator state or held-object updates more often than expected.
 - **Bytes/sec on receive scales with object count** — that's normal. AOI trims it, so moving far from busy areas should drop it.
 - **Best RTT** is measured from `MSG_TIME_PING` / `CTRL_TIME_PONG` exchanges at 1 Hz. If it stays at `-1` / `∞`, the time-sync handshake isn't completing — usually means the server is down or unreachable.
 
@@ -55,5 +55,5 @@ public class MyStatsToggle : NetworkStats
 ## Related
 
 - [Server dashboard](../ops/dashboard) — the same kind of telemetry but richer, collected server-side
-- [`NetworkDebug`](./) — structured per-tick CSV dumps for offline analysis
+- `NetworkDebug` — structured per-tick Unity-console diagnostics; use `tools/bot_client.py` for CSV capture
 - [Protocol overview](../protocol/overview) — explains what the bytes / messages actually are

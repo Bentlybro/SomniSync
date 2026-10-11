@@ -4,12 +4,22 @@ use std::time::{Duration, Instant};
 use half::f16;
 use log::warn;
 use rapier3d::prelude::{
-    nalgebra, BroadPhaseMultiSap, CCDSolver, ColliderBuilder, ColliderSet, ImpulseJointSet,
+    nalgebra, vector, BroadPhaseMultiSap, CCDSolver, ColliderBuilder, ColliderSet, ImpulseJointSet,
     IntegrationParameters, IslandManager, MultibodyJointSet, NarrowPhase, PhysicsPipeline,
-    RigidBodyBuilder, RigidBodyHandle, RigidBodySet, RigidBodyType, vector,
+    RigidBodyBuilder, RigidBodyHandle, RigidBodySet, RigidBodyType,
 };
 
 use crate::protocol::{read_f32, read_u16, MSG_POSITION_VELOCITY};
+
+const MAX_ABS_POSITION: f32 = 100_000.0;
+const MAX_SHAPE_DIMENSION: f32 = 10_000.0;
+const MAX_MASS: f32 = 1_000_000.0;
+const MAX_DAMPING: f32 = 1_000.0;
+
+#[inline]
+fn finite_abs_le(v: f32, max_abs: f32) -> bool {
+    v.is_finite() && v.abs() <= max_abs
+}
 
 /// Description of one physics object sent in a SCENE_INIT message.
 pub struct ObjectDesc {
@@ -277,7 +287,10 @@ impl PhysicsWorld {
                     .build()
             }
             other => {
-                warn!("[Physics] Unknown shape type {} for object {}, defaulting to unit sphere", other, desc.id);
+                warn!(
+                    "[Physics] Unknown shape type {} for object {}, defaulting to unit sphere",
+                    other, desc.id
+                );
                 ColliderBuilder::ball(0.5)
                     .restitution(desc.restitution)
                     .friction(desc.friction)
@@ -286,10 +299,15 @@ impl PhysicsWorld {
             }
         };
 
-        self.colliders.insert_with_parent(collider, handle, &mut self.rigid_bodies);
+        self.colliders
+            .insert_with_parent(collider, handle, &mut self.rigid_bodies);
         self.object_to_body.insert(desc.id, handle);
         self.body_to_object.insert(handle, desc.id);
         self.initial_body_type.insert(desc.id, body_type);
+    }
+
+    pub fn has_object(&self, obj_id: u16) -> bool {
+        self.object_to_body.contains_key(&obj_id)
     }
 
     /// Advance the simulation by one fixed timestep (dt = 1/50 s).
@@ -318,17 +336,16 @@ impl PhysicsWorld {
     /// Make the body for `obj_id` kinematic (a player has grabbed it). Stores
     /// the current position so the first `update_claimed` can derive a sensible
     /// velocity delta.
-    pub fn claim(&mut self, obj_id: u16, owner: u16) {
-        let pos = if let Some(&handle) = self.object_to_body.get(&obj_id) {
-            if let Some(rb) = self.rigid_bodies.get_mut(handle) {
-                rb.set_body_type(RigidBodyType::KinematicPositionBased, true);
-                let t = rb.translation();
-                [t.x, t.y, t.z]
-            } else {
-                [0.0, 0.0, 0.0]
-            }
+    pub fn claim(&mut self, obj_id: u16, owner: u16) -> bool {
+        let Some(&handle) = self.object_to_body.get(&obj_id) else {
+            return false;
+        };
+        let pos = if let Some(rb) = self.rigid_bodies.get_mut(handle) {
+            rb.set_body_type(RigidBodyType::KinematicPositionBased, true);
+            let t = rb.translation();
+            [t.x, t.y, t.z]
         } else {
-            [0.0, 0.0, 0.0]
+            return false;
         };
 
         self.claimed.insert(
@@ -340,6 +357,7 @@ impl PhysicsWorld {
                 velocity: [0.0, 0.0, 0.0],
             },
         );
+        true
     }
 
     /// Release a claim explicitly — used for stale claim cleanup. Applies the
@@ -409,11 +427,7 @@ impl PhysicsWorld {
                 if mass <= 0.0 {
                     return;
                 }
-                let impulse = vector![
-                    velocity[0] * mass,
-                    velocity[1] * mass,
-                    velocity[2] * mass
-                ];
+                let impulse = vector![velocity[0] * mass, velocity[1] * mass, velocity[2] * mass];
                 rb.apply_impulse(impulse, true);
             }
         }
@@ -439,9 +453,26 @@ impl PhysicsWorld {
     pub fn update_claimed(
         &mut self,
         obj_id: u16,
-        px: f32, py: f32, pz: f32,
-        qx: f32, qy: f32, qz: f32, qw: f32,
+        px: f32,
+        py: f32,
+        pz: f32,
+        qx: f32,
+        qy: f32,
+        qz: f32,
+        qw: f32,
     ) {
+        if !finite_abs_le(px, MAX_ABS_POSITION)
+            || !finite_abs_le(py, MAX_ABS_POSITION)
+            || !finite_abs_le(pz, MAX_ABS_POSITION)
+            || !qx.is_finite()
+            || !qy.is_finite()
+            || !qz.is_finite()
+            || !qw.is_finite()
+            || (qx * qx + qy * qy + qz * qz + qw * qw) <= 1e-6
+        {
+            return;
+        }
+
         if let Some(&handle) = self.object_to_body.get(&obj_id) {
             if let Some(rb) = self.rigid_bodies.get_mut(handle) {
                 rb.set_next_kinematic_translation(vector![px, py, pz]);
@@ -536,6 +567,32 @@ impl PhysicsWorld {
         }
 
         SnapshotBuckets { awake, just_slept }
+    }
+
+    /// One-shot full dynamic-state snapshot for a late joiner. Unlike the
+    /// regular broadcast path, this includes already-sleeping dynamic bodies so
+    /// a new client does not keep baked scene positions for objects that settled
+    /// before they connected.
+    pub fn snapshot_all_dynamic(&self) -> Vec<DynamicSnapshot> {
+        let mut out = Vec::with_capacity(self.object_to_body.len());
+        for (&obj_id, &handle) in &self.object_to_body {
+            let Some(rb) = self.rigid_bodies.get(handle) else {
+                continue;
+            };
+            if rb.body_type() != RigidBodyType::Dynamic {
+                continue;
+            }
+            let pos = *rb.translation();
+            let rot = rb.rotation();
+            let vel = *rb.linvel();
+            out.push(DynamicSnapshot {
+                obj_id,
+                pos: [pos.x, pos.y, pos.z],
+                quat: [rot.i, rot.j, rot.k, rot.w],
+                vel: [vel.x, vel.y, vel.z],
+            });
+        }
+        out
     }
 }
 
@@ -654,6 +711,24 @@ pub fn build_filtered_message(
     Some(buf)
 }
 
+/// Build a one-shot unfiltered server snapshot. Sequence 0 is reserved for
+/// initial snapshots; Unity clients skip stale-sequence dedupe for it so this
+/// can safely race with live broadcast frames already queued to the same peer.
+pub fn build_initial_snapshot_message(entries: &[DynamicSnapshot]) -> Option<Vec<u8>> {
+    if entries.is_empty() {
+        return None;
+    }
+    let mut buf = Vec::with_capacity(7 + entries.len() * 28);
+    buf.push(MSG_POSITION_VELOCITY);
+    push_u16(&mut buf, 0); // sender = server
+    push_u16(&mut buf, 0); // sequence 0 = initial snapshot
+    push_u16(&mut buf, entries.len().min(u16::MAX as usize) as u16);
+    for entry in entries.iter().take(u16::MAX as usize) {
+        push_entity(&mut buf, entry);
+    }
+    Some(buf)
+}
+
 #[inline]
 fn push_entity(buf: &mut Vec<u8>, entry: &DynamicSnapshot) {
     push_u16(buf, entry.obj_id);
@@ -735,7 +810,9 @@ pub fn parse_scene_init(data: &[u8]) -> Option<Vec<ObjectDesc>> {
     if data.len() < expected {
         warn!(
             "[Physics] SCENE_INIT truncated: expected {} bytes for {} objects, got {}",
-            expected, count, data.len()
+            expected,
+            count,
+            data.len()
         );
         return None;
     }
@@ -744,28 +821,59 @@ pub fn parse_scene_init(data: &[u8]) -> Option<Vec<ObjectDesc>> {
     let mut offset = HEADER_BYTES;
 
     for _ in 0..count {
-        let id         = read_u16(data, offset);
-        let body_type  = data[offset + 2];
+        let id = read_u16(data, offset);
+        let body_type = data[offset + 2];
         let shape_type = data[offset + 3];
         offset += 4;
 
-        let px = read_f32(data, offset);     offset += 4;
-        let py = read_f32(data, offset);     offset += 4;
-        let pz = read_f32(data, offset);     offset += 4;
+        let px = read_f32(data, offset);
+        offset += 4;
+        let py = read_f32(data, offset);
+        offset += 4;
+        let pz = read_f32(data, offset);
+        offset += 4;
 
-        let rx = read_f32(data, offset);     offset += 4;
-        let ry = read_f32(data, offset);     offset += 4;
-        let rz = read_f32(data, offset);     offset += 4;
+        let rx = read_f32(data, offset);
+        offset += 4;
+        let ry = read_f32(data, offset);
+        offset += 4;
+        let rz = read_f32(data, offset);
+        offset += 4;
 
-        let sx = read_f32(data, offset);     offset += 4;
-        let sy = read_f32(data, offset);     offset += 4;
-        let sz = read_f32(data, offset);     offset += 4;
+        let sx = read_f32(data, offset);
+        offset += 4;
+        let sy = read_f32(data, offset);
+        offset += 4;
+        let sz = read_f32(data, offset);
+        offset += 4;
 
-        let mass        = read_f32(data, offset); offset += 4;
-        let restitution = read_f32(data, offset); offset += 4;
-        let friction    = read_f32(data, offset); offset += 4;
-        let lin_damp    = read_f32(data, offset); offset += 4;
-        let ang_damp    = read_f32(data, offset); offset += 4;
+        let mass = read_f32(data, offset);
+        offset += 4;
+        let restitution = read_f32(data, offset);
+        offset += 4;
+        let friction = read_f32(data, offset);
+        offset += 4;
+        let lin_damp = read_f32(data, offset);
+        offset += 4;
+        let ang_damp = read_f32(data, offset);
+        offset += 4;
+
+        if !valid_scene_object(
+            [px, py, pz],
+            [rx, ry, rz],
+            [sx, sy, sz],
+            mass,
+            restitution,
+            friction,
+            lin_damp,
+            ang_damp,
+        ) {
+            warn!(
+                "[Physics] SCENE_INIT contains invalid non-finite/out-of-range object id={}",
+                id
+            );
+            return None;
+        }
 
         objects.push(ObjectDesc {
             id,
@@ -783,4 +891,31 @@ pub fn parse_scene_init(data: &[u8]) -> Option<Vec<ObjectDesc>> {
     }
 
     Some(objects)
+}
+
+fn valid_scene_object(
+    position: [f32; 3],
+    rotation_euler_deg: [f32; 3],
+    shape_params: [f32; 3],
+    mass: f32,
+    restitution: f32,
+    friction: f32,
+    linear_damping: f32,
+    angular_damping: f32,
+) -> bool {
+    position.iter().all(|v| finite_abs_le(*v, MAX_ABS_POSITION))
+        && rotation_euler_deg.iter().all(|v| v.is_finite())
+        && shape_params
+            .iter()
+            .all(|v| v.is_finite() && *v >= 0.0 && *v <= MAX_SHAPE_DIMENSION)
+        && mass.is_finite()
+        && (0.0..=MAX_MASS).contains(&mass)
+        && restitution.is_finite()
+        && (-10.0..=10.0).contains(&restitution)
+        && friction.is_finite()
+        && (0.0..=100.0).contains(&friction)
+        && linear_damping.is_finite()
+        && (0.0..=MAX_DAMPING).contains(&linear_damping)
+        && angular_damping.is_finite()
+        && (0.0..=MAX_DAMPING).contains(&angular_damping)
 }

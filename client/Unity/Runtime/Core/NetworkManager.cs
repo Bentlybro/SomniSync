@@ -193,7 +193,11 @@ namespace SomniumSpace.Worlds.bently.networking
             float dt = Time.deltaTime;
             float t  = Time.time;
             for (int i = 0; i < _objects.Count; i++)
-                _objects[i].NetworkUpdate(dt, t);
+            {
+                var obj = _objects[i];
+                if (obj == null) continue;
+                obj.NetworkUpdate(dt, t);
+            }
 
             // Resolve the local player transform once per half-second until we find
             // something — handles async-spawned Somnium rigs without scanning every frame.
@@ -325,6 +329,7 @@ namespace SomniumSpace.Worlds.bently.networking
             for (int i = 0; i < all.Length; i++)
             {
                 all[i].LocalId = (ushort)i;
+                all[i].IsRegistered = true;
                 _objects.Add(all[i]);
             }
         }
@@ -427,7 +432,11 @@ namespace SomniumSpace.Worlds.bently.networking
             // client stuck believing it still owns objects the server has long
             // since returned to Dynamic.
             for (int i = 0; i < _objects.Count; i++)
-                _objects[i].ResetClaimStateOnDisconnect();
+            {
+                var obj = _objects[i];
+                if (obj == null) continue;
+                obj.ResetClaimStateOnDisconnect();
+            }
             NetworkPersistence.ClearPending();
 
             while (_sendQueue.TryDequeue(out QueuedMessage stale))

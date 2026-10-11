@@ -1,6 +1,6 @@
 # Example: Networked Vehicle
 
-A driveable vehicle that any player can enter/exit. Smooth movement via NetworkRigidbody.
+A driveable vehicle that any player can enter/exit. Movement is driven by the claiming client while grabbed, then reconciled through server-authoritative physics snapshots.
 
 ## Components
 
@@ -9,7 +9,6 @@ Vehicle
 ├── Rigidbody (mass: 1500, drag: 0.5)
 ├── BoxCollider
 ├── NetworkObject (entityType: "vehicle", pushable: false, grabbable: true)
-├── NetworkRigidbody (syncRate: 15, velocityThreshold: 0.1)
 ├── NetworkVariables                             ← "driver" (string), "engine" (bool)
 ├── NetworkEvents                                ← "enter", "exit", "honk"
 └── Vehicle.cs
@@ -84,11 +83,11 @@ public class Vehicle : MonoBehaviour
 ## How It Works
 
 1. Player walks up to vehicle → `EnterVehicle()` claims ownership via `Grab()`
-2. `NetworkRigidbody` syncs velocity — all clients see smooth driving
+2. Held-object updates drive the server body while the driver owns the claim
 3. `NetworkVariables` tracks who's driving (persists for late joiners)
 4. Player exits → `Release()` returns vehicle to master authority
-5. Vehicle coasts to a stop — `NetworkRigidbody` sends zero velocity, then sleeps
+5. Vehicle coasts to a stop under server physics, then sleeps
 
-## Why NetworkRigidbody Matters Here
+## Why Claiming Matters Here
 
-Without it, other clients see the car teleporting between position ticks. With it, the car moves smoothly because clients know its speed and direction between updates.
+Only the claiming driver should write vehicle motion. Other clients receive the server's authoritative snapshots and interpolate toward them.

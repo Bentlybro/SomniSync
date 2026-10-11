@@ -126,6 +126,11 @@ namespace SomniumSpace.Worlds.bently.networking
         /// <summary>Send event only to the client that has authority over this object.</summary>
         public void SendToAuthority(string eventName, params object[] parameters)
         {
+            if (NetObj != null && NetObj.ClaimedByClient == 0)
+            {
+                Debug.LogWarning($"[NetEvents] '{name}' cannot SendToAuthority('{eventName}') — object is unclaimed, so no single authority exists.");
+                return;
+            }
             SendEvent(eventName, parameters, target: EventTarget.Authority);
         }
 

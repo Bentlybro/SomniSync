@@ -20,19 +20,23 @@ use crate::room::Room;
 
 /// Handle a SCENE_INIT (0x10) — bootstrap the authoritative physics world.
 pub(crate) async fn handle_scene_init(room: &Arc<RwLock<Room>>, room_id: &str, data: &[u8]) {
-    // First SCENE_INIT wins; ignore the rest.
     {
-        let r = room.read().await;
-        if r.physics_ready {
-            debug!("[Room:{}] SCENE_INIT ignored (physics already ready)", room_id);
+        let mut r = room.write().await;
+        if r.physics_ready || r.scene_initializing {
+            debug!(
+                "[Room:{}] SCENE_INIT ignored (physics already ready or initializing)",
+                room_id
+            );
             return;
         }
+        r.scene_initializing = true;
     }
 
     let objects = match parse_scene_init(data) {
         Some(objs) => objs,
         None => {
             warn!("[Room:{}] Failed to parse SCENE_INIT", room_id);
+            room.write().await.scene_initializing = false;
             return;
         }
     };
@@ -62,8 +66,18 @@ pub(crate) async fn handle_scene_init(room: &Arc<RwLock<Room>>, room_id: &str, d
         .unwrap_or(0);
     {
         let mut r = room.write().await;
+        if r.physics_ready {
+            r.scene_initializing = false;
+            debug!(
+                "[Room:{}] SCENE_INIT ignored after build (physics already ready)",
+                room_id
+            );
+            return;
+        }
         r.physics_ready = true;
+        r.scene_initializing = false;
         r.physics_world = Some(pw_arc.clone());
+        r.scene_object_count = initial_object_count;
         // Runtime spawns get IDs starting right after the baked-in scene objects.
         r.next_runtime_id = initial_object_count;
         r.scene_ready_ms = scene_ready_ms;
@@ -105,7 +119,10 @@ async fn physics_tick_task(
     let mut server_sequence: u16 = 0;
     let mut tick: u32 = 0;
 
-    info!("[Room:{}] Physics tick task started (50Hz sim / 20Hz broadcast)", room_id);
+    info!(
+        "[Room:{}] Physics tick task started (50Hz sim / 20Hz broadcast)",
+        room_id
+    );
 
     loop {
         let now = Instant::now();
@@ -161,7 +178,10 @@ async fn physics_tick_task(
             let room_arc = match room_weak.upgrade() {
                 Some(r) => r,
                 None => {
-                    info!("[Room:{}] Physics task: room deallocated, stopping", room_id);
+                    info!(
+                        "[Room:{}] Physics task: room deallocated, stopping",
+                        room_id
+                    );
                     return;
                 }
             };
@@ -191,13 +211,9 @@ async fn physics_tick_task(
             let bc_start = Instant::now();
             for (cid, client) in &clients_clone {
                 let pp = player_pos_clone.get(cid).copied();
-                if let Some(msg) = build_filtered_message(
-                    &buckets.awake,
-                    &buckets.just_slept,
-                    pp,
-                    tick,
-                    seq,
-                ) {
+                if let Some(msg) =
+                    build_filtered_message(&buckets.awake, &buckets.just_slept, pp, tick, seq)
+                {
                     send_try(client, bytes::Bytes::from(msg));
                 }
             }
@@ -211,12 +227,18 @@ async fn physics_tick_task(
             let room_arc = match room_weak.upgrade() {
                 Some(r) => r,
                 None => {
-                    info!("[Room:{}] Physics task: room deallocated, stopping", room_id);
+                    info!(
+                        "[Room:{}] Physics task: room deallocated, stopping",
+                        room_id
+                    );
                     return;
                 }
             };
             if room_arc.read().await.client_count() == 0 {
-                info!("[Room:{}] Physics task: no clients remain, stopping", room_id);
+                info!(
+                    "[Room:{}] Physics task: no clients remain, stopping",
+                    room_id
+                );
                 return;
             }
         }

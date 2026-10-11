@@ -18,7 +18,7 @@ Unity 6 (6000.0+) required.
 
 ## Quick Start
 
-1. After installing the package, **Tools → SomniSync → Create Quick Start Scene** will scaffold a working sample for you.
+1. Import the Quick Start sample from Package Manager, then **Tools → SomniSync → Create Quick Start Scene** will scaffold a working sample for you.
 2. Or wire your own scene manually:
    - Add `NetworkManager` to a GameObject
    - Set the `Server URL` (e.g. `ws://localhost:9090`) and `Room ID`
@@ -84,7 +84,7 @@ Every synced object needs **NetworkObject**. Everything else is optional.
 | **NetworkPersistence** (static) | Per-player server-backed Save/Load — float/int/bool/string, namespaced | [→ Docs](docs/components/network-persistence.md) |
 | **NetworkWaypoint** | Deterministic waypoint pathing — zero bandwidth, driven by shared clock | — |
 | **NetworkStats** | F3 debug overlay — FPS, bandwidth, connection status | [→ Docs](docs/components/network-stats.md) |
-| **NetworkDebug** | Per-tick CSV dump for desync diagnosis — pairs with `tools/netdbg_diff.py` | — |
+| **NetworkDebug** | Per-tick Unity-console dump for desync diagnosis. CSV capture is handled by `tools/bot_client.py` + `tools/netdbg_diff.py` | — |
 | **PlayerPushDetector** | Auto-attached collision detection for push-to-grab | [→ Docs](docs/components/player-push-detector.md) |
 | **SomniumBridgeIntegration** | One-line Somnium Space player identity hookup | — |
 
@@ -112,6 +112,8 @@ cargo build --release
 ```
 
 Two positional args: WebSocket bind and HTTP dashboard bind. The dashboard is a separate opt-in listener — if its port is taken, the relay keeps serving game traffic.
+
+Unauthenticated player persistence is disabled by default on the relay. For trusted local/dev relays only, set `SOMNISYNC_ALLOW_UNAUTH_PERSISTENCE=1` before starting the server; production deployments should wire persistence identity to a verifiable platform token instead of trusting client-supplied UUIDs.
 
 ## Performance
 

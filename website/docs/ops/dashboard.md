@@ -10,7 +10,7 @@ Both bind addresses are positional args:
 ./target/release/somnium-relay <ws-bind> <dashboard-bind>
 ```
 
-Defaults: `0.0.0.0:9090` for the game socket, `0.0.0.0:9091` for the dashboard. For production, consider keeping the dashboard local-only and reaching it over SSH:
+Defaults: `0.0.0.0:9090` for the game socket, `127.0.0.1:9091` for the dashboard. For production, keep the dashboard local-only and reach it over SSH:
 
 ```bash
 # On the server:

@@ -22,7 +22,6 @@ const sidebars: SidebarsConfig = {
         'components/network-variables',
         'components/network-events',
         'components/network-animator',
-        'components/network-rigidbody',
         'components/network-particle',
         'components/network-timer',
         'components/network-persistence',

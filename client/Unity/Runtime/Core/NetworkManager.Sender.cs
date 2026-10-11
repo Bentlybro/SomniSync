@@ -42,6 +42,7 @@ namespace SomniumSpace.Worlds.bently.networking
             for (int i = 0; i < _objects.Count; i++)
             {
                 var obj = _objects[i];
+                if (obj == null) continue;
                 if (!obj.IsClaimedLocally) continue;
                 if (!obj.HasMoved(positionThreshold, rotationThreshold)) continue;
 
@@ -371,6 +372,7 @@ namespace SomniumSpace.Worlds.bently.networking
             // === Pass 1: NetworkObjects (Dynamic / Kinematic / Fixed) ===
             foreach (var obj in _objects)
             {
+                if (obj == null) continue;
                 var rb  = obj.GetComponent<Rigidbody>();
                 var col = obj.GetComponent<Collider>();
                 if (col == null) continue;

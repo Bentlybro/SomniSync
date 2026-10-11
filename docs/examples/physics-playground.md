@@ -12,27 +12,24 @@ Playground
 │   ├── Ball_001..010
 │   │   ├── Rigidbody (mass: 1)
 │   │   ├── SphereCollider
-│   │   ├── NetworkObject (entityType: "ball", pushable: true, grabbable: true)
-│   │   └── NetworkRigidbody                    ← smooth flight when thrown
+│   │   └── NetworkObject (entityType: "ball", pushable: true, grabbable: true)
 │   │
 │   └── Bottle_001..005
 │       ├── Rigidbody (mass: 0.3)
 │       ├── MeshCollider (convex: true)
-│       ├── NetworkObject (entityType: "bottle", pushable: true, grabbable: true)
-│       └── NetworkRigidbody
+│       └── NetworkObject (entityType: "bottle", pushable: true, grabbable: true)
 │
 ├── --- Destructible Stack ---
 │   └── Crate_001..050                           ← stacked wall of crates
 │       ├── Rigidbody (mass: 2)
 │       ├── BoxCollider
-│       └── NetworkObject (entityType: "crate")  ← no NetworkRigidbody (bulk)
+│       └── NetworkObject (entityType: "crate")
 │
 ├── --- Bowling Alley ---
 │   ├── BowlingBall
 │   │   ├── Rigidbody (mass: 5)
 │   │   ├── SphereCollider
-│   │   ├── NetworkObject (entityType: "bowlingball", pushable: true, grabbable: true)
-│   │   └── NetworkRigidbody
+│   │   └── NetworkObject (entityType: "bowlingball", pushable: true, grabbable: true)
 │   │
 │   └── Pin_001..010
 │       ├── Rigidbody (mass: 0.5)
@@ -46,19 +43,19 @@ Playground
 
 ## Key Decisions
 
-**Throwables get `NetworkRigidbody`** — balls and bottles fly through the air, velocity sync makes them smooth.
+**Throwables use dynamic `Rigidbody` + `NetworkObject`** — the server simulates flight in Rapier and broadcasts authoritative pose/velocity snapshots.
 
-**Crates do NOT get `NetworkRigidbody`** — there are 50 of them and they mostly sit still in a stack. Position-only sync is fine. When a player bowls through them, `NetworkObject` handles the cascade via chain claiming.
+**Crates use the same setup** — there are 50 of them and they mostly sit still in a stack. Sleeping bodies are cheap because the server stops broadcasting them until they wake or settle.
 
 **Static geometry has no networking components** — floors, walls, ramps don't move.
 
 ## What It Looks Like
 
 1. Player A grabs a ball → throws it at the crate wall
-2. Ball flight is smooth (NetworkRigidbody syncs velocity)
+2. Ball flight is server-simulated and broadcast through `MSG_POSITION_VELOCITY`
 3. Ball hits first crate → chain claim triggers → entire stack claimed by Player A
-4. Crates scatter everywhere (position-only sync, no velocity)
-5. Crates settle → auto-release back to master
+4. Crates scatter everywhere under server physics
+5. Crates settle → sleeping bodies stop broadcasting
 6. Player B sees the whole thing in real-time
 
 ## Bowling Reset

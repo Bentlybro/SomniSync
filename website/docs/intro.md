@@ -69,7 +69,7 @@ Every synced object needs **NetworkObject**. Everything else is layered on top.
 | Wandering / chasing NPC | + `NetworkNPC` |
 | Player-scoped save/load (SQLite) | `NetworkPersistence.Save / Load` (static API) |
 | F3 debug overlay | + `NetworkStats` |
-| Per-tick diagnostic CSV dump | + `NetworkDebug` |
+| Per-tick Unity-console diagnostics | + `NetworkDebug` |
 
 → [Which components do I need?](/docs/getting-started/which-components)
 

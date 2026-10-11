@@ -37,6 +37,7 @@ namespace SomniumSpace.Worlds.bently.networking
 
         // Assigned by NetworkManager during deterministic sort
         [HideInInspector] public ushort LocalId;
+        [HideInInspector] public bool IsRegistered;
 
         // =====================================================================
         // Claim state

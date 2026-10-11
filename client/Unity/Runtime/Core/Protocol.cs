@@ -25,7 +25,7 @@ namespace SomniumSpace.Worlds.bently.networking
         public const byte MSG_ANIMATOR                = 0x07; // animator state (any → others)
         public const byte MSG_SCALED_INTERACTION      = 0x09; // scaled held-object position
         public const byte MSG_POSITION_VELOCITY       = 0x0B; // server → clients: authoritative position + velocity
-        /// <summary>Client → server: local player position (for server-side AOI). [0x0C][f32 x][f32 y][f32 z]</summary>
+        /// <summary>Client → server: local player position/capsule (for server-side AOI and player collision). [0x0C][f32 x][f32 y][f32 z][f32 radius][f32 half_height]</summary>
         public const byte MSG_PLAYER_POS              = 0x0C;
         /// <summary>Client → server: apply a push impulse to an object. [0x0D][u16 obj_id][f32 vx][f32 vy][f32 vz]</summary>
         public const byte MSG_PUSH_IMPULSE            = 0x0D;

@@ -7,6 +7,7 @@ use tokio_tungstenite::tungstenite::Message;
 
 use crate::client::{broadcast_except, new_client, redact_peer, send, Client, ClientMsg};
 use crate::persistence::PersistenceDb;
+use crate::physics::build_initial_snapshot_message;
 use crate::protocol::{
     ctrl_msg, read_f32, read_i16, read_u16, read_u64, CTRL_CLAIM, CTRL_CLAIM_REJECTED,
     CTRL_DESPAWN, CTRL_PERSIST_GET, CTRL_PERSIST_SET, CTRL_PHYSICS_READY, CTRL_PLAYER_IDENT,
@@ -30,7 +31,10 @@ pub async fn handle_connection(
 
     let callback = move |req: &tokio_tungstenite::tungstenite::handshake::server::Request,
                          resp: tokio_tungstenite::tungstenite::handshake::server::Response|
-        -> Result<tokio_tungstenite::tungstenite::handshake::server::Response, tokio_tungstenite::tungstenite::http::Response<Option<String>>> {
+          -> Result<
+        tokio_tungstenite::tungstenite::handshake::server::Response,
+        tokio_tungstenite::tungstenite::http::Response<Option<String>>,
+    > {
         let path = req.uri().path().trim_start_matches('/').to_string();
         if !path.is_empty() {
             if let Ok(mut id) = room_id_clone.try_lock() {
@@ -43,7 +47,11 @@ pub async fn handle_connection(
     let ws = match tokio_tungstenite::accept_hdr_async(stream, callback).await {
         Ok(ws) => ws,
         Err(e) => {
-            error!("[Server] WebSocket handshake failed for {}: {}", redact_peer(addr), e);
+            error!(
+                "[Server] WebSocket handshake failed for {}: {}",
+                redact_peer(addr),
+                e
+            );
             return;
         }
     };
@@ -74,7 +82,10 @@ pub async fn handle_connection(
         let needs_init = !physics_active;
         info!(
             "[Room:{}] Client {} connected: client_{} ({} total)",
-            room_id, redact_peer(addr), id, r.client_count()
+            room_id,
+            redact_peer(addr),
+            id,
+            r.client_count()
         );
         (id, needs_init, physics_active, r.scene_ready_ms)
     };
@@ -130,16 +141,33 @@ pub async fn handle_connection(
         // Snapshot both maps under a single read lock, then drop the lock
         // before sending (sends await the mpsc and can race with the next
         // broadcast harmlessly — mpsc preserves order per-client).
-        let (release_replays, active_claims) = {
+        let (spawn_replays, release_replays, active_claims, physics_world_opt) = {
             let r = room.read().await;
             (
+                r.runtime_spawns.values().cloned().collect::<Vec<_>>(),
                 r.last_release_bytes.values().cloned().collect::<Vec<_>>(),
                 r.claimed_objects
                     .iter()
                     .map(|(&obj_id, &owner)| (obj_id, owner))
                     .collect::<Vec<_>>(),
+                r.physics_world.clone(),
             )
         };
+
+        for bytes in spawn_replays {
+            send(&client, bytes).await;
+        }
+
+        if let Some(pw_arc) = physics_world_opt {
+            let initial_snapshot = {
+                let pw = pw_arc.lock().await;
+                build_initial_snapshot_message(&pw.snapshot_all_dynamic())
+            };
+            if let Some(bytes) = initial_snapshot {
+                send(&client, bytes).await;
+            }
+        }
+
         for bytes in release_replays {
             send(&client, bytes).await;
         }
@@ -214,7 +242,7 @@ pub async fn handle_connection(
 
     handle_disconnect(&room, client_id, &room_id).await;
     stats::bump_client_disconnected();
-    stats::unregister_client(client_id);
+    stats::unregister_client(&room_id, client_id);
 
     {
         let r = room.read().await;
@@ -237,6 +265,29 @@ pub async fn handle_connection(
 /// without letting a misbehaving or malicious client amplify MSG_VARIABLE_UPDATE
 /// / MSG_EVENT / MSG_ANIMATOR relays into a DoS against every other peer.
 const MAX_FRAME_BYTES: usize = 256 * 1024;
+const MAX_ABS_POSITION: f32 = 100_000.0;
+const MAX_PLAYER_DIMENSION: f32 = 10.0;
+
+#[inline]
+fn finite_abs_le(v: f32, max_abs: f32) -> bool {
+    v.is_finite() && v.abs() <= max_abs
+}
+
+#[inline]
+fn valid_position3(x: f32, y: f32, z: f32) -> bool {
+    finite_abs_le(x, MAX_ABS_POSITION)
+        && finite_abs_le(y, MAX_ABS_POSITION)
+        && finite_abs_le(z, MAX_ABS_POSITION)
+}
+
+#[inline]
+fn valid_unit_quat(qx: f32, qy: f32, qz: f32, qw: f32) -> bool {
+    qx.is_finite()
+        && qy.is_finite()
+        && qz.is_finite()
+        && qw.is_finite()
+        && (qx * qx + qy * qy + qz * qz + qw * qw) > 1e-6
+}
 
 /// Handle a binary message from a client.
 async fn handle_binary(
@@ -250,14 +301,17 @@ async fn handle_binary(
     if data.len() > MAX_FRAME_BYTES {
         warn!(
             "[Room:{}] client_{} sent oversized frame ({} bytes > {}); dropping",
-            room_id, client_id, data.len(), MAX_FRAME_BYTES
+            room_id,
+            client_id,
+            data.len(),
+            MAX_FRAME_BYTES
         );
         return;
     }
 
     stats::bump_rx(data.len());
     stats::bump_rx_type(data);
-    stats::bump_client_rx(client_id, data.len());
+    stats::bump_client_rx(room_id, client_id, data.len());
     let msg_type = data[0];
 
     match msg_type {
@@ -275,6 +329,21 @@ async fn handle_binary(
             let z = read_f32(data, 9);
             let radius = read_f32(data, 13);
             let half_height = read_f32(data, 17);
+
+            if !valid_position3(x, y, z)
+                || !radius.is_finite()
+                || !half_height.is_finite()
+                || radius <= 0.0
+                || half_height <= 0.0
+                || radius > MAX_PLAYER_DIMENSION
+                || half_height > MAX_PLAYER_DIMENSION
+            {
+                warn!(
+                    "[Room:{}] client_{} sent invalid player position/capsule",
+                    room_id, client_id
+                );
+                return;
+            }
 
             // Update AOI position map.
             {
@@ -320,6 +389,10 @@ async fn handle_binary(
             let vy = read_f32(data, 7);
             let vz = read_f32(data, 11);
 
+            if !vx.is_finite() || !vy.is_finite() || !vz.is_finite() {
+                return;
+            }
+
             // Rate-limit sanity cap: 50 m/s is bigger than most intentional
             // pushes and protects against runaway impulses if a client goes wrong.
             const MAX_PUSH_SPEED: f32 = 50.0;
@@ -343,8 +416,20 @@ async fn handle_binary(
         }
 
         MSG_VARIABLE_UPDATE | MSG_EVENT | MSG_ANIMATOR => {
-            // Pure relay — no server state involved.
+            if data.len() < 3 {
+                return;
+            }
+            let obj_id = read_u16(data, 1);
             let room = room.read().await;
+            if let Some(&owner) = room.claimed_objects.get(&obj_id) {
+                if owner != client_id {
+                    debug!(
+                        "[Room:{}] client_{} tried to relay state for object {} owned by client_{}",
+                        room_id, client_id, obj_id, owner
+                    );
+                    return;
+                }
+            }
             broadcast_except(&room.clients, client_id, data);
         }
 
@@ -416,6 +501,10 @@ async fn handle_held_object_update(room: &Arc<RwLock<Room>>, client_id: u16, dat
             let qy = read_i16(data, offset + 16) as f32 / 32767.0;
             let qz = read_i16(data, offset + 18) as f32 / 32767.0;
             let qw = read_i16(data, offset + 20) as f32 / 32767.0;
+            if !valid_position3(px, py, pz) || !valid_unit_quat(qx, qy, qz, qw) {
+                offset += bytes_per_entity;
+                continue;
+            }
             pw.update_claimed(obj_id, px, py, pz, qx, qy, qz, qw);
         }
 
@@ -482,7 +571,37 @@ async fn handle_control(
 
     match ctrl {
         CTRL_CLAIM => {
-            let (physics_world_opt, rejected) = {
+            let physics_world_opt = {
+                let room_r = room.read().await;
+                if !room_r.physics_ready {
+                    debug!(
+                        "[Room:{}] client_{} tried to claim {} before physics ready",
+                        room_id, client_id, obj_id
+                    );
+                    send(client, ctrl_msg(CTRL_CLAIM_REJECTED, &obj_id.to_le_bytes())).await;
+                    return;
+                }
+                room_r.physics_world.clone()
+            };
+
+            let Some(pw_arc) = physics_world_opt else {
+                send(client, ctrl_msg(CTRL_CLAIM_REJECTED, &obj_id.to_le_bytes())).await;
+                return;
+            };
+
+            {
+                let pw = pw_arc.lock().await;
+                if !pw.has_object(obj_id) {
+                    debug!(
+                        "[Room:{}] client_{} tried to claim unknown object {}",
+                        room_id, client_id, obj_id
+                    );
+                    send(client, ctrl_msg(CTRL_CLAIM_REJECTED, &obj_id.to_le_bytes())).await;
+                    return;
+                }
+            }
+
+            let rejected = {
                 let mut room = room.write().await;
                 if let Some(&owner) = room.claimed_objects.get(&obj_id) {
                     if owner != client_id {
@@ -490,35 +609,41 @@ async fn handle_control(
                             "[Room:{}] client_{} tried to claim {} but owned by client_{}",
                             room_id, client_id, obj_id, owner
                         );
-                        (room.physics_world.clone(), true)
+                        true
                     } else {
                         // Same client re-claiming their own object — accept idempotently.
-                        (room.physics_world.clone(), false)
+                        false
                     }
                 } else {
                     room.claimed_objects.insert(obj_id, client_id);
-                    debug!("[Room:{}] client_{} claimed object {}", room_id, client_id, obj_id);
+                    debug!(
+                        "[Room:{}] client_{} claimed object {}",
+                        room_id, client_id, obj_id
+                    );
                     let mut relay = vec![0xFF, CTRL_CLAIM];
                     relay.extend_from_slice(&obj_id.to_le_bytes());
                     relay.extend_from_slice(&client_id.to_le_bytes());
                     broadcast_except(&room.clients, client_id, &relay);
-                    (room.physics_world.clone(), false)
+                    false
                 }
             };
 
             if rejected {
                 // Tell the requester to unwind its optimistic grab.
-                send(
-                    client,
-                    ctrl_msg(CTRL_CLAIM_REJECTED, &obj_id.to_le_bytes()),
-                )
-                .await;
+                send(client, ctrl_msg(CTRL_CLAIM_REJECTED, &obj_id.to_le_bytes())).await;
                 return;
             }
 
-            if let Some(pw_arc) = physics_world_opt {
+            let claim_applied = {
                 let mut pw = pw_arc.lock().await;
-                pw.claim(obj_id, client_id);
+                pw.claim(obj_id, client_id)
+            };
+            if !claim_applied {
+                let mut room = room.write().await;
+                if room.claimed_objects.get(&obj_id) == Some(&client_id) {
+                    room.claimed_objects.remove(&obj_id);
+                }
+                send(client, ctrl_msg(CTRL_CLAIM_REJECTED, &obj_id.to_le_bytes())).await;
             }
         }
         CTRL_RELEASE => {
@@ -555,7 +680,10 @@ async fn handle_control(
                 return;
             }
             room_w.claimed_objects.remove(&obj_id);
-            debug!("[Room:{}] client_{} released object {}", room_id, client_id, obj_id);
+            debug!(
+                "[Room:{}] client_{} released object {}",
+                room_id, client_id, obj_id
+            );
             let msg = build_release_broadcast(obj_id, client_id, pose);
             // Remember the latest release per object so late joiners land on
             // the same wander anchor that currently-connected clients are

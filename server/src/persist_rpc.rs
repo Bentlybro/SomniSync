@@ -17,12 +17,30 @@ use crate::persistence::PersistenceDb;
 use crate::protocol::{ctrl_msg, read_u16, CTRL_ERROR, CTRL_PERSIST_DATA};
 use crate::room::Room;
 
+fn unauth_persistence_allowed() -> bool {
+    matches!(
+        std::env::var("SOMNISYNC_ALLOW_UNAUTH_PERSISTENCE")
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes"
+    )
+}
+
 pub(crate) async fn handle_player_ident(
     room: &Arc<RwLock<Room>>,
     client_id: u16,
     data: &[u8],
     room_id: &str,
 ) {
+    if !unauth_persistence_allowed() {
+        warn!(
+            "[Room:{}] client_{} attempted unauthenticated persistence identity registration; set SOMNISYNC_ALLOW_UNAUTH_PERSISTENCE=1 only for trusted/dev relays",
+            room_id, client_id
+        );
+        return;
+    }
+
     {
         let room_r = room.read().await;
         if room_r.player_ids.contains_key(&client_id) {
@@ -45,7 +63,10 @@ pub(crate) async fn handle_player_ident(
         let uuid = uuid.to_string();
         let mut room = room.write().await;
         room.player_ids.insert(client_id, uuid.clone());
-        info!("[Room:{}] client_{} identified as player '{}'", room_id, client_id, uuid);
+        info!(
+            "[Room:{}] client_{} identified as player '{}'",
+            room_id, client_id, uuid
+        );
     }
 }
 
@@ -57,6 +78,15 @@ pub(crate) async fn handle_persist_set(
     room_id: &str,
     db: &PersistenceDb,
 ) {
+    if !unauth_persistence_allowed() {
+        warn!(
+            "[Room:{}] Persist SET from client_{} rejected: unauthenticated persistence disabled",
+            room_id, client_id
+        );
+        send(client, ctrl_msg(CTRL_ERROR, b"persistence_auth_required")).await;
+        return;
+    }
+
     let mut offset = 2usize;
     if data.len() < offset + 1 {
         return;
@@ -142,6 +172,15 @@ pub(crate) async fn handle_persist_get(
     room_id: &str,
     db: &PersistenceDb,
 ) {
+    if !unauth_persistence_allowed() {
+        warn!(
+            "[Room:{}] Persist GET from client_{} rejected: unauthenticated persistence disabled",
+            room_id, client_id
+        );
+        send(client, ctrl_msg(CTRL_ERROR, b"persistence_auth_required")).await;
+        return;
+    }
+
     let mut offset = 2usize;
     if data.len() < offset + 2 {
         return;

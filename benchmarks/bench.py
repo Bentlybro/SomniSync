@@ -453,7 +453,7 @@ async def test_connection_storm(server: str, client_count: int = STORM_CLIENTS):
 async def main():
     parser = argparse.ArgumentParser(description="Somnium Network Benchmark Suite")
     parser.add_argument("--server",     default=DEFAULT_SERVER, help="WebSocket server URL")
-    parser.add_argument("--test",       default="all",  choices=["all","ping","relay","throughput","scale","storm"])
+    parser.add_argument("--test",       default="all",  choices=["all","ping","relay","throughput","scale","storm"], help="'all' skips legacy throughput; run --test throughput explicitly if needed")
     parser.add_argument("--scale-max",  type=int, default=50,   help="Max spectators for scale test")
     parser.add_argument("--duration",   type=float, default=THROUGHPUT_SECS, help="Throughput test duration (secs)")
     parser.add_argument("--storm",      type=int, default=STORM_CLIENTS,     help="Clients for connection storm")
@@ -483,7 +483,8 @@ async def main():
     if run_all or args.test == "relay":
         await test_relay_latency(args.server, args.relay_count)
 
-    if run_all or args.test == "throughput":
+    if args.test == "throughput":
+        print("WARNING: throughput is a legacy client-authored 0x0B test; current server-authoritative relays ignore it.")
         await test_throughput(args.server, args.duration)
 
     if run_all or args.test == "scale":

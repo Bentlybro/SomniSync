@@ -18,6 +18,11 @@ pub struct Room {
     pub clients: HashMap<u16, Arc<Client>>,
     next_id: u16,
 
+    /// True while the first SCENE_INIT is being parsed/built. Prevents two
+    /// near-simultaneous first clients from both creating physics worlds and
+    /// spawning duplicate tick tasks before `physics_ready` flips true.
+    pub scene_initializing: bool,
+
     /// Object ownership: object_local_id → client_id. Held objects ("grabs")
     /// are driven by that client; the server makes their physics body kinematic
     /// while claimed.
@@ -36,11 +41,29 @@ pub struct Room {
     /// The authoritative physics world — present only after SCENE_INIT.
     pub physics_world: Option<Arc<Mutex<PhysicsWorld>>>,
 
+    /// Number of baked scene objects from the initial SCENE_INIT. Runtime
+    /// despawn requests are only accepted for ids in `runtime_spawns`, never
+    /// for baked ids below this boundary.
+    pub scene_object_count: u16,
+
     /// Next local_id to hand out for runtime-spawned NetworkObjects. Set by
     /// SCENE_INIT to the initial object count; increments on each CTRL_SPAWN.
     /// IDs are never reused even after despawn (no holes in the assignment
     /// sequence) — u16 gives 65k spawns per room, plenty in practice.
     pub next_runtime_id: u16,
+
+    /// Count of currently-live runtime spawns. Kept separate from object IDs so
+    /// the runtime spawn cap does not depend on how many baked scene objects
+    /// the room started with.
+    pub runtime_spawn_count: u16,
+
+    /// Runtime spawn replay for late joiners. Keyed by object local_id, value is
+    /// the full CTRL_SPAWN broadcast frame originally sent to clients.
+    pub runtime_spawns: HashMap<u16, Vec<u8>>,
+
+    /// Runtime spawn owner. Client despawn is authorized only for the original
+    /// spawner; server-side teardown can bypass this by mutating state directly.
+    pub runtime_spawn_owners: HashMap<u16, u16>,
 
     /// Unix ms at the moment physics first went live (the first SCENE_INIT
     /// landed). Shared with every client via CTRL_WELCOME + CTRL_PHYSICS_READY
@@ -69,12 +92,17 @@ impl Room {
         Self {
             clients: HashMap::new(),
             next_id: 1,
+            scene_initializing: false,
             claimed_objects: HashMap::new(),
             player_ids: HashMap::new(),
             player_positions: HashMap::new(),
             physics_ready: false,
             physics_world: None,
+            scene_object_count: 0,
             next_runtime_id: 0,
+            runtime_spawn_count: 0,
+            runtime_spawns: HashMap::new(),
+            runtime_spawn_owners: HashMap::new(),
             scene_ready_ms: 0,
             last_release_bytes: HashMap::new(),
         }

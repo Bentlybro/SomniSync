@@ -20,8 +20,8 @@ use std::collections::{HashMap, VecDeque};
 use std::io::Write;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::sync::{Mutex, OnceLock, RwLock};
 use std::sync::Arc;
+use std::sync::{Mutex, OnceLock, RwLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 /// Cap on retained physics tick / broadcast timing samples. At 50Hz physics
@@ -90,7 +90,7 @@ pub struct Stats {
     /// Per-client tracking: address, room, connect time, bytes/msgs seen.
     /// RwLock read-mostly — insert on connect, remove on disconnect, else
     /// only atomic counter reads. Metrics snapshot takes a brief read lock.
-    pub clients: RwLock<HashMap<u16, Arc<ClientInfo>>>,
+    pub clients: RwLock<HashMap<(String, u16), Arc<ClientInfo>>>,
 }
 
 #[derive(Clone)]
@@ -139,14 +139,18 @@ impl Stats {
     /// Record a physics step timing. Cheap — push-with-cap on a small deque.
     pub fn record_physics_tick(&self, us: u64) {
         if let Ok(mut v) = self.physics_tick_us.lock() {
-            if v.len() >= TIMING_SAMPLES { v.pop_front(); }
+            if v.len() >= TIMING_SAMPLES {
+                v.pop_front();
+            }
             v.push_back(us);
         }
     }
 
     pub fn record_physics_broadcast(&self, us: u64) {
         if let Ok(mut v) = self.physics_broadcast_us.lock() {
-            if v.len() >= TIMING_SAMPLES { v.pop_front(); }
+            if v.len() >= TIMING_SAMPLES {
+                v.pop_front();
+            }
             v.push_back(us);
         }
     }
@@ -181,7 +185,9 @@ pub fn bump_rx(bytes: usize) {
 /// subtype counter. Cheap — two atomic adds at most.
 #[inline]
 pub fn bump_rx_type(data: &[u8]) {
-    if data.is_empty() { return; }
+    if data.is_empty() {
+        return;
+    }
     if let Some(s) = STATS.get() {
         s.msgs_rx_by_type[data[0] as usize].fetch_add(1, Ordering::Relaxed);
         if data[0] == 0xFF && data.len() >= 2 {
@@ -210,16 +216,16 @@ pub fn register_client(cid: u16, addr: SocketAddr, room: &str) {
             bytes_rx: AtomicU64::new(0),
         });
         if let Ok(mut map) = s.clients.write() {
-            map.insert(cid, info);
+            map.insert((room.to_string(), cid), info);
         }
     }
 }
 
 /// Remove a client on disconnect.
-pub fn unregister_client(cid: u16) {
+pub fn unregister_client(room: &str, cid: u16) {
     if let Some(s) = STATS.get() {
         if let Ok(mut map) = s.clients.write() {
-            map.remove(&cid);
+            map.remove(&(room.to_string(), cid));
         }
     }
 }
@@ -229,10 +235,10 @@ pub fn unregister_client(cid: u16) {
 /// Arc'd ClientInfo. Map read is O(1), entirely lock-free once the read
 /// lock is held.
 #[inline]
-pub fn bump_client_rx(cid: u16, bytes: usize) {
+pub fn bump_client_rx(room: &str, cid: u16, bytes: usize) {
     if let Some(s) = STATS.get() {
         if let Ok(map) = s.clients.read() {
-            if let Some(info) = map.get(&cid) {
+            if let Some(info) = map.get(&(room.to_string(), cid)) {
                 info.msgs_rx.fetch_add(1, Ordering::Relaxed);
                 info.bytes_rx.fetch_add(bytes as u64, Ordering::Relaxed);
             }
@@ -250,10 +256,13 @@ pub fn bump_tx(bytes: usize) {
 
 #[inline]
 pub fn bump_tx_batch(bytes: usize, count: u64) {
-    if count == 0 { return; }
+    if count == 0 {
+        return;
+    }
     if let Some(s) = STATS.get() {
         s.total_msgs_tx.fetch_add(count, Ordering::Relaxed);
-        s.total_bytes_tx.fetch_add(bytes as u64 * count, Ordering::Relaxed);
+        s.total_bytes_tx
+            .fetch_add(bytes as u64 * count, Ordering::Relaxed);
     }
 }
 
@@ -312,7 +321,9 @@ pub async fn sysinfo_loop(stats: Arc<Stats>) {
                         // core on a 4-core box reads 100% (not 25%). This
                         // matches sysinfo's behaviour on other platforms.
                         let pct = (dp as f64 / dt as f64) * 100.0 * ncpu as f64;
-                        stats.cpu_percent_x100.store((pct * 100.0) as u32, Ordering::Relaxed);
+                        stats
+                            .cpu_percent_x100
+                            .store((pct * 100.0) as u32, Ordering::Relaxed);
                     }
                 }
                 prev = Some((p, t, now));
@@ -348,7 +359,9 @@ pub async fn sysinfo_loop(stats: Arc<Stats>) {
                 );
                 if let Some(proc) = sys.process(pid) {
                     let cpu = proc.cpu_usage();
-                    stats.cpu_percent_x100.store((cpu * 100.0) as u32, Ordering::Relaxed);
+                    stats
+                        .cpu_percent_x100
+                        .store((cpu * 100.0) as u32, Ordering::Relaxed);
                     stats.rss_bytes.store(proc.memory(), Ordering::Relaxed);
                 }
             }
@@ -383,7 +396,9 @@ fn read_total_cpu_jiffies() -> Option<u64> {
     let data = std::fs::read_to_string("/proc/stat").ok()?;
     let first = data.lines().next()?;
     let mut parts = first.split_whitespace();
-    if parts.next()? != "cpu" { return None; }
+    if parts.next()? != "cpu" {
+        return None;
+    }
     let mut total: u64 = 0;
     for p in parts {
         total = total.saturating_add(p.parse::<u64>().ok()?);
@@ -427,7 +442,9 @@ impl log::Log for TeeLogger {
     }
 
     fn log(&self, record: &log::Record) {
-        if !self.enabled(record.metadata()) { return; }
+        if !self.enabled(record.metadata()) {
+            return;
+        }
 
         let ts_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -448,7 +465,9 @@ impl log::Log for TeeLogger {
 
         // ring buffer for dashboard
         if let Ok(mut ring) = self.stats.log_lines.lock() {
-            if ring.len() >= LOG_BUFFER { ring.pop_front(); }
+            if ring.len() >= LOG_BUFFER {
+                ring.pop_front();
+            }
             ring.push_back(LogLine {
                 ts_unix_ms: ts_ms,
                 level: level_str(record.level()),
@@ -465,8 +484,8 @@ impl log::Log for TeeLogger {
 fn level_str(l: log::Level) -> &'static str {
     match l {
         log::Level::Error => "ERROR",
-        log::Level::Warn  => "WARN",
-        log::Level::Info  => "INFO",
+        log::Level::Warn => "WARN",
+        log::Level::Info => "INFO",
         log::Level::Debug => "DEBUG",
         log::Level::Trace => "TRACE",
     }
@@ -505,12 +524,17 @@ fn parse_level(s: &str) -> Option<log::LevelFilter> {
     // last token's level and ignore module filters — this isn't a full
     // env_logger replacement, just a sensible default.
     let last = s.split(',').last().unwrap_or(s).trim();
-    let lvl = last.rsplit('=').next().unwrap_or(last).trim().to_ascii_lowercase();
+    let lvl = last
+        .rsplit('=')
+        .next()
+        .unwrap_or(last)
+        .trim()
+        .to_ascii_lowercase();
     match lvl.as_str() {
-        "off"   => Some(log::LevelFilter::Off),
+        "off" => Some(log::LevelFilter::Off),
         "error" => Some(log::LevelFilter::Error),
-        "warn"  => Some(log::LevelFilter::Warn),
-        "info"  => Some(log::LevelFilter::Info),
+        "warn" => Some(log::LevelFilter::Warn),
+        "info" => Some(log::LevelFilter::Info),
         "debug" => Some(log::LevelFilter::Debug),
         "trace" => Some(log::LevelFilter::Trace),
         _ => None,

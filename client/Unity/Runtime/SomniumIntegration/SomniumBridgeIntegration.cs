@@ -1,3 +1,4 @@
+#if SOMNIUM_SDK
 using System;
 using System.Reflection;
 using SomniumSpace.Bridge;
@@ -97,3 +98,4 @@ namespace SomniumSpace.Worlds.bently.networking
         }
     }
 }
+#endif

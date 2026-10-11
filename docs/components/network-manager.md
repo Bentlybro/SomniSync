@@ -212,6 +212,6 @@ Since it's a `partial` class split across Receiver / Sender, your subclass stays
 ## Related
 
 - [**NetworkObject**](./network-object) — what you attach to the things NetworkManager registers
-- [**SomniumBridgeIntegration**](./) — auto-hooks the Somnium rig + account UUID into NetworkManager
+- **SomniumBridgeIntegration** — optional Somnium SDK hook for the local rig + account UUID
 - [**NetworkPersistence**](./network-persistence) — per-player save/load that piggybacks on NetworkManager's connection
 - [Protocol overview](../protocol/overview) — what's actually going over the wire

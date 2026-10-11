@@ -153,12 +153,13 @@ namespace SomniumSpace.Worlds.bently.networking
             ushort senderClientId = Protocol.ReadU16(data, 1);
             ushort sequence       = Protocol.ReadU16(data, 3);
 
-            if (_receivedSequences.TryGetValue(senderClientId, out ushort lastSeq))
+            if (sequence != 0 && _receivedSequences.TryGetValue(senderClientId, out ushort lastSeq))
             {
                 ushort diff = unchecked((ushort)(sequence - lastSeq));
                 if (diff == 0 || diff > 32768) return;
             }
-            _receivedSequences[senderClientId] = sequence;
+            if (sequence != 0)
+                _receivedSequences[senderClientId] = sequence;
 
             ushort count = Protocol.ReadU16(data, 5);
             int offset = 7;
@@ -322,6 +323,7 @@ namespace SomniumSpace.Worlds.bently.networking
             }
 
             netObj.LocalId = localId;
+            netObj.IsRegistered = true;
             if (spawnServerMs != 0)
                 netObj.SpawnServerMs = spawnServerMs;
 
